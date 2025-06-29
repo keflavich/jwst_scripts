@@ -55,6 +55,8 @@ image_filenames_pipe = {
     "f212n": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f212n/jw04147-o012_t001_nircam_clear-f212n_i2d.fits",
     "f360m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f360m/jw04147-o012_t001_nircam_clear-f360m_i2d.fits",
     "f480m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f480m/jw04147-o012_t001_nircam_clear-f480m_i2d.fits",
+    "f162m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_f150w2-f162m/jw04147-o012_t001_nircam_f150w2-f162m_i2d.fits",
+    "f405n": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_f405n-f444w/jw04147-o012_t001_nircam_f405n-f444w_i2d.fits",
 }
 
 # No subtracted images available for sgrc initially
