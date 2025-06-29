@@ -1,0 +1,13 @@
+#! /bin/bash
+
+# batch job list:
+
+batch="-b"
+# batch=""
+sbatch --job-name=cloudef_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/cloudef_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/cloudef/cloudef_rgb_images.py"
+sbatch --job-name=sgrc_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/sgrc_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/sgrc/sgrc_rgb_images.py"
+sbatch --job-name=brick_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/brick_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/brick/analysis/brick_rgb_images.py"
+sbatch --job-name=wd1_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/wd1_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/wd1/wd1_rgb_images.py"
+sbatch --job-name=wd2_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/wd2_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/wd2/wd2_rgb_images.py"
+sbatch --job-name=sgrb2_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/sgrb2_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/sgrb2/sgrb2_rgb_images.py"
+sbatch --job-name=w51_nircam_quicklooks --account=astronomy-dept --qos=astronomy-dept${batch} --nodes=1 --ntasks=1 --mem=64gb --time=96:00:00 --output=/red/adamginsburg/logs/w51_quickimages_%j.log  --wrap "/red/adamginsburg/miniconda3/envs/python312/bin/python /orange/adamginsburg/jwst/w51/w51_rgb_images.py"
