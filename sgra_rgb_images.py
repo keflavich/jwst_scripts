@@ -82,7 +82,39 @@ def make_pngs(target_filter='f770w', new_basepath='/orange/adamginsburg/jwst/sgr
         print(f"Warning: Target filter {target_filter} file does not exist: {image_filenames_pipe[target_filter]}")
         return
 
-    tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
+    # Create a combined header that encompasses all available images
+    existing_filters = {k: v for k, v in image_filenames_pipe.items() if os.path.exists(v)}
+    print(f"Creating combined header from {len(existing_filters)} images")
+
+    # Get all headers and WCS objects
+    headers = []
+    wcs_objects = []
+    for filtername, filename in existing_filters.items():
+        header = fits.getheader(filename, ext=('SCI', 1))
+        headers.append(header)
+        wcs_objects.append(WCS(header))
+
+    # Find the bounding box that encompasses all images
+    from reproject.mosaicking import find_optimal_celestial_wcs
+    combined_wcs, combined_shape = find_optimal_celestial_wcs(
+        [(WCS(h), h['NAXIS2'], h['NAXIS1']) for h in headers],
+        resolution=min([abs(h['CDELT1']) for h in headers if 'CDELT1' in h] +
+                      [abs(h['CD1_1']) for h in headers if 'CD1_1' in h])
+    )
+
+    # Create the target header from the combined WCS
+    tgt_header = combined_wcs.to_header()
+    tgt_header['NAXIS1'] = combined_shape[1]
+    tgt_header['NAXIS2'] = combined_shape[0]
+    tgt_header['NAXIS'] = 2
+
+    # Copy over some useful keywords from the reference filter
+    ref_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
+    for keyword in ['TELESCOP', 'INSTRUME', 'FILTER', 'PHOTFNU', 'PHOTFLAM', 'BUNIT']:
+        if keyword in ref_header:
+            tgt_header[keyword] = ref_header[keyword]
+
+    print(f"Combined header shape: {combined_shape}")
     AVM = pyavm.AVM.from_header(tgt_header)
 
     repr_image_filenames = {x: y.replace("i2d", f"i2d_pipeline_v0.1_reprj_{target_filter[:-1]}") for x,y in image_filenames_pipe.items()}
@@ -90,8 +122,6 @@ def make_pngs(target_filter='f770w', new_basepath='/orange/adamginsburg/jwst/sgr
     repr_image_sub_filenames = {x: y.replace(".fits", f"reprj_{target_filter[:-1]}.fits") for x,y in image_sub_filenames_pipe.items()}
     repr_image_sub_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_sub_filenames.items()}
 
-    # Only reproject filters that have existing files
-    existing_filters = {k: v for k, v in image_filenames_pipe.items() if os.path.exists(v)}
     print(f"Available filters: {list(existing_filters.keys())}")
 
     for filtername in existing_filters:

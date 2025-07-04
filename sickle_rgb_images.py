@@ -48,11 +48,21 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None):
 
     return img
 
-# Updated image filenames for Sickle data with project code 3958 - MIRI observations
+# Updated image filenames for Sickle data with project code 3958 - MIRI and NIRCAM observations
 image_filenames_pipe = {
+    # MIRI filters
     "f770w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o001_t001_miri_f770w-brightsky/jw03958-o001_t001_miri_f770w-brightsky_i2d.fits",
     "f1130w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o001_t001_miri_f1130w-brightsky/jw03958-o001_t001_miri_f1130w-brightsky_i2d.fits",
     "f1500w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o001_t001_miri_f1500w-brightsky/jw03958-o001_t001_miri_f1500w-brightsky_i2d.fits",
+
+    # NIRCAM filters
+    "f182m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f182m-sub640/jw03958-o007_t005_nircam_clear-f182m-sub640_i2d.fits",
+    "f187n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f187n-sub640/jw03958-o007_t005_nircam_clear-f187n-sub640_i2d.fits",
+    "f210m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f210m-sub640/jw03958-o007_t005_nircam_clear-f210m-sub640_i2d.fits",
+    "f335m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f335m-sub640/jw03958-o007_t005_nircam_clear-f335m-sub640_i2d.fits",
+    "f444w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",
+    "f470n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",  # Note: same file as f444w
+    "f480m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f480m-sub640/jw03958-o007_t005_nircam_clear-f480m-sub640_i2d.fits",
 }
 
 # No subtracted images available for sickle initially
