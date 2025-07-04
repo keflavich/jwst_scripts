@@ -1,4 +1,5 @@
 from astropy.io import fits
+import string
 import numpy as np
 from astropy.visualization import simple_norm
 import pylab as plt
@@ -146,17 +147,43 @@ def create_and_save_rgb_combination(repr_filenames: Dict[str, str], blue_key: st
 
     rgb_scaled[rgb_scaled.mean(axis=2) == 255, :] = 0
 
-    wl1 = int(blue_key[1:-1])
-    wl2 = int(green_key[1:-1])
-    wl3 = int(red_key[1:-1])
+    # Handle filter names that may contain 'sub'
+    def extract_wavelength(filter_key):
+        if 'sub' in filter_key:
+            return filter_key[1:].replace('sub', '')  # Remove 'f' prefix and 'sub' suffix
+        else:
+            return filter_key[1:-1]  # Remove 'f' prefix and 'w'/'n'/'m' suffix
 
-    assert wl1 < wl2 < wl3
+    wl1_str = extract_wavelength(blue_key)
+    wl2_str = extract_wavelength(green_key)
+    wl3_str = extract_wavelength(red_key)
 
-    maxwl = max(int(wl1), int(wl2), int(wl3))
-    if maxwl < 500:
-        output_filename = f'wd2_nircam_RGB_{wl3}-{wl2}-{wl1}_{stretch}_max{max_percent}.png'
-    else:
-        output_filename = f'wd2_RGB_{wl3}-{wl2}-{wl1}_{stretch}_max{max_percent}.png'
+    # Check if any filters contain 'sub' for filename modification
+    has_sub = 'sub' in blue_key or 'sub' in green_key or 'sub' in red_key
+
+    try:
+        wl1 = int(wl1_str)
+        wl2 = int(wl2_str)
+        wl3 = int(wl3_str)
+        maxwl = max(wl1, wl2, wl3)
+        if maxwl < 30000: # ignore the 'sub' values
+            assert wl1 < wl2 < wl3
+
+        # Create filename with wavelength numbers
+        if maxwl < 500:
+            base_filename = f'wd2_nircam_RGB_{wl3}-{wl2}-{wl1}'
+        else:
+            base_filename = f'wd2_RGB_{wl3}-{wl2}-{wl1}'
+
+    except ValueError:
+        # If we can't convert to int (e.g., due to 'sub' filters), use filter names directly
+        base_filename = f'wd2_RGB_{red_key}-{green_key}-{blue_key}'
+
+    # Add 'sub' indicator if any filter contains 'sub'
+    if has_sub:
+        base_filename += '_sub'
+
+    output_filename = f'{base_filename}_{stretch}_max{max_percent}.png'
 
     save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm)
 
@@ -190,6 +217,8 @@ def main():
         "f300m": 'wd2_F300M_AB_i2d.fits',
         "f335m": 'wd2_F335M_AB_i2d.fits',
         "f410m": 'wd2_F410M_AB_i2d.fits',
+        "f335300sub": "wd2_F335M_F300M_AB_i2d.fits",
+        "f164162sub": "wd2_F164N_F162M_AB_i2d.fits",
     }
     nircam_image_filenames = {k: os.path.join(base_path, v) for k, v in nircam_image_filenames.items()}
 
@@ -210,13 +239,13 @@ def main():
             output_filename = f'wd2_miri_RGB_1130-1000-770_{stretch}_max{max_percent}.png'
             save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm)
 
-    target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f250m']), ext=('SCI', 1))
+    target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f182m']), ext=('SCI', 1))
     avm = pyavm.AVM.from_header(target_header)
 
     # Reproject images
-    repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f250m')
-    keylist = sorted(list(repr_filenames_nircam.keys()), key=lambda x: int(x[1:-1]))
-    repr_filenames_miri = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f250m')
+    repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f182m')
+    keylist = sorted(list(repr_filenames_nircam.keys()), key=lambda x: int(x[1:-1].strip(string.ascii_letters)))
+    repr_filenames_miri = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f182m')
     keylist = keylist + sorted(list(repr_filenames_miri.keys()), key=lambda x: int(x[1:-1]))
 
     repr_filenames = {**repr_filenames_nircam, **repr_filenames_miri}
