@@ -16,11 +16,26 @@ import pyavm
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None):
+def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None):
     img = (img*256)
     img[img<0] = 0
     img[img>255] = 255
     img = img.astype('uint8')
+
+    # Create alpha channel for transparency
+    alpha = np.ones(img.shape[:2], dtype=np.uint8) * 255  # Start with fully opaque
+
+    if original_data is not None:
+        # Make pixels transparent where original data is NaN or very small
+        # Check each channel for blank pixels
+        for i in range(3):
+            if i < original_data.shape[2]:
+                blank_mask = (np.isnan(original_data[:,:,i]) |
+                             (np.abs(original_data[:,:,i]) < 1e-10))
+                alpha[blank_mask] = 0
+
+    # Apply flip to alpha channel to match image
+    alpha = alpha[::flip,:]
 
     if alma_data is not None and alma_level is not None:
         contour_mask = np.zeros_like(alma_data, dtype=bool)
@@ -29,11 +44,16 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None):
         contour_mask1 = binary_dilation(contour_mask)
         contour_mask = contour_mask1 ^ contour_mask
 
+        # Apply flip to contour mask to match image
+        contour_mask = contour_mask[::flip,:]
+
         for i in range(3):
             img[contour_mask, i] = 255 - img[contour_mask, i]
 
-    img = PIL.Image.fromarray(img[::flip,:,:])
-    img.save(filename)
+    # Create RGBA image for PNG with transparency
+    img_rgba = np.dstack((img[::flip,:,:], alpha))
+    img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
+    img_pil.save(filename)
 
     if avm is not None:
         base = os.path.basename(filename)
@@ -42,11 +62,14 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None):
         avm.embed(filename, avmname)
         shutil.move(avmname, filename)
 
-    filename = filename.replace('.png', '.jpg')
+    # Save as JPEG without transparency (JPEG doesn't support alpha channel)
+    filename_jpg = filename.replace('.png', '.jpg')
+    img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
+    img_rgb.save(filename_jpg, format='JPEG',
+                 quality=95,
+                 progressive=True)
 
-    img.save(filename, format='JPEG',
-             quality=95,
-             progressive=True)
+    return img_pil
 
     return img
 
@@ -225,13 +248,13 @@ def make_pngs(target_filter='f480m', new_basepath='/orange/adamginsburg/jwst/clo
                                     simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
                 f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
-                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM)
+                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM, original_data=rgb)
 
                 rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
                                     simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
                                     simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM)
+                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb)
             except Exception as e:
                 print(f"Error creating RGB image for {f1}-{f2}-{f3}: {e}")
                 continue
@@ -264,13 +287,13 @@ def make_pngs(target_filter='f480m', new_basepath='/orange/adamginsburg/jwst/clo
                                     simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
                 f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
-                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_sub.png', avm=AVM)
+                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_sub.png', avm=AVM, original_data=rgb)
 
                 rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,0]),
                                     simple_norm(rgb[:,:,1], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,1]),
                                     simple_norm(rgb[:,:,2], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_sub_log.png', avm=AVM)
+                save_rgb(rgb_scaled, f'{png_path}/Cloudef_RGB_{f1n}-{f2n}-{f3n}_sub_log.png', avm=AVM, original_data=rgb)
             except Exception as e:
                 print(f"Error creating subtracted RGB image for {f1}-{f2}-{f3}: {e}")
                 continue
@@ -288,14 +311,14 @@ def make_pngs(target_filter='f480m', new_basepath='/orange/adamginsburg/jwst/clo
             img_asinh = np.stack([img_asinh, img_asinh, img_asinh], axis=2)
 
             fn = ''.join(filter(str.isdigit, filtername))
-            save_rgb(img_asinh, f'{png_path}/Cloudef_{fn}_asinh.png', avm=AVM)
+            save_rgb(img_asinh, f'{png_path}/Cloudef_{fn}_asinh.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
 
             # Log stretch
             norm_log = simple_norm(data, stretch='log', min_percent=1.5, max_percent=99.5)
             img_log = norm_log(data)
             img_log = np.stack([img_log, img_log, img_log], axis=2)
 
-            save_rgb(img_log, f'{png_path}/Cloudef_{fn}_log.png', avm=AVM)
+            save_rgb(img_log, f'{png_path}/Cloudef_{fn}_log.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
         except Exception as e:
             print(f"Error creating individual filter image for {filtername}: {e}")
             continue

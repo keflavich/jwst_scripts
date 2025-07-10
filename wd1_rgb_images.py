@@ -13,22 +13,41 @@ from typing import Dict, Tuple, Optional
 from pathlib import Path
 
 
-def save_rgb(img: np.ndarray, filename: str, avm: Optional[pyavm.AVM] = None, flip: int = -1) -> PIL.Image.Image:
+def save_rgb(img: np.ndarray, filename: str, avm: Optional[pyavm.AVM] = None, flip: int = -1, original_data: Optional[np.ndarray] = None) -> PIL.Image.Image:
     """
-    Save an RGB image array to a file with optional AVM metadata.
+    Save an RGB image array to a file with optional AVM metadata and transparency.
 
     Args:
         img: RGB image array with values in range [0,1]
         filename: Output filename
         avm: Optional AVM metadata to embed
         flip: Flip direction for the image (-1 for vertical flip)
+        original_data: Original unscaled data for transparency detection
 
     Returns:
         PIL Image object
     """
     img = (img * 256).clip(0, 255).astype('uint8')
-    img = PIL.Image.fromarray(img[::flip,:,:])
-    img.save(filename)
+
+    # Create alpha channel for transparency
+    alpha = np.ones(img.shape[:2], dtype=np.uint8) * 255  # Start with fully opaque
+
+    if original_data is not None:
+        # Make pixels transparent where original data is NaN or very small
+        # Check each channel for blank pixels
+        for i in range(3):
+            if i < original_data.shape[2]:
+                blank_mask = (np.isnan(original_data[:,:,i]) |
+                             (np.abs(original_data[:,:,i]) < 1e-10))
+                alpha[blank_mask] = 0
+
+    # Apply flip to alpha channel to match image
+    alpha = alpha[::flip,:]
+
+    # Create RGBA image for PNG with transparency
+    img_rgba = np.dstack((img[::flip,:,:], alpha))
+    img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
+    img_pil.save(filename)
 
     if avm is not None:
         base = os.path.basename(filename)
@@ -37,7 +56,14 @@ def save_rgb(img: np.ndarray, filename: str, avm: Optional[pyavm.AVM] = None, fl
         avm.embed(filename, avmname)
         shutil.move(avmname, filename)
 
-    return img
+    # Save as JPEG without transparency (JPEG doesn't support alpha channel)
+    filename_jpg = filename.replace('.png', '.jpg')
+    img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
+    img_rgb.save(filename_jpg, format='JPEG',
+                 quality=95,
+                 progressive=True)
+
+    return img_pil
 
 
 def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:
@@ -61,7 +87,7 @@ def fix_nan(img: np.ndarray) -> np.ndarray:
     return img
 
 
-def create_rgb_image(filenames: Dict[str, str], red_key: str = 'f1130w', green_key: str = 'f1000w', blue_key: str = 'f770w', stretch: str = 'asinh', max_percent: int = 99, nan_to_max: bool = True) -> np.ndarray:
+def create_rgb_image(filenames: Dict[str, str], red_key: str = 'f1130w', green_key: str = 'f1000w', blue_key: str = 'f770w', stretch: str = 'asinh', max_percent: int = 99, nan_to_max: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
     Create an RGB image from three FITS files.
 
@@ -70,27 +96,41 @@ def create_rgb_image(filenames: Dict[str, str], red_key: str = 'f1130w', green_k
         stretch: Stretch function to apply ('asinh' or 'log')
 
     Returns:
-        RGB image array
+        Tuple of (scaled RGB image array, original RGB image array)
     """
     assert isinstance(filenames, dict)
     if nan_to_max:
+        rgb_original = np.array([
+            fits.getdata(filenames[red_key]),
+            fits.getdata(filenames[green_key]),
+            fits.getdata(filenames[blue_key])
+        ]).swapaxes(0,2).swapaxes(0,1)
+
         rgb = np.array([
             fix_nan(fits.getdata(filenames[red_key])),
             fix_nan(fits.getdata(filenames[green_key])),
             fix_nan(fits.getdata(filenames[blue_key]))
         ]).swapaxes(0,2).swapaxes(0,1)
     else:
+        rgb_original = np.array([
+            fits.getdata(filenames[red_key]),
+            fits.getdata(filenames[green_key]),
+            fits.getdata(filenames[blue_key])
+        ]).swapaxes(0,2).swapaxes(0,1)
+
         rgb = np.array([
             np.nan_to_num(fits.getdata(filenames[red_key])),
             np.nan_to_num(fits.getdata(filenames[green_key])),
             np.nan_to_num(fits.getdata(filenames[blue_key]))
         ]).swapaxes(0,2).swapaxes(0,1)
 
-    return np.array([
+    rgb_scaled = np.array([
         scale_image(rgb[:,:,0], stretch=stretch, max_percent=max_percent),
         scale_image(rgb[:,:,1], stretch=stretch, max_percent=max_percent),
         scale_image(rgb[:,:,2], stretch=stretch, max_percent=max_percent)
     ]).swapaxes(0,2).swapaxes(0,1)
+
+    return rgb_scaled, rgb_original
 
 
 def reproject_images(image_filenames: Dict[str, str], target_header: fits.Header,
@@ -163,7 +203,7 @@ def main():
     # Create and save RGB images with different stretches
     for stretch in ['asinh', 'log']:
         for max_percent in [99, 95, 99.9]:
-            rgb_scaled = create_rgb_image(repr_filenames, stretch=stretch, max_percent=max_percent)
+            rgb_scaled, rgb_original = create_rgb_image(repr_filenames, stretch=stretch, max_percent=max_percent)
 
             rgb_scaled[rgb_scaled.mean(axis=2) == 255, :] = 0
 
@@ -173,7 +213,7 @@ def main():
             plt.yticks([])
 
             output_filename = f'wd1_miri_RGB_1130-1000-770_{stretch}_max{max_percent}.png'
-            save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm)
+            save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm, original_data=rgb_original)
 
     target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f212n']), ext=('SCI', 1))
     avm = pyavm.AVM.from_header(target_header)
@@ -189,7 +229,7 @@ def main():
                 key1 = keylist[ii]
                 key2 = keylist[ii+1]
                 key3 = keylist[ii+2]
-                rgb_scaled = create_rgb_image(repr_filenames_nircam, red_key=key1, green_key=key2, blue_key=key3, stretch=stretch, max_percent=max_percent, nan_to_max=False)
+                rgb_scaled, rgb_original = create_rgb_image(repr_filenames_nircam, red_key=key1, green_key=key2, blue_key=key3, stretch=stretch, max_percent=max_percent, nan_to_max=False)
 
                 rgb_scaled[rgb_scaled.mean(axis=2) == 255, :] = 0
 
@@ -203,7 +243,7 @@ def main():
                 wl3 = key3[1:4]
 
                 output_filename = f'wd1_nircam_RGB_{wl1}-{wl2}-{wl3}_{stretch}_max{max_percent}.png'
-                save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm)
+                save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm, original_data=rgb_original)
 
 
 
