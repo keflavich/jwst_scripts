@@ -15,6 +15,7 @@ from astropy.wcs import WCS
 import pyavm
 from astropy.coordinates import SkyCoord
 import astropy.units as u
+from PIL import Image
 
 def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None):
     img = (img*256)
@@ -53,7 +54,9 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
     # Create RGBA image for PNG with transparency
     img_rgba = np.dstack((img[::flip,:,:], alpha))
     img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
-    img_pil.save(filename)
+    # empirical: 180 degree rotation required.
+    flip_img = img_pil.transpose(Image.ROTATE_180)
+    flip_img.save(filename)
 
     if avm is not None:
         base = os.path.basename(filename)
@@ -65,6 +68,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
     # Save as JPEG without transparency (JPEG doesn't support alpha channel)
     filename_jpg = filename.replace('.png', '.jpg')
     img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
+    img_rgb = img_rgb.transpose(Image.ROTATE_180)
     img_rgb.save(filename_jpg, format='JPEG',
                  quality=95,
                  progressive=True)
