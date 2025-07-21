@@ -15,53 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 
-def save_rgb(img: np.ndarray, filename: str, avm: Optional[pyavm.AVM] = None, flip: int = -1, original_data: Optional[np.ndarray] = None) -> PIL.Image.Image:
-    """
-    Save an RGB image array to a file with optional AVM metadata.
-
-    Args:
-        img: RGB image array with values in range [0,1]
-        filename: Output filename
-        avm: Optional AVM metadata to embed
-        flip: Flip direction for the image (-1 for vertical flip)
-        original_data: Original unscaled data for transparency detection
-
-    Returns:
-        PIL Image object
-    """
-    img = (img * 256).clip(0, 255).astype('uint8')
-
-    # Create alpha channel for transparency
-    alpha = np.ones(img.shape[:2], dtype=np.uint8) * 255  # Start with fully opaque
-
-    if original_data is not None:
-        # Make pixels transparent where original data is NaN or very small
-        # Check each channel for blank pixels
-        for i in range(3):
-            if i < original_data.shape[2]:
-                blank_mask = (np.isnan(original_data[:,:,i]) |
-                             (np.abs(original_data[:,:,i]) < 1e-10))
-                alpha[blank_mask] = 0
-
-    # Apply flip to alpha channel to match image
-    alpha = alpha[::flip,:]
-
-    # Create RGBA image for PNG with transparency
-    img_rgba = np.dstack((img[::flip,:,:], alpha))
-    img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
-    # empirical: 180 degree rotation required.
-    flip_img = img_pil.transpose(Image.ROTATE_180)
-    flip_img.save(filename)
-    print(f"Saved {filename}")
-
-    if avm is not None:
-        base = os.path.basename(filename)
-        dir = os.path.dirname(filename)
-        avmname = os.path.join(dir, 'avm_' + base)
-        avm.embed(filename, avmname)
-        shutil.move(avmname, filename)
-
-    return img_pil
+from jwst_rgb import save_rgb
 
 
 def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:

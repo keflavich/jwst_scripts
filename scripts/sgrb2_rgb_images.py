@@ -14,64 +14,27 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from PIL import Image
+#from jwst_rgb import save_rgb #NB: brought the function back with some modifications to keep nans white.
+def save_rgb(img, filename, avm=None, flip=-1):
 
-def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None):
+    nan_mask = ~np.isfinite(img).all(axis=2)
+    img[nan_mask] = [1, 1, 1]
     img = (img*256)
     img[img<0] = 0
     img[img>255] = 255
     img = img.astype('uint8')
-
-    # Create alpha channel for transparency
-    alpha = np.ones(img.shape[:2], dtype=np.uint8) * 255  # Start with fully opaque
-
-    if original_data is not None:
-        # Make pixels transparent where original data is NaN or very small
-        # Check each channel for blank pixels
-        for i in range(3):
-            if i < original_data.shape[2]:
-                blank_mask = (np.isnan(original_data[:,:,i]) |
-                             (np.abs(original_data[:,:,i]) < 1e-10))
-                alpha[blank_mask] = 0
-
-    # Apply flip to alpha channel to match image
-    alpha = alpha[::flip,:]
-
-    if alma_data is not None and alma_level is not None:
-        contour_mask = np.zeros_like(alma_data, dtype=bool)
-        contour_mask[alma_data >= alma_level] = True
-        from scipy.ndimage import binary_dilation
-        contour_mask1 = binary_dilation(contour_mask)
-        contour_mask = contour_mask1 ^ contour_mask
-
-        # Apply flip to contour mask to match image
-        contour_mask = contour_mask[::flip,:]
-
-        for i in range(3):
-            img[contour_mask, i] = 255 - img[contour_mask, i]
-
-    # Create RGBA image for PNG with transparency
-    img_rgba = np.dstack((img[::flip,:,:], alpha))
-    img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
-    # empirical: 180 degree rotation required.
-    flip_img = img_pil.transpose(Image.ROTATE_180)
-    flip_img.save(filename)
-
+    img = PIL.Image.fromarray(img[::flip,:,:])
+    img.save(filename)
     if avm is not None:
         base = os.path.basename(filename)
         dir = os.path.dirname(filename)
         avmname = os.path.join(dir, 'avm_'+base)
         avm.embed(filename, avmname)
         shutil.move(avmname, filename)
+    return img
 
-    # Save as JPEG without transparency (JPEG doesn't support alpha channel)
-    filename_jpg = filename.replace('.png', '.jpg')
-    img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
-    img_rgb = img_rgb.transpose(Image.ROTATE_180)
-    img_rgb.save(filename_jpg, format='JPEG',
-                 quality=95,
-                 progressive=True)
 
-    return img_pil
+
 
 image_filenames_pipe = {
     "f150w": "/orange/adamginsburg/jwst/sgrb2/NB/F150W/pipeline/jw05365-o001_t001_nircam_clear-f150w-merged_i2d.fits",
@@ -85,16 +48,22 @@ image_filenames_pipe = {
     "f410m": "/orange/adamginsburg/jwst/sgrb2/NB/F410M/pipeline/jw05365-o001_t001_nircam_clear-f410m-merged_i2d.fits",
     "f466n": "/orange/adamginsburg/jwst/sgrb2/NB/F466N/pipeline/jw05365-o001_t001_nircam_clear-f466n-merged_i2d.fits",
     "f480m": "/orange/adamginsburg/jwst/sgrb2/NB/F480M/pipeline/jw05365-o001_t001_nircam_clear-f480m-merged_i2d.fits",
-    "f770w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f770w/jw05365-o002_t002_miri_f770w_i2d.fits",
-    "f1280w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f1280w/jw05365-o002_t002_miri_f1280w_i2d.fits",
-    "f2550w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f2550w/jw05365-o002_t002_miri_f2550w_i2d.fits",
-}
+    #"f770w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f770w/jw05365-o002_t002_miri_f770w_i2d.fits",
+    #"f1280w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f1280w/jw05365-o002_t002_miri_f1280w_i2d.fits",
+    #"f2550w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f2550w/jw05365-o002_t002_miri_f2550w_i2d.fits",
+    # upd Jul 21, 2025, Nazar B.
+    # These files have no saturation checks, which make them look nicer for visualizations.
+    "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f770w_i2d.fits",
+    "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f1280w_i2d.fits",
+    "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f2550w_i2d.fits",
+} 
 
 image_sub_filenames_pipe = {
     "f405n-f410m": "/orange/adamginsburg/jwst/sgrb2/NB/F405_minus_F410cont_pipeline_v0.1.fits",
     "f410m-f405n": "/orange/adamginsburg/jwst/sgrb2/NB/F410_minus_F405_fractional_bandwidth_pipeline_v0.1.fits",
     "f212n-f210m": "/orange/adamginsburg/jwst/sgrb2/NB/F212_minus_F210cont_pipeline_v0.1.fits",
-    "f187n-f182m": "/orange/adamginsburg/jwst/sgrb2/NB/F187_minus_F182cont.fits",
+    "f187n-f182m": "/orange/adamginsburg/jwst/sgrb2/NB/F187_minus_F182cont_pipeline_v0.1.fits", # NB: added the new pipeline version
+    "f480m-f360m": "/orange/adamginsburg/jwst/sgrb2/NB/filter_subtractions/f480m_minus_f360m_scaled_BB.fits", # NB: added another filter pair
 }
 
 def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgrb2/NB/data_reprojected/'):
@@ -234,7 +203,7 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     f466_data = fits.getdata(repr_image_filenames['f466n'])
 
     # Create composite 405+466 channel
-    f405_466_data = f405_data + f466_data
+    f405_466_data = f405_data + f466_data # NB: shouldn't this be divided by 2 to normalize relative to other colors in the RGB?
 
     # BGR arrangement: Blue=405, Green=405+466, Red=466
     bgr_405_405466_466 = np.array([

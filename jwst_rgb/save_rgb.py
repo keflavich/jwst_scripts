@@ -7,10 +7,7 @@ from PIL import Image
 
 
 def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None):
-    img = (img*256)
-    img[img<0] = 0
-    img[img>255] = 255
-    img = img.astype('uint8')
+    img = (img*256).clip(0, 255).astype('uint8')
 
     # Create alpha channel for transparency
     alpha = np.ones(img.shape[:2], dtype=np.uint8) * 255  # Start with fully opaque
