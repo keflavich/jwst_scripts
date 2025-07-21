@@ -13,7 +13,7 @@ import PIL
 import shutil
 from astropy.wcs import WCS
 import pyavm
-from jwst_rgb import save_rgb
+from jwst_rgb.save_rgb import save_rgb
 
 # Updated image filenames for SGRC data with project code 4147
 image_filenames_pipe = {

@@ -16,7 +16,7 @@ import pyavm
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from PIL import Image
-from jwst_rgb import save_rgb
+from jwst_rgb.save_rgb import save_rgb
 
 # Updated image filenames for Cloudef data with project code 2092
 image_filenames_pipe = {

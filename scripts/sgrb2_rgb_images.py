@@ -14,24 +14,24 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from PIL import Image
-#from jwst_rgb import save_rgb #NB: brought the function back with some modifications to keep nans white.
-def save_rgb(img, filename, avm=None, flip=-1):
+from jwst_rgb.save_rgb import save_rgb #NB: brought the function back with some modifications to keep nans white.
+# def save_rgb(img, filename, avm=None, flip=-1):
 
-    nan_mask = ~np.isfinite(img).all(axis=2)
-    img[nan_mask] = [1, 1, 1]
-    img = (img*256)
-    img[img<0] = 0
-    img[img>255] = 255
-    img = img.astype('uint8')
-    img = PIL.Image.fromarray(img[::flip,:,:])
-    img.save(filename)
-    if avm is not None:
-        base = os.path.basename(filename)
-        dir = os.path.dirname(filename)
-        avmname = os.path.join(dir, 'avm_'+base)
-        avm.embed(filename, avmname)
-        shutil.move(avmname, filename)
-    return img
+#     nan_mask = ~np.isfinite(img).all(axis=2)
+#     img[nan_mask] = [1, 1, 1]
+#     img = (img*256)
+#     img[img<0] = 0
+#     img[img>255] = 255
+#     img = img.astype('uint8')
+#     img = PIL.Image.fromarray(img[::flip,:,:])
+#     img.save(filename)
+#     if avm is not None:
+#         base = os.path.basename(filename)
+#         dir = os.path.dirname(filename)
+#         avmname = os.path.join(dir, 'avm_'+base)
+#         avm.embed(filename, avmname)
+#         shutil.move(avmname, filename)
+#     return img
 
 
 
@@ -56,7 +56,7 @@ image_filenames_pipe = {
     "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f770w_i2d.fits",
     "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f1280w_i2d.fits",
     "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f2550w_i2d.fits",
-} 
+}
 
 image_sub_filenames_pipe = {
     "f405n-f410m": "/orange/adamginsburg/jwst/sgrb2/NB/F405_minus_F410cont_pipeline_v0.1.fits",
@@ -69,7 +69,7 @@ image_sub_filenames_pipe = {
 def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgrb2/NB/data_reprojected/'):
     print(f"Making PNGs for {target_filter}")
 
-    png_path = f'/orange/adamginsburg/jwst/sgrb2/pngs_{target_filter[1:-1]}'
+    png_path = f'/orange/adamginsburg/jwst/sgrb2/NB/pngsNB_{target_filter[1:-1]}'
     os.makedirs(png_path, exist_ok=True)
 
     tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))

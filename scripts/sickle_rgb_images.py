@@ -14,7 +14,7 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from PIL import Image
-from jwst_rgb import save_rgb
+from jwst_rgb.save_rgb import save_rgb
 
 # Updated image filenames for Sickle data with project code 3958 - MIRI and NIRCAM observations
 image_filenames_pipe = {

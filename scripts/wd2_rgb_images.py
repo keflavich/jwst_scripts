@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 
-from jwst_rgb import save_rgb
+from jwst_rgb.save_rgb import save_rgb
 
 
 def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:

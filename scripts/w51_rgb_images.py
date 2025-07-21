@@ -11,7 +11,7 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from PIL import Image
-from jwst_rgb import save_rgb
+from jwst_rgb.save_rgb import save_rgb
 
 
 
