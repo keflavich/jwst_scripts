@@ -69,7 +69,7 @@ image_sub_filenames_pipe = {
 def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgrb2/NB/data_reprojected/'):
     print(f"Making PNGs for {target_filter}")
 
-    png_path = f'/orange/adamginsburg/jwst/sgrb2/NB/pngsNB_{target_filter[1:-1]}'
+    png_path = f'/orange/adamginsburg/jwst/sgrb2/pngs_{target_filter[1:-1]}'
     os.makedirs(png_path, exist_ok=True)
 
     tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
