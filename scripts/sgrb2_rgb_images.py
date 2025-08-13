@@ -294,6 +294,40 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log.png', avm=AVM, original_data=bgr_212_405_466)
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=bgr_212_405_466)
 
+    rgb = np.array([
+        fits.getdata(repr_image_filenames['f2550w']),
+        fits.getdata(repr_image_filenames['f770w']),
+        fits.getdata(repr_image_filenames['f480m'])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
+
+    rgb = np.array([
+        fits.getdata(repr_image_filenames['f2550w']),
+        fits.getdata(repr_image_filenames['f770w']),
+        fits.getdata(repr_image_sub_filenames['f405n-f410m'])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-405410.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-405410_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
+
 def main():
     for target_filter in ('f150w', 'f466n', ):
         make_pngs(target_filter)

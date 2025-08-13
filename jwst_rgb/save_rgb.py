@@ -6,7 +6,8 @@ import shutil
 from PIL import Image
 
 
-def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None):
+def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None, flip_alma=False,
+             transpose=Image.ROTATE_180):
     img = (img*256).clip(0, 255).astype('uint8')
 
     # Create alpha channel for transparency
@@ -18,7 +19,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
         for i in range(3):
             if i < original_data.shape[2]:
                 blank_mask = (np.isnan(original_data[:,:,i]) |
-                             (np.abs(original_data[:,:,i]) < 1e-10))
+                             (np.abs(original_data[:,:,i]) < 1e-5))
                 alpha[blank_mask] = 0
 
     # Apply flip to alpha channel to match image
@@ -32,7 +33,9 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
         contour_mask = contour_mask1 ^ contour_mask
 
         # Apply flip to contour mask to match image
-        contour_mask = contour_mask[::flip,:]
+        if flip_alma:
+            # but apparently this is backward, at least in the case of W51
+            contour_mask = contour_mask[::flip,:]
 
         for i in range(3):
             img[contour_mask, i] = 255 - img[contour_mask, i]
@@ -41,7 +44,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
     img_rgba = np.dstack((img[::flip,:,:], alpha))
     img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
     # empirical: 180 degree rotation required.
-    flip_img = img_pil.transpose(Image.ROTATE_180)
+    flip_img = img_pil.transpose(transpose)
     flip_img.save(filename)
 
     if avm is not None:
@@ -54,7 +57,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
     # Save as JPEG without transparency (JPEG doesn't support alpha channel)
     filename_jpg = filename.replace('.png', '.jpg')
     img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
-    img_rgb = img_rgb.transpose(Image.ROTATE_180)
+    img_rgb = img_rgb.transpose(transpose)
     img_rgb.save(filename_jpg, format='JPEG',
                  quality=95,
                  progressive=True)
