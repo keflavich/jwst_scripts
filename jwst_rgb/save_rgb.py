@@ -1,13 +1,35 @@
 import numpy as np
 import PIL
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_dilation, label
 import os
 import shutil
 from PIL import Image
 
 
-def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, original_data=None, flip_alma=False,
-             transpose=Image.ROTATE_180):
+def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
+             original_data=None, flip_alma=False,
+             transpose=Image.ROTATE_180, verbose=True):
+    """
+    Save an RGB image to a PNG and a JPG file with embedded AVM metadata.
+
+    Warning: the flipping conventions make almost no sense.  You'll probably
+    have to try every combination of flipping and rotation imaginable to get it
+    right, just like with a USB stick
+
+    Parameters
+    ----------
+    img : array-like
+        The image data to save.
+    filename : str
+        The filename to save the image to.  Will have both .png and .jpg extensions.
+    avm : pyavm.AVM
+        The AVM to embed in the image.
+    flip : int, optional
+        The flip direction to apply to the image.
+    alma_data : array-like, optional
+    """
+    if verbose:
+        print(f"Saving RGB image to {filename}")
     img = (img*256).clip(0, 255).astype('uint8')
 
     # Create alpha channel for transparency
@@ -62,4 +84,28 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None, 
                  quality=95,
                  progressive=True)
 
+    if verbose:
+        print(f"Saved {filename} and {filename_jpg}")
+
     return img_pil
+
+
+def fill_nan(data):
+    mask_nan = np.isnan(data)
+    if not mask_nan.any():
+        return data
+
+    labeled, num_labels = label(mask_nan)
+    if num_labels <= 1:
+        return data
+
+    counts = np.bincount(labeled.ravel())
+    if counts.size == 0:
+        return data
+    counts[0] = 0  # ignore real signal
+    largest_label = counts.argmax()
+
+    small_islands = mask_nan & (labeled != largest_label)
+    data[small_islands] = np.nanmax(data)
+
+    return data

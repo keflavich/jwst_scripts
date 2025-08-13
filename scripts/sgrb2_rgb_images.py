@@ -15,6 +15,9 @@ from astropy.wcs import WCS
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb #NB: brought the function back with some modifications to keep nans white.
+from jwst_rgb.save_rgb import fill_nan
+
+
 # def save_rgb(img, filename, avm=None, flip=-1):
 
 #     nan_mask = ~np.isfinite(img).all(axis=2)
@@ -268,6 +271,7 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     print("Creating BGR: 212, 405, 466")
     f212_data = fits.getdata(repr_image_filenames['f212n'])
 
+
     # BGR arrangement: Blue=212, Green=405, Red=466
     bgr_212_405_466 = np.array([
         f212_data,  # Blue
@@ -295,20 +299,32 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=bgr_212_405_466)
 
     rgb = np.array([
-        fits.getdata(repr_image_filenames['f2550w']),
-        fits.getdata(repr_image_filenames['f770w']),
+        fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
+        fill_nan(fits.getdata(repr_image_filenames['f770w'])),
         fits.getdata(repr_image_filenames['f480m'])
     ]).swapaxes(0,2).swapaxes(0,1)
 
     rgb_scaled = np.array([
         simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
         simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
-        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])
+        simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])
     ]).swapaxes(0,2).swapaxes(0,1)
 
     save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-480.png', avm=AVM, original_data=rgb)
     save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
+
+    ratio_images = {
+        '770d2550': fill_nan(fits.getdata(repr_image_filenames['f770w'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
+        '1280d2550': fill_nan(fits.getdata(repr_image_filenames['f1280w'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
+        '405410d480': fill_nan(fits.getdata(repr_image_sub_filenames['f405n-f410m'])) / fill_nan(fits.getdata(repr_image_filenames['f480m'])),
+        '480d2550': fill_nan(fits.getdata(repr_image_filenames['f480m'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
+        '360d480': fill_nan(fits.getdata(repr_image_filenames['f360m'])) / fill_nan(fits.getdata(repr_image_filenames['f480m'])),
+    }
+    for key, value in ratio_images.items():
+        # write out the ratio images so we can look at them in CARTA
+        writekey = key.replace('d', '_over_')
+        fits.PrimaryHDU(data=value, header=tgt_header).writeto(f'{new_basepath}/{writekey}_reprj_{target_filter}.fits', overwrite=True)
 
 
     rgb = np.array([
@@ -326,10 +342,70 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-405410.png', avm=AVM, original_data=rgb)
     save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_2550-770-405410_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
+    rgb = np.array([
+        ratio_images['770d2550'],
+        ratio_images['1280d2550'],
+        ratio_images['405410d480'],
+    ]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.95)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=2, max_percent=99.995)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-1280d2550-405410d480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-1280d2550-405410d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+    rgb = np.array([
+        ratio_images['770d2550'],
+        ratio_images['480d2550'],
+        ratio_images['405410d480'],
+    ]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.95)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=0.5, max_percent=95)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-405410d480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-405410d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+    rgb = np.array([
+        ratio_images['770d2550'],
+        ratio_images['480d2550'],
+        ratio_images['360d480'],
+    ]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-360d480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-360d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+    rgb = np.array([
+        fits.getdata((repr_image_sub_filenames['f480m-f360m'])),
+        fits.getdata((repr_image_sub_filenames['f410m-f405n'])),
+        fits.getdata((repr_image_sub_filenames['f405n-f410m'])),
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    rgb_scaled = np.array([
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_480m360-410m405-405m410.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_480m360-410m405-405m410_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
+
+
 
 
 def main():
-    for target_filter in ('f150w', 'f466n', ):
+    for target_filter in ('f466n', 'f150w', ):
         make_pngs(target_filter)
 
 if __name__ == '__main__':
