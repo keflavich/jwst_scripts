@@ -1,0 +1,239 @@
+from astropy.io import fits
+import string
+import numpy as np
+from astropy.visualization import simple_norm
+import pylab as plt
+from astropy import wcs
+import os
+from reproject import reproject_interp
+import reproject
+import PIL
+import pyavm
+import shutil
+from typing import Dict, Tuple, Optional
+from pathlib import Path
+from PIL import Image
+
+
+from jwst_rgb.save_rgb import save_rgb
+
+
+def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:
+    """
+    Scale an image using the specified stretch function.
+
+    Args:
+        img: Input image array
+        stretch: Stretch function ('asinh' or 'log')
+        min_percent: Minimum percentile for scaling
+        max_percent: Maximum percentile for scaling
+
+    Returns:
+        Scaled image array
+    """
+    return simple_norm(img, stretch=stretch, min_percent=min_percent, max_percent=max_percent)(img)
+
+
+def fix_nan(img: np.ndarray) -> np.ndarray:
+    img[np.isnan(img)] = np.nanmax(img)
+    return img
+
+
+def create_rgb_image(filenames: Dict[str, str], red_key: str = 'f1130w', green_key: str = 'f1000w', blue_key: str = 'f770w', stretch: str = 'asinh', max_percent: int = 99, nan_to_max: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Create an RGB image from three FITS files.
+
+    Args:
+        filenames: Dictionary mapping color channels to FITS filenames
+        stretch: Stretch function to apply ('asinh' or 'log')
+
+    Returns:
+        Tuple of (scaled RGB image array, original RGB image array)
+    """
+    assert isinstance(filenames, dict)
+    if nan_to_max:
+        rgb_original = np.array([
+            fits.getdata(filenames[red_key]),
+            fits.getdata(filenames[green_key]),
+            fits.getdata(filenames[blue_key])
+        ]).swapaxes(0,2).swapaxes(0,1)
+
+        rgb = np.array([
+            fix_nan(fits.getdata(filenames[red_key])),
+            fix_nan(fits.getdata(filenames[green_key])),
+            fix_nan(fits.getdata(filenames[blue_key]))
+        ]).swapaxes(0,2).swapaxes(0,1)
+    else:
+        rgb_original = np.array([
+            fits.getdata(filenames[red_key]),
+            fits.getdata(filenames[green_key]),
+            fits.getdata(filenames[blue_key])
+        ]).swapaxes(0,2).swapaxes(0,1)
+
+        rgb = np.array([
+            np.nan_to_num(fits.getdata(filenames[red_key])),
+            np.nan_to_num(fits.getdata(filenames[green_key])),
+            np.nan_to_num(fits.getdata(filenames[blue_key]))
+        ]).swapaxes(0,2).swapaxes(0,1)
+
+    print(f"Max percent being used in create_rgb_image={max_percent}")
+
+    rgb_scaled = np.array([
+        scale_image(rgb[:,:,0], stretch=stretch, max_percent=max_percent),
+        scale_image(rgb[:,:,1], stretch=stretch, max_percent=max_percent),
+        scale_image(rgb[:,:,2], stretch=stretch, max_percent=max_percent)
+    ]).swapaxes(0,2).swapaxes(0,1)
+
+    return rgb_scaled, rgb_original
+
+
+def reproject_images(image_filenames: Dict[str, str], target_header: fits.Header,
+                    output_dir: str, repr_suffix: str = '') -> Dict[str, str]:
+    """
+    Reproject images to match the target header.
+
+    Args:
+        image_filenames: Dictionary mapping filter names to input FITS files
+        target_header: Target FITS header for reprojection
+        output_dir: Directory for reprojected files
+
+    Returns:
+        Dictionary mapping filter names to reprojected filenames
+    """
+    output_filenames = {}
+
+    for filtername, filename in image_filenames.items():
+        output_filename = os.path.join(output_dir,
+                                     os.path.basename(filename).replace("i2d", f"i2d_reprj_{repr_suffix}"))
+
+        if not os.path.exists(output_filename):
+            print(f"Reprojecting {filtername} {filename} to {output_filename}")
+            result, _ = reproject.reproject_interp(filename, target_header, hdu_in='SCI')
+            hdu = fits.PrimaryHDU(data=result, header=target_header)
+            hdu.writeto(output_filename, overwrite=True)
+
+        output_filenames[filtername] = output_filename
+
+    return output_filenames
+
+
+def create_and_save_rgb_combination(repr_filenames: Dict[str, str], blue_key: str, green_key: str, red_key: str,
+                                  stretch: str, max_percent: int, png_path: str, avm: pyavm.AVM) -> None:
+    """
+    Create and save an RGB image combination from three wavelength bands.
+
+    Args:
+        repr_filenames: Dictionary mapping filter names to reprojected FITS files
+        key1: Red channel filter key
+        key2: Green channel filter key
+        key3: Blue channel filter key
+        stretch: Stretch function to apply ('asinh' or 'log')
+        max_percent: Maximum percentile for scaling
+        png_path: Directory to save the output PNG
+        avm: AVM metadata to embed in the image
+    """
+    rgb_scaled, rgb_original = create_rgb_image(repr_filenames, red_key=red_key, green_key=green_key, blue_key=blue_key,
+                                             stretch=stretch, max_percent=max_percent, nan_to_max=False)
+
+    rgb_scaled[rgb_scaled.mean(axis=2) == 255, :] = 0
+
+    # Handle filter names that may contain 'sub'
+    def extract_wavelength(filter_key):
+        if 'sub' in filter_key:
+            return filter_key[1:].replace('sub', '')  # Remove 'f' prefix and 'sub' suffix
+        else:
+            return filter_key[1:-1]  # Remove 'f' prefix and 'w'/'n'/'m' suffix
+
+    wl1_str = extract_wavelength(blue_key)
+    wl2_str = extract_wavelength(green_key)
+    wl3_str = extract_wavelength(red_key)
+
+    # Check if any filters contain 'sub' for filename modification
+    has_sub = 'sub' in blue_key or 'sub' in green_key or 'sub' in red_key
+
+    try:
+        wl1 = int(wl1_str)
+        wl2 = int(wl2_str)
+        wl3 = int(wl3_str)
+        maxwl = max(wl1, wl2, wl3)
+        if maxwl < 30000: # ignore the 'sub' values
+            assert wl1 < wl2 < wl3
+
+        # Create filename with wavelength numbers
+        if maxwl < 500:
+            base_filename = f'wd2_nircam_RGB_{wl3}-{wl2}-{wl1}'
+        else:
+            base_filename = f'wd2_RGB_{wl3}-{wl2}-{wl1}'
+
+    except ValueError:
+        # If we can't convert to int (e.g., due to 'sub' filters), use filter names directly
+        base_filename = f'wd2_RGB_{red_key}-{green_key}-{blue_key}'
+
+    # Add 'sub' indicator if any filter contains 'sub'
+    if has_sub:
+        base_filename += '_sub'
+
+    output_filename = f'{base_filename}_{stretch}_max{max_percent}.png'
+
+    save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm, original_data=rgb_original)
+
+
+def main():
+    # Configuration
+    base_path = '/orange/adamginsburg/jwst/wd2'
+    data_path = os.path.join(base_path, 'data_reprojected')
+    png_path = os.path.join(base_path, 'pngs')
+
+    # Input filenames
+    miri_image_filenames = {
+    }
+    miri_image_filenames = {k: os.path.join(base_path, v) for k, v in miri_image_filenames.items()}
+
+    nircam_image_filenames = {
+        "f210m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f210m/jw02640-o001_t003_nircam_clear-f210m_i2d.fits",
+        "f140m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f140m/jw02640-o001_t003_nircam_clear-f140m_i2d.fits",
+        "f405n": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_f405n-f444w/jw02640-o001_t003_nircam_f405n-f444w_i2d.fits",
+        "f162m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_f150w-f162m/jw02640-o001_t003_nircam_f150w2-f162m_i2d.fits",
+        "f187n": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f187n/jw02640-o001_t003_nircam_clear-f187n_i2d.fits",
+        "f182m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f182m/jw02640-o001_t003_nircam_clear-f182m_i2d.fits",
+        "f300m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f300m/jw02640-o001_t003_nircam_clear-f300m_i2d.fits",
+        "f335m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f335m/jw02640-o001_t003_nircam_clear-f335m_i2d.fits",
+    }
+    nircam_image_filenames = {k: os.path.join(base_path, v) for k, v in nircam_image_filenames.items()}
+
+    target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f182m']), ext=('SCI', 1))
+    avm = pyavm.AVM.from_header(target_header)
+
+    # Reproject images
+    repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f182m')
+    keylist = sorted(list(repr_filenames_nircam.keys()), key=lambda x: int(x[1:-1].strip(string.ascii_letters)))
+    repr_filenames_miri = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f182m')
+    keylist = keylist + sorted(list(repr_filenames_miri.keys()), key=lambda x: int(x[1:-1]))
+
+    repr_filenames = {**repr_filenames_nircam, **repr_filenames_miri}
+
+    # Create and save RGB images with different stretches
+    for ii in range(len(keylist)-3):
+        for stretch in ['asinh', 'log']:
+            for max_percent in [99, 99.5]:
+                key1 = keylist[ii]
+                key2 = keylist[ii+1]
+                key3 = keylist[ii+2]
+                create_and_save_rgb_combination(repr_filenames, blue_key=key1, green_key=key2, red_key=key3, stretch=stretch, max_percent=max_percent, png_path=png_path, avm=avm)
+
+                # key1 = keylist[ii]
+                # key2 = keylist[ii+1]
+                # key3 = keylist[ii+2]
+                # create_and_save_rgb_combination(repr_filenames, red_key=key1, green_key=key2, blue_key=key3, stretch=stretch, max_percent=max_percent, png_path=png_path, avm=avm)
+
+
+                if ii+4 < len(keylist):
+                    key1 = keylist[ii]
+                    key2 = keylist[ii+2]
+                    key3 = keylist[ii+4]
+                    create_and_save_rgb_combination(repr_filenames, blue_key=key1, green_key=key2, red_key=key3, stretch=stretch, max_percent=max_percent, png_path=png_path, avm=avm)
+
+
+
+if __name__ == '__main__':
+    main()

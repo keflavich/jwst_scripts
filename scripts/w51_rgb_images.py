@@ -36,8 +36,9 @@ image_sub_filenames = {
     "f182m-f187n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f182m_minus_f187n.fits",
     "f187n-f182m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f187n_minus_f182m.fits",
     "f210m-f182m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f210m_minus_f182m_unscaled.fits",
-    "f210m-f212n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f210m_minus_f212n.fits",
-    "f212n-f210m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f212n_minus_f210m.fits",
+    # we don't have 212n....
+    #"f210m-f212n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f210m_minus_f212n.fits",
+    #"f212n-f210m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f212n_minus_f210m.fits",
     "f405n-f410m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f405n_minus_f410m.fits",
     "f410m-f405n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f410m_minus_f405n.fits",
     "f360m-f182m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f360m_minus_f182m_unscaled.fits",
@@ -46,6 +47,21 @@ image_sub_filenames = {
     "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_unscaled.fits",
     "f335m-f2100w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f335_f2100_ratio.fits",
     "f770w-f2100w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f770_f2100_ratio.fits",
+    "f187n-f405n": "/orange/adamginsburg/jwst/w51/filter_subtractions/paa_bra_ratio_non_neg.fits",
+    "f360m-f335m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f360m_minus_f335m_scaled_BB.fits",
+    "f335m-f480m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f335_f480_ratio.fits",
+    "f405n-f480m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f405_f480_ratio.fits",
+    "f335m-f405n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f335_f405_ratio.fits",
+    "f560w-f480m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f560_f480_ratio.fits",
+    "f140m_kuband": "/orange/adamginsburg/jwst/w51/filter_subtractions/f140m_kuband_ratio.fits",
+    "f1280w-f2100w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f1280_f2100_ratio.fits",
+    "f335m-f2100w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f335_f2100_ratio.fits",
+    "f770w-f2100w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f770_f2100_ratio.fits",
+    "f335m-f560w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f335_f560_ratio.fits",
+    "f770w-f560w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f770_f560_ratio.fits",
+    "f182m-f162m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f182m_minus_f162m_scaled_BB.fits",
+    "f162m-f140m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f162m_minus_f140m_scaled_BB.fits",
+    "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_scaled_BB.fits
 }
 
 
@@ -364,6 +380,47 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
                            simple_norm(rgb[:,:,1], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
                            simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-405m410-187m182_log.png', avm=AVM, original_data=rgb)
+
+    print(repr_image_sub_filenames['f335m-f2100w'], repr_image_sub_filenames['f480m-f360m'], repr_image_sub_filenames['f405n-f410m'])
+    rgb = np.array([fits.getdata(repr_image_sub_filenames['f335m-f2100w']),
+                    fits.getdata(repr_image_sub_filenames['f480m-f360m']),
+                    fits.getdata(repr_image_sub_filenames['f405n-f410m'])]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_335r2100-480m360-405m410_scaled.png', avm=AVM, original_data=rgb)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_335r2100-480m360-405m410_log.png', avm=AVM, original_data=rgb)
+
+    print(repr_image_sub_filenames['f480m-f360m'], repr_image_sub_filenames['f410m-f405n'], repr_image_sub_filenames['f405n-f410m'])
+    rgb = np.array([fits.getdata(repr_image_sub_filenames['f480m-f360m']),
+                    fits.getdata(repr_image_sub_filenames['f410m-f405n']),
+                    fits.getdata(repr_image_sub_filenames['f405n-f410m'])]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480m360-410m405-405m410_scaled.png', avm=AVM, original_data=rgb)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480m360-410m405-405m410_log.png', avm=AVM, original_data=rgb)
+
+    # TODO: show 162m, 212n, and 480m
+    # print(repr_image_sub_filenames['f480m-f360m'], repr_image_sub_filenames['f210m-f182m'], repr_image_sub_filenames['f162'])
+    # rgb = np.array([fits.getdata(repr_image_sub_filenames['f480m-f360m']),
+    #                 fits.getdata(repr_image_sub_filenames['f210m-f182m']),
+    #                 fits.getdata(repr_image_sub_filenames['f405n-f410m'])]).swapaxes(0,2).swapaxes(0,1)
+    # rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,0]),
+    #                        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,1]),
+    #                        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    # save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480m360-210m182-405m410_scaled.png', avm=AVM, original_data=rgb)
+    # rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+    #                        simple_norm(rgb[:,:,1], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+    #                        simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    # save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480m360-210m182-405m410_log.png', avm=AVM, original_data=rgb)
+
 
 
 def main():

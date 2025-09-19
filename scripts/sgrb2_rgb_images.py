@@ -56,9 +56,12 @@ image_filenames_pipe = {
     #"f2550w": "/orange/adamginsburg/jwst/sgrb2/mastDownload/JWST/jw05365-o002_t002_miri_f2550w/jw05365-o002_t002_miri_f2550w_i2d.fits",
     # upd Jul 21, 2025, Nazar B.
     # These files have no saturation checks, which make them look nicer for visualizations.
-    "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f770w_i2d.fits",
-    "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f1280w_i2d.fits",
-    "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f2550w_i2d.fits",
+    # "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f770w_i2d.fits",
+    # "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f1280w_i2d.fits",
+    # "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f2550w_i2d.fits",
+    "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F1280W_mosaic_i2d_for_catalogs.fits",
+    "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F2550W_mosaic_i2d_for_catalogs.fits",
+    "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F770W_mosaic_i2d_for_catalogs.fits",
 }
 
 image_sub_filenames_pipe = {
@@ -348,8 +351,8 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
         ratio_images['405410d480'],
     ]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([
-        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.95)(rgb[:,:,0]),
-        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=2, max_percent=99.995)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', vmin=0.08, max_percent=99.5)(rgb[:,:,1]),
         simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
     ]).swapaxes(0,2).swapaxes(0,1)
 
@@ -362,13 +365,13 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
         ratio_images['405410d480'],
     ]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([
-        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.95)(rgb[:,:,0]),
-        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=0.5, max_percent=95)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,1]),
         simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
     ]).swapaxes(0,2).swapaxes(0,1)
 
-    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-405410d480.png', avm=AVM, original_data=rgb)
-    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-405410d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d2550-405410d480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d2550-405410d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
     rgb = np.array([
         ratio_images['770d2550'],
@@ -381,8 +384,8 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
         simple_norm(rgb[:,:,2], stretch='asinh', min_percent=0.5, max_percent=99.5)(rgb[:,:,2])
     ]).swapaxes(0,2).swapaxes(0,1)
 
-    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-360d480.png', avm=AVM, original_data=rgb)
-    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d25550-360d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d2550-360d480.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/SgrB2_RGB_770d2550-480d2550-360d480_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
     rgb = np.array([
         fits.getdata((repr_image_sub_filenames['f480m-f360m'])),

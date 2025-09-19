@@ -17,8 +17,8 @@ from jwst_rgb.save_rgb import save_rgb
 
 # Updated image filenames for Arches Quintuplet data with project code 2045
 image_filenames_pipe = {
-    "f212n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o001_t001_nircam_clear-f212n/jw02045-o001_t001_nircam_clear-f212n_i2d.fits",
-    "f323n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o001_t001_nircam_f322w2-f323n/jw02045-o001_t001_nircam_f322w2-f323n_i2d.fits",
+    "f212n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o003_t002_nircam_clear-f212n/jw02045-o003_t002_nircam_clear-f212n_i2d.fits",
+    "f323n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o003_t002_nircam_f322w2-f323n/jw02045-o003_t002_nircam_f322w2-f323n_i2d.fits",
 }
 
 # No subtracted images available for arches_quintuplet initially
