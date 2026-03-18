@@ -94,6 +94,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     if hips:
         if overwrite and os.path.exists(filename.replace('.png', '_hips')):
             shutil.rmtree(filename.replace('.png', '_hips'))
+        print("Reprojecting to HiPS...")
         reproject_to_hips(filename,
             level=None,
             reproject_function=reproject_interp,
@@ -123,7 +124,29 @@ def fill_nan(data):
     counts[0] = 0  # ignore real signal
     largest_label = counts.argmax()
 
-    small_islands = mask_nan & (labeled != largest_label)
-    data[small_islands] = np.nanmax(data)
+    faint_threshold = np.nanpercentile(data, 90)
+    bright_threshold = np.nanpercentile(data, 99.)
+    faint_value = np.nanpercentile(data, 1)
+    datamax = np.nanmax(data)
+
+    # check what the surroundings of our island looks like and decide how to replace them.  The expectation is that this is mostly infilling stars, but it _could_ infill more extended regions.
+    for label_id in tqdm(range(1, num_labels + 1), desc='Filling NaN: '):
+        if label_id == largest_label:
+            continue
+        mask = labeled == label_id
+
+        dilated_mask = binary_dilation(mask, iterations=2)
+        border_mask = dilated_mask & ~mask
+
+        border_values = data[border_mask]
+
+        median_value = np.nanmedian(border_values)
+
+        if median_value < faint_threshold:
+            data[mask] = faint_value
+        elif median_value > bright_threshold:
+            data[mask] = datamax
+        else:
+            data[mask] = median_value
 
     return data
