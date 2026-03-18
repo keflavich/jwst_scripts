@@ -1,14 +1,17 @@
 import numpy as np
 import PIL
 from scipy.ndimage import binary_dilation, label
+from reproject.hips import reproject_to_hips
+from reproject import reproject_interp
 import os
 import shutil
 from PIL import Image
+from tqdm import tqdm
 
 
 def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
              original_data=None, flip_alma=False,
-             transpose=Image.ROTATE_180, verbose=True):
+             transpose=Image.ROTATE_180, verbose=True, hips=True, overwrite=True):
     """
     Save an RGB image to a PNG and a JPG file with embedded AVM metadata.
 
@@ -66,7 +69,10 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     img_rgba = np.dstack((img[::flip,:,:], alpha))
     img_pil = PIL.Image.fromarray(img_rgba, mode='RGBA')
     # empirical: 180 degree rotation required.
-    flip_img = img_pil.transpose(transpose)
+    if transpose is not None:
+        flip_img = img_pil.transpose(transpose)
+    else:
+        flip_img = img_pil
     flip_img.save(filename)
 
     if avm is not None:
@@ -79,10 +85,22 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     # Save as JPEG without transparency (JPEG doesn't support alpha channel)
     filename_jpg = filename.replace('.png', '.jpg')
     img_rgb = PIL.Image.fromarray(img[::flip,:,:], mode='RGB')
-    img_rgb = img_rgb.transpose(transpose)
+    if transpose is not None:
+        img_rgb = img_rgb.transpose(transpose)
     img_rgb.save(filename_jpg, format='JPEG',
                  quality=95,
                  progressive=True)
+
+    if hips:
+        if overwrite and os.path.exists(filename.replace('.png', '_hips')):
+            shutil.rmtree(filename.replace('.png', '_hips'))
+        reproject_to_hips(filename,
+            level=None,
+            reproject_function=reproject_interp,
+            output_directory=filename.replace('.png', '_hips'),
+            threads=8,
+            coord_system_out='galactic',
+            progress_bar=tqdm)
 
     if verbose:
         print(f"Saved {filename} and {filename_jpg}")

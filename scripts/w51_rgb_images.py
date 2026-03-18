@@ -61,7 +61,7 @@ image_sub_filenames = {
     "f770w-f560w": "/orange/adamginsburg/jwst/w51/filter_subtractions/f770_f560_ratio.fits",
     "f182m-f162m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f182m_minus_f162m_scaled_BB.fits",
     "f162m-f140m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f162m_minus_f140m_scaled_BB.fits",
-    "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_scaled_BB.fits
+    "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_scaled_BB.fits",
 }
 
 

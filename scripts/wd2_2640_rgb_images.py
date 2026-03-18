@@ -14,6 +14,7 @@ from typing import Dict, Tuple, Optional
 from pathlib import Path
 from PIL import Image
 
+from reproject.mosaicking import find_optimal_celestial_wcs, reproject_and_coadd
 
 from jwst_rgb.save_rgb import save_rgb
 
@@ -161,13 +162,13 @@ def create_and_save_rgb_combination(repr_filenames: Dict[str, str], blue_key: st
 
         # Create filename with wavelength numbers
         if maxwl < 500:
-            base_filename = f'wd2_nircam_RGB_{wl3}-{wl2}-{wl1}'
+            base_filename = f'wd2_2640_nircam_RGB_{wl3}-{wl2}-{wl1}'
         else:
-            base_filename = f'wd2_RGB_{wl3}-{wl2}-{wl1}'
+            base_filename = f'wd2_2640_RGB_{wl3}-{wl2}-{wl1}'
 
     except ValueError:
         # If we can't convert to int (e.g., due to 'sub' filters), use filter names directly
-        base_filename = f'wd2_RGB_{red_key}-{green_key}-{blue_key}'
+        base_filename = f'wd2_2640_RGB_{red_key}-{green_key}-{blue_key}'
 
     # Add 'sub' indicator if any filter contains 'sub'
     if has_sub:
@@ -181,8 +182,10 @@ def create_and_save_rgb_combination(repr_filenames: Dict[str, str], blue_key: st
 def main():
     # Configuration
     base_path = '/orange/adamginsburg/jwst/wd2'
-    data_path = os.path.join(base_path, 'data_reprojected')
-    png_path = os.path.join(base_path, 'pngs')
+    data_path = os.path.join(base_path, 'data_reprojected_2640')
+    png_path = os.path.join(base_path, 'pngs_2640')
+    os.makedirs(data_path, exist_ok=True)
+    os.makedirs(png_path, exist_ok=True)
 
     # Input filenames
     miri_image_filenames = {
@@ -190,24 +193,38 @@ def main():
     miri_image_filenames = {k: os.path.join(base_path, v) for k, v in miri_image_filenames.items()}
 
     nircam_image_filenames = {
-        "f210m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f210m/jw02640-o001_t003_nircam_clear-f210m_i2d.fits",
-        "f140m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f140m/jw02640-o001_t003_nircam_clear-f140m_i2d.fits",
-        "f405n": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_f405n-f444w/jw02640-o001_t003_nircam_f405n-f444w_i2d.fits",
-        "f162m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_f150w-f162m/jw02640-o001_t003_nircam_f150w2-f162m_i2d.fits",
-        "f187n": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f187n/jw02640-o001_t003_nircam_clear-f187n_i2d.fits",
-        "f182m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f182m/jw02640-o001_t003_nircam_clear-f182m_i2d.fits",
-        "f300m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f300m/jw02640-o001_t003_nircam_clear-f300m_i2d.fits",
-        "f335m": "wd2/mastDownload/JWST/jw02640-o001_t003_nircam_clear-f335m/jw02640-o001_t003_nircam_clear-f335m_i2d.fits",
+        "f140m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f140m/jw02640-o001_t003_nircam_clear-f140m_i2d.fits",
+        "f405n": "mastDownload/JWST/jw02640-o001_t003_nircam_f405n-f444w/jw02640-o001_t003_nircam_f405n-f444w_i2d.fits",
+        "f466n": "mastDownload/JWST/jw02640-o001_t003_nircam_f444w-f466n/jw02640-o001_t003_nircam_f444w-f466n_i2d.fits",
+        "f162m": "mastDownload/JWST/jw02640-o001_t003_nircam_f150w2-f162m/jw02640-o001_t003_nircam_f150w2-f162m_i2d.fits",
+        "f182m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f182m/jw02640-o001_t003_nircam_clear-f182m_i2d.fits",
+        "f300m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f300m/jw02640-o001_t003_nircam_clear-f300m_i2d.fits",
+        "f335m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f335m/jw02640-o001_t003_nircam_clear-f335m_i2d.fits",
+        "f360m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f360m/jw02640-o001_t003_nircam_clear-f360m_i2d.fits",
+        "f210m": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f210m/jw02640-o001_t003_nircam_clear-f210m_i2d.fits",
+        "f187n": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f187n/jw02640-o001_t003_nircam_clear-f187n_i2d.fits",
+        "f444w": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f444w/jw02640-o001_t003_nircam_clear-f444w_i2d.fits",
+        "f115w": "mastDownload/JWST/jw02640-o001_t003_nircam_clear-f115w/jw02640-o001_t003_nircam_clear-f115w_i2d.fits",
     }
     nircam_image_filenames = {k: os.path.join(base_path, v) for k, v in nircam_image_filenames.items()}
 
-    target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f182m']), ext=('SCI', 1))
+    target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f140m']), ext=('SCI', 1))
+
+    wcs_out, shape_out = find_optimal_celestial_wcs(
+        [nircam_image_filenames[x] for x in ['f140m', 'f187n', 'f115w', 'f210m']],
+        hdu_in='SCI'
+    )
+    target_header = wcs_out.to_header()
+    target_header['NAXIS'] = 2
+    target_header['NAXIS1'] = shape_out[1]
+    target_header['NAXIS2'] = shape_out[0]
+
     avm = pyavm.AVM.from_header(target_header)
 
     # Reproject images
-    repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f182m')
+    repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f140m_and_f210m', shape_out=shape_out)
     keylist = sorted(list(repr_filenames_nircam.keys()), key=lambda x: int(x[1:-1].strip(string.ascii_letters)))
-    repr_filenames_miri = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f182m')
+    repr_filenames_miri = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f140m_and_f210m', shape_out=shape_out)
     keylist = keylist + sorted(list(repr_filenames_miri.keys()), key=lambda x: int(x[1:-1]))
 
     repr_filenames = {**repr_filenames_nircam, **repr_filenames_miri}
