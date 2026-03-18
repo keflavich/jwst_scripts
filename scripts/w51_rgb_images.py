@@ -14,7 +14,6 @@ from PIL import Image
 from jwst_rgb.save_rgb import save_rgb, fill_nan
 
 
-
 image_filenames ={
     "f140m": "/orange/adamginsburg/jwst/w51/F140M/pipeline/jw06151-o001_t001_nircam_clear-f140m-merged_i2d.fits",
     "f182m": "/orange/adamginsburg/jwst/w51/F182M/pipeline/jw06151-o001_t001_nircam_clear-f182m-merged_i2d.fits",
@@ -26,11 +25,12 @@ image_filenames ={
     "f405n": "/orange/adamginsburg/jwst/w51/F405N/pipeline/jw06151-o001_t001_nircam_clear-f405n-merged_i2d.fits",
     "f410m": "/orange/adamginsburg/jwst/w51/F410M/pipeline/jw06151-o001_t001_nircam_clear-f410m-merged_i2d.fits",
     "f480m": "/orange/adamginsburg/jwst/w51/F480M/pipeline/jw06151-o001_t001_nircam_clear-f480m-merged_i2d.fits",
-    "f1000w": "/orange/adamginsburg/jwst/w51/F1000W/pipeline/jw06151-o002_t001_miri_f1000w_i2d.fits",
-    "f1280w": "/orange/adamginsburg/jwst/w51/F1280W/pipeline/jw06151-o002_t001_miri_f1280w_i2d.fits",
-    "f2100w": "/orange/adamginsburg/jwst/w51/F2100W/pipeline/jw06151-o002_t001_miri_f2100w_i2d.fits",
-    "f560w": "/orange/adamginsburg/jwst/w51/F560W/pipeline/jw06151-o002_t001_miri_f560w_i2d.fits",
-    "f770w": "/orange/adamginsburg/jwst/w51/F770W/pipeline/jw06151-o002_t001_miri_f770w_i2d.fits",
+    # 2026-03-18 note: MIRI images in subdirectory have saturation recovery disabled.
+    "f1000w": "/orange/adamginsburg/jwst/w51/F1000W//jw06151-o002_t001_miri_f1000w_i2d.fits",
+    "f1280w": "/orange/adamginsburg/jwst/w51/F1280W//jw06151-o002_t001_miri_f1280w_i2d.fits",
+    "f2100w": "/orange/adamginsburg/jwst/w51/F2100W//jw06151-o002_t001_miri_f2100w_i2d.fits",
+    "f560w": "/orange/adamginsburg/jwst/w51/F560W//jw06151-o002_t001_miri_f560w_i2d.fits",
+    "f770w": "/orange/adamginsburg/jwst/w51/F770W//jw06151-o002_t001_miri_f770w_i2d.fits",
 }
 image_sub_filenames = {
     "f182m-f187n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f182m_minus_f187n.fits",
@@ -117,6 +117,7 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     print(repr_image_filenames)
     print(repr_image_sub_filenames)
 
+
     rgb = np.array([
         fill_nan(fits.getdata(repr_image_filenames['f210m'])),
         fill_nan(fits.getdata(repr_image_filenames['f162m'])),
@@ -195,6 +196,15 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-405-187.png', avm=AVM, original_data=rgb)
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-405-187_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
+    rgb = np.array([fill_nan(fits.getdata(repr_image_filenames['f480m'])),
+                    fill_nan(fits.getdata(repr_image_filenames['f410m'])),
+                    fill_nan(fits.getdata(repr_image_filenames['f405n']))]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-410-405.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-410-405_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
 
 
 
@@ -261,9 +271,9 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     for f1, f2, f3 in zip (filternames, filternames[1:], filternames[2:]):
         print(f1,f2,f3)
         rgb = np.array([
-            fits.getdata(repr_image_filenames[f1]),
-            fits.getdata(repr_image_filenames[f2]),
-            fits.getdata(repr_image_filenames[f3]),
+            fill_nan(fits.getdata(repr_image_filenames[f1])),
+            fill_nan(fits.getdata(repr_image_filenames[f2])),
+            fill_nan(fits.getdata(repr_image_filenames[f3])),
         ]).swapaxes(0,2).swapaxes(0,1)
         rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
                             simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
@@ -428,4 +438,5 @@ def main():
         make_pngs(target_filter)
 
 if __name__ == '__main__':
+    pass
     main()

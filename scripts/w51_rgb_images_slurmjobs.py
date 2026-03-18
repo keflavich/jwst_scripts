@@ -14,6 +14,7 @@ import subprocess
 import pickle
 import tempfile
 import sys
+import hashlib
 
 
 
@@ -28,11 +29,12 @@ image_filenames ={
     "f405n": "/orange/adamginsburg/jwst/w51/F405N/pipeline/jw06151-o001_t001_nircam_clear-f405n-merged_i2d.fits",
     "f410m": "/orange/adamginsburg/jwst/w51/F410M/pipeline/jw06151-o001_t001_nircam_clear-f410m-merged_i2d.fits",
     "f480m": "/orange/adamginsburg/jwst/w51/F480M/pipeline/jw06151-o001_t001_nircam_clear-f480m-merged_i2d.fits",
-    "f1000w": "/orange/adamginsburg/jwst/w51/F1000W/pipeline/jw06151-o002_t001_miri_f1000w_i2d.fits",
-    "f1280w": "/orange/adamginsburg/jwst/w51/F1280W/pipeline/jw06151-o002_t001_miri_f1280w_i2d.fits",
-    "f2100w": "/orange/adamginsburg/jwst/w51/F2100W/pipeline/jw06151-o002_t001_miri_f2100w_i2d.fits",
-    "f560w": "/orange/adamginsburg/jwst/w51/F560W/pipeline/jw06151-o002_t001_miri_f560w_i2d.fits",
-    "f770w": "/orange/adamginsburg/jwst/w51/F770W/pipeline/jw06151-o002_t001_miri_f770w_i2d.fits",
+    # 2026-03-18 note: MIRI images in subdirectory have saturation recovery disabled.
+    "f1000w": "/orange/adamginsburg/jwst/w51/F1000W//jw06151-o002_t001_miri_f1000w_i2d.fits",
+    "f1280w": "/orange/adamginsburg/jwst/w51/F1280W//jw06151-o002_t001_miri_f1280w_i2d.fits",
+    "f2100w": "/orange/adamginsburg/jwst/w51/F2100W//jw06151-o002_t001_miri_f2100w_i2d.fits",
+    "f560w": "/orange/adamginsburg/jwst/w51/F560W//jw06151-o002_t001_miri_f560w_i2d.fits",
+    "f770w": "/orange/adamginsburg/jwst/w51/F770W//jw06151-o002_t001_miri_f770w_i2d.fits",
 }
 image_sub_filenames = {
     "f182m-f187n": "/orange/adamginsburg/jwst/w51/filter_subtractions/f182m_minus_f187n.fits",
@@ -62,6 +64,9 @@ image_sub_filenames = {
     "f162m-f140m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f162m_minus_f140m_scaled_BB.fits",
     "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_scaled_BB.fits",
 }
+
+
+submitted_rgb_filenames = set()
 
 
 def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51/data_reprojected/'):
@@ -164,6 +169,19 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
             {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
         ],
         'filename': f'{png_path}/w51_RGB_480-405-187.png',
+        'alma_overlay': True,
+        'new_basepath': new_basepath,
+    })
+
+    submit_rgb_job({
+        'target_filter': target_filter,
+        'filters': ['f480m', 'f410m', 'f405n'],
+        'stretches': [
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+        ],
+        'filename': f'{png_path}/w51_RGB_480-410-405.png',
         'alma_overlay': True,
         'new_basepath': new_basepath,
     })
@@ -328,6 +346,41 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
         'new_basepath': new_basepath,
     })
 
+    filternames = sorted(list(image_filenames.keys()),
+                         key=lambda x: int(''.join(filter(str.isdigit, x))))[::-1]
+    print(f"Sorted list of filters: {filternames}")
+
+    for f1, f2, f3 in zip(filternames, filternames[1:], filternames[2:]):
+        f1n = ''.join(filter(str.isdigit, f1))
+        f2n = ''.join(filter(str.isdigit, f2))
+        f3n = ''.join(filter(str.isdigit, f3))
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
 
 def submit_rgb_job(job_spec):
     """
@@ -343,18 +396,32 @@ def submit_rgb_job(job_spec):
         - alma_overlay: bool, whether to add ALMA overlay
         - target_filter: target filter for reprojection
     """
-    # Create a temporary file to store the job spec
-    with tempfile.NamedTemporaryFile(suffix='.pkl', delete=False) as tmp:
-        temp_pkl = tmp.name
-        pickle.dump(job_spec, tmp)
+    filename = job_spec['filename']
+    if filename in submitted_rgb_filenames:
+        print(f"Skipping duplicate RGB job for {filename}")
+        return None
+    submitted_rgb_filenames.add(filename)
+
+    # Create a persistent shared directory for job specs
+    job_spec_dir = '/orange/adamginsburg/jwst/w51/job_specs/'
+    os.makedirs(job_spec_dir, exist_ok=True)
+    
+    # Create a deterministic filename based on job spec content
+    spec_hash = hashlib.md5(str(sorted(job_spec.items())).encode()).hexdigest()[:8]
+    job_name_base = os.path.basename(job_spec['filename']).replace('.png', '')[:15]
+    job_spec_file = os.path.join(job_spec_dir, f'{job_name_base}_{spec_hash}.pkl')
+    
+    # Write job spec to shared directory
+    with open(job_spec_file, 'wb') as f:
+        pickle.dump(job_spec, f)
     
     # Create Python command to execute
     script_path = os.path.abspath(__file__)
-    python_cmd = f"python {script_path} --worker-job {temp_pkl}"
+    python_cmd = f"python {script_path} --worker-job {job_spec_file}"
     
     # Submit SLURM job
     job_name = os.path.basename(job_spec['filename']).replace('.png', '')[:20]
-    log_file = f'/blue/adamginsburg/adamginsburg/logs/w51_quickimages_%j.log'
+    log_file = f'/blue/adamginsburg/adamginsburg/logs/w51_quickimages-{job_name}_%j.log'
     sbatch_cmd = [
         'sbatch',
         f'--job-name={job_name}',
@@ -372,10 +439,11 @@ def submit_rgb_job(job_spec):
     if result.returncode != 0:
         print(f"Error submitting job for {job_spec['filename']}:")
         print(result.stderr)
+        raise ValueError(f"Failed to submit job for {job_spec['filename']}")
     else:
-        print(f"Submitted job for {job_spec['filename']}: {result.stdout.strip()}")
+        print(f"Submitted {job_name} job for {job_spec['filename']}: {result.stdout.strip()}")
     
-    return temp_pkl
+    return job_spec_file
 
 
 def worker_create_rgb(job_spec_file):
@@ -476,10 +544,8 @@ def worker_create_rgb(job_spec_file):
     print(f"Saved {filename}")
     
     # Clean up job spec file
-    try:
+    if os.path.exists(job_spec_file):
         os.remove(job_spec_file)
-    except:
-        pass
 
 
 def main():

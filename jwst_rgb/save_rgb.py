@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
              original_data=None, flip_alma=False,
+             alpha_only_edges=True,
              transpose=Image.ROTATE_180, verbose=True, hips=True, overwrite=True):
     """
     Save an RGB image to a PNG and a JPG file with embedded AVM metadata.
@@ -45,6 +46,16 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
             if i < original_data.shape[2]:
                 blank_mask = (np.isnan(original_data[:,:,i]) |
                              (np.abs(original_data[:,:,i]) < 1e-5))
+                if alpha_only_edges:
+                    labeled, num_labels = label(blank_mask)
+                    edge = np.zeros(blank_mask.shape, dtype=bool)
+                    edge[:1, :] = True
+                    edge[-1:, :] = True
+                    edge[:, :1] = True
+                    edge[:, -1:] = True
+                    labels_to_keep = [(labeled[edge] == label_id).any() for label_id in range(1, num_labels + 1)]
+                    blank_mask = np.isin(labeled, labels_to_keep)
+                        
                 alpha[blank_mask] = 0
 
     # Apply flip to alpha channel to match image
@@ -53,7 +64,6 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     if alma_data is not None and alma_level is not None:
         contour_mask = np.zeros_like(alma_data, dtype=bool)
         contour_mask[alma_data >= alma_level] = True
-        from scipy.ndimage import binary_dilation
         contour_mask1 = binary_dilation(contour_mask)
         contour_mask = contour_mask1 ^ contour_mask
 
@@ -109,8 +119,10 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     return img_pil
 
 
-def fill_nan(data):
+def fill_nan(data, bad_data_min_threshold=1e-5):
     mask_nan = np.isnan(data)
+    if bad_data_min_threshold is not None:
+        mask_nan |= (data < bad_data_min_threshold)
     if not mask_nan.any():
         return data
 
@@ -129,8 +141,10 @@ def fill_nan(data):
     faint_value = np.nanpercentile(data, 1)
     datamax = np.nanmax(data)
 
+    nnan = ((labeled != largest_label) & mask_nan).sum()
+
     # check what the surroundings of our island looks like and decide how to replace them.  The expectation is that this is mostly infilling stars, but it _could_ infill more extended regions.
-    for label_id in tqdm(range(1, num_labels + 1), desc='Filling NaN: '):
+    for label_id in tqdm(range(1, num_labels + 1), desc=f'Filling {nnan} NaN: '):
         if label_id == largest_label:
             continue
         mask = labeled == label_id
@@ -148,5 +162,7 @@ def fill_nan(data):
             data[mask] = datamax
         else:
             data[mask] = median_value
+
+    print(f"Nans filled.  nnan={np.isnan(data).sum()} and should be {(labeled == largest_label).sum()}")
 
     return data
