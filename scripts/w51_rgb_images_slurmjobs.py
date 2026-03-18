@@ -67,6 +67,7 @@ image_sub_filenames = {
 
 
 submitted_rgb_filenames = set()
+MIRI_FILTERNAMES = {'f560w', 'f770w', 'f1000w', 'f1280w', 'f2100w'}
 
 
 def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51/data_reprojected/'):
@@ -469,6 +470,12 @@ def worker_create_rgb(job_spec_file):
     filename = job_spec['filename']
     alma_overlay = job_spec.get('alma_overlay', False)
     new_basepath = job_spec.get('new_basepath', '/orange/adamginsburg/jwst/w51/data_reprojected/')
+    os.makedirs(new_basepath, exist_ok=True)
+
+    repr_image_filenames = {x: y.replace("i2d", f"i2d_reprj_{target_filter[:-1]}") for x, y in image_filenames.items()}
+    repr_image_filenames = {x: (new_basepath + os.path.basename(y)) for x, y in repr_image_filenames.items()}
+    repr_image_sub_filenames = {x: y.replace(".fits", f"reprj_{target_filter[:-1]}.fits") for x, y in image_sub_filenames.items()}
+    repr_image_sub_filenames = {x: (new_basepath + os.path.basename(y)) for x, y in repr_image_sub_filenames.items()}
     
     png_path = os.path.dirname(filename)
     os.makedirs(png_path, exist_ok=True)
@@ -480,15 +487,29 @@ def worker_create_rgb(job_spec_file):
     # Load/reproject filter images
     filter_data = {}
     for filtername in filters:
-        image_file = image_filenames.get(filtername)
-        if not image_file:
-            # Try subtraction images
-            image_file = image_sub_filenames.get(filtername)
-        
-        if image_file:
-            print(f"Loading {filtername} from {image_file}")
+        if filtername in image_filenames:
+            image_file = image_filenames[filtername]
+            repr_file = repr_image_filenames[filtername]
+        elif filtername in image_sub_filenames:
+            image_file = image_sub_filenames[filtername]
+            repr_file = repr_image_sub_filenames[filtername]
+        else:
+            raise KeyError(f"Filter {filtername} not found in image_filenames or image_sub_filenames")
+
+        if os.path.exists(repr_file):
+            print(f"Loading cached reprojected {filtername} from {repr_file}")
+            if filtername in MIRI_FILTERNAMES:
+                filter_data[filtername] = fill_nan(fits.getdata(repr_file), big_island_threshold=10)
+            else:
+                filter_data[filtername] = fill_nan(fits.getdata(repr_file))
+        else:
+            print(f"Reprojecting {filtername} {image_file} to {repr_file}")
             result, _ = reproject.reproject_interp(image_file, tgt_header, hdu_in='SCI')
-            filter_data[filtername] = fill_nan(result)
+            fits.PrimaryHDU(data=result, header=tgt_header).writeto(repr_file, overwrite=True)
+            if filtername in MIRI_FILTERNAMES:
+                filter_data[filtername] = fill_nan(result, big_island_threshold=10)
+            else:
+                filter_data[filtername] = fill_nan(result)
     
     # Load ALMA data if needed
     alma_data = None

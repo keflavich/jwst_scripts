@@ -53,8 +53,13 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
                     edge[-1:, :] = True
                     edge[:, :1] = True
                     edge[:, -1:] = True
-                    labels_to_keep = [(labeled[edge] == label_id).any() for label_id in range(1, num_labels + 1)]
-                    blank_mask = np.isin(labeled, labels_to_keep)
+                    labels_to_keep = [label_id for label_id in range(1, num_labels + 1) if (labeled[edge] == label_id).any()]
+                    blank_mask_ = np.isin(labeled, labels_to_keep)
+                    if num_labels > 2:
+                        assert blank_mask_.sum() < blank_mask.sum()
+                    else:
+                        assert blank_mask_.sum() <= blank_mask.sum()
+                    blank_mask = blank_mask_
                         
                 alpha[blank_mask] = 0
 
@@ -119,7 +124,7 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     return img_pil
 
 
-def fill_nan(data, bad_data_min_threshold=1e-5):
+def fill_nan(data, bad_data_min_threshold=1e-5, big_island_threshold=100):
     mask_nan = np.isnan(data)
     if bad_data_min_threshold is not None:
         mask_nan |= (data < bad_data_min_threshold)
@@ -138,7 +143,8 @@ def fill_nan(data, bad_data_min_threshold=1e-5):
 
     faint_threshold = np.nanpercentile(data, 90)
     bright_threshold = np.nanpercentile(data, 99.)
-    faint_value = np.nanpercentile(data, 1)
+    faint_value = np.nanpercentile(data, 10)
+    very_faint_value = np.nanpercentile(data, 1)
     datamax = np.nanmax(data)
 
     nnan = ((labeled != largest_label) & mask_nan).sum()
@@ -149,20 +155,26 @@ def fill_nan(data, bad_data_min_threshold=1e-5):
             continue
         mask = labeled == label_id
 
-        dilated_mask = binary_dilation(mask, iterations=2)
+        dilated_mask = binary_dilation(mask, iterations=4 if mask.sum() > big_island_threshold else 2)
         border_mask = dilated_mask & ~mask
 
         border_values = data[border_mask]
 
-        median_value = np.nanmedian(border_values)
 
-        if median_value < faint_threshold:
-            data[mask] = faint_value
-        elif median_value > bright_threshold:
-            data[mask] = datamax
+        if mask.sum() > big_island_threshold:
+            # handle MIRI giant region case?
+            mask = binary_dilation(mask, iterations=2)
+            replacement = np.nanpercentile(border_values, 99)
+            data[mask] = replacement
         else:
-            data[mask] = median_value
+            median_value = np.nanmedian(border_values)
 
-    print(f"Nans filled.  nnan={np.isnan(data).sum()} and should be {(labeled == largest_label).sum()}")
+            if median_value > bright_threshold:
+                data[mask] = datamax
+            else:
+                data[mask] = median_value
+            # there was some faint_value logic, but there are too many edge cases: the faint values could be negatives (in MIRI images) or something else unknown
+
+    print(f"Nans filled.  nnan={np.isnan(data).sum()} and should be {(labeled == largest_label).sum()} (if the first number is lower, it could be because there are negatives in the mask that we haven't forced to be nan)")
 
     return data

@@ -239,9 +239,9 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_210-182-187.png', avm=AVM, original_data=rgb)
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_210-182-187_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
-    rgb = np.array([fill_nan(fits.getdata(repr_image_filenames['f2100w'])),
-                    fill_nan(fits.getdata(repr_image_filenames['f1280w'])),
-                    fill_nan(fits.getdata(repr_image_filenames['f770w']))]).swapaxes(0,2).swapaxes(0,1)
+    rgb = np.array([fill_nan(fits.getdata(repr_image_filenames['f2100w']), big_island_threshold=10),
+                    fill_nan(fits.getdata(repr_image_filenames['f1280w']), big_island_threshold=10),
+                    fill_nan(fits.getdata(repr_image_filenames['f770w']), big_island_threshold=10)]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
                            simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
@@ -249,8 +249,8 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_2100-1280-770_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
 
-    rgb = np.array([fill_nan(fits.getdata(repr_image_filenames['f2100w'])),
-                    fill_nan(fits.getdata(repr_image_filenames['f770w'])),
+    rgb = np.array([fill_nan(fits.getdata(repr_image_filenames['f2100w']), big_island_threshold=10),
+                    fill_nan(fits.getdata(repr_image_filenames['f770w']), big_island_threshold=10),
                     fill_nan(fits.getdata(repr_image_filenames['f335m']))]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
@@ -434,7 +434,7 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
 
 
 def main():
-    for target_filter in ('f140m', 'f480m', 'f2100w'):
+    for target_filter in ('f2100w', 'f480m', 'f140m'):
         make_pngs(target_filter)
 
 if __name__ == '__main__':
