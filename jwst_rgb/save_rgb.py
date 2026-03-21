@@ -55,10 +55,12 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
                     edge[:, -1:] = True
                     labels_to_keep = [label_id for label_id in range(1, num_labels + 1) if (labeled[edge] == label_id).any()]
                     blank_mask_ = np.isin(labeled, labels_to_keep)
-                    if num_labels > 2:
-                        assert blank_mask_.sum() < blank_mask.sum()
-                    else:
-                        assert blank_mask_.sum() <= blank_mask.sum()
+                    # > 2 works if the edge nans are contiguous, but fails if there are two non-contiguous edge nan regions.
+                    # this assertion is intentional and _must_ be included.  If there are any non-edge NaN regions, we want them to be _ignored_ in the alpha-setting.
+                    # if num_labels > 3:
+                    #     assert blank_mask_.sum() < blank_mask.sum()
+                    # else:
+                    assert blank_mask_.sum() <= blank_mask.sum()
                     blank_mask = blank_mask_
                         
                 alpha[blank_mask] = 0

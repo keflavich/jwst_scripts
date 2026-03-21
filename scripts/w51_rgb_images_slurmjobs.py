@@ -74,7 +74,7 @@ image_sub_filenames = {
 custom_negative_thresholds = {
     'f2100w': -300,
     'f1280w': -50,
-    'f1000w': -20,
+    'f1000w': -10,
     'f770w': -30,
     'f560w': -10,
 }
@@ -226,6 +226,36 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
         'alma_overlay': True,
         'new_basepath': new_basepath,
     })
+
+    # f480m, f360m, f335m
+    submit_rgb_job({
+        'target_filter': target_filter,
+        'filters': ['f480m', 'f360m', 'f335m'],
+        'stretches': [
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+        ],
+        'filename': f'{png_path}/w51_RGB_480-360-335_scaled.png',
+        'alma_overlay': True,
+        'new_basepath': new_basepath,
+    })
+
+    # f480m, f335m, f187n
+    submit_rgb_job({
+        'target_filter': target_filter,
+        'filters': ['f480m', 'f335m', 'f187n'],
+        'stretches': [
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+        ],
+        'filename': f'{png_path}/w51_RGB_480-335-187_scaled.png',
+        'alma_overlay': True,
+        'new_basepath': new_basepath,
+    })
+
+
     
     # f210m, f182m, f187n
     submit_rgb_job({

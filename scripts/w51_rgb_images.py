@@ -76,7 +76,7 @@ image_sub_filenames = {
 custom_negative_thresholds = {
     'f2100w': -300,
     'f1280w': -50,
-    'f1000w': -20,
+    'f1000w': -10,
     'f770w': -30,
     'f560w': -10,
 }
@@ -159,6 +159,18 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
 
     print(repr_image_filenames)
     print(repr_image_sub_filenames)
+
+
+    rgb = np.array([get_nanfilled_image_data('f2100w'),
+                    get_nanfilled_image_data('f1280w'),
+                    get_nanfilled_image_data('f770w')]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_2100-1280-770.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_2100-1280-770_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
 
 
     rgb = np.array([
@@ -282,14 +294,27 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_210-182-187.png', avm=AVM, original_data=rgb)
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_210-182-187_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
-    rgb = np.array([get_nanfilled_image_data('f2100w'),
-                    get_nanfilled_image_data('f1280w'),
-                    get_nanfilled_image_data('f770w')]).swapaxes(0,2).swapaxes(0,1)
+
+    rgb = np.array([get_nanfilled_image_data('f480m'),
+                    get_nanfilled_image_data('f335m'),
+                    get_nanfilled_image_data('f187n')]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
                            simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
-    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_2100-1280-770.png', avm=AVM, original_data=rgb)
-    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_2100-1280-770_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-335-187.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-335-187_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
+
+
+    rgb = np.array([get_nanfilled_image_data('f480m'),
+                    get_nanfilled_image_data('f360m'),
+                    get_nanfilled_image_data('f335m')]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-360-335.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-360-335_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
 
     rgb = np.array([get_nanfilled_image_data('f2100w'),
