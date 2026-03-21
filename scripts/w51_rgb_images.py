@@ -11,7 +11,12 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from PIL import Image
-from jwst_rgb.save_rgb import save_rgb, fill_nan
+from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
+
+
+def save_rgb(*args, **kwargs):
+    kwargs.setdefault('transpose', None)
+    return _save_rgb(*args, **kwargs)
 
 
 image_filenames ={
