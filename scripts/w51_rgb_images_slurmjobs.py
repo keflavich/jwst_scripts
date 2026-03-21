@@ -235,9 +235,9 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
         'target_filter': target_filter,
         'filters': ['f480m', 'f360m', 'f335m'],
         'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
         ],
         'filename': f'{png_path}/w51_RGB_480-360-335.png',
         'alma_overlay': True,
@@ -246,11 +246,11 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
 
     submit_rgb_job({
         'target_filter': target_filter,
-        'filters': ['f480m', 'f405m', 'f335m'],
+        'filters': ['f480m', 'f405n', 'f335m'],
         'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
         ],
         'filename': f'{png_path}/w51_RGB_480-405-335.png',
         'alma_overlay': True,

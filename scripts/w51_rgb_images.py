@@ -314,7 +314,7 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
 
 
     rgb = np.array([get_nanfilled_image_data('f480m'),
-                    get_nanfilled_image_data('f405m'),
+                    get_nanfilled_image_data('f405n'),
                     get_nanfilled_image_data('f335m')]).swapaxes(0,2).swapaxes(0,1)
     rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
