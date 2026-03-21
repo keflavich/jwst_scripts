@@ -14,8 +14,11 @@ from PIL import Image
 from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
 
 
+CURRENT_TARGET_FILTER_IS_MIRI = False
+
+
 def save_rgb(*args, **kwargs):
-    kwargs.setdefault('transpose', Image.ROTATE_180)
+    kwargs.setdefault('transpose', Image.ROTATE_180 if CURRENT_TARGET_FILTER_IS_MIRI else None)
     kwargs.setdefault('alpha_only_edges', True)
     return _save_rgb(*args, **kwargs)
 
@@ -83,7 +86,12 @@ custom_negative_thresholds = {
 
 
 def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w51/data_reprojected/'):
+    global CURRENT_TARGET_FILTER_IS_MIRI
+    CURRENT_TARGET_FILTER_IS_MIRI = target_filter in MIRI_FILTERNAMES
+    transpose_mode = 'Image.ROTATE_180' if CURRENT_TARGET_FILTER_IS_MIRI else 'None'
+
     print(f"Making PNGs for {target_filter}")
+    print(f"Transpose mode for target_filter={target_filter}: {transpose_mode}")
 
     png_path = f'/orange/adamginsburg/jwst/w51/pngs_{target_filter[1:-1]}'
     os.makedirs(png_path, exist_ok=True)
@@ -305,6 +313,17 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
     save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-335-187_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
 
+    rgb = np.array([get_nanfilled_image_data('f480m'),
+                    get_nanfilled_image_data('f405m'),
+                    get_nanfilled_image_data('f335m')]).swapaxes(0,2).swapaxes(0,1)
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                           simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                           simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-405-335.png', avm=AVM, original_data=rgb)
+    save_rgb(rgb_scaled, f'{png_path}/w51_RGB_480-405-335_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+
+
 
 
     rgb = np.array([get_nanfilled_image_data('f480m'),
@@ -502,7 +521,7 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
 
 
 def main():
-    for target_filter in ('f2100w',):#  'f480m', 'f140m'):
+    for target_filter in ('f480m',):# 'f2100w', 'f480m', 'f140m'):
         make_pngs(target_filter)
 
 if __name__ == '__main__':

@@ -17,8 +17,11 @@ import sys
 import hashlib
 
 
+CURRENT_TARGET_FILTER_IS_MIRI = False
+
+
 def save_rgb(*args, **kwargs):
-    kwargs.setdefault('transpose', Image.ROTATE_180)
+    kwargs.setdefault('transpose', Image.ROTATE_180 if CURRENT_TARGET_FILTER_IS_MIRI else None)
     kwargs.setdefault('alpha_only_edges', True)
     return _save_rgb(*args, **kwargs)
 
@@ -236,7 +239,20 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
             {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
             {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
         ],
-        'filename': f'{png_path}/w51_RGB_480-360-335_scaled.png',
+        'filename': f'{png_path}/w51_RGB_480-360-335.png',
+        'alma_overlay': True,
+        'new_basepath': new_basepath,
+    })
+
+    submit_rgb_job({
+        'target_filter': target_filter,
+        'filters': ['f480m', 'f405m', 'f335m'],
+        'stretches': [
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.95}},
+        ],
+        'filename': f'{png_path}/w51_RGB_480-405-335.png',
         'alma_overlay': True,
         'new_basepath': new_basepath,
     })
@@ -264,7 +280,7 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
         'stretches': [
             {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
             {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.0}},
         ],
         'filename': f'{png_path}/w51_RGB_210-182-187.png',
         'alma_overlay': True,
@@ -469,7 +485,7 @@ def submit_rgb_job(job_spec):
            'f2100w': 16}[job_spec['target_filter']]
     
     # Submit SLURM job
-    job_name = os.path.basename(job_spec['filename']).replace('.png', '')[:30]
+    job_name = os.path.basename(job_spec['filename']).replace('.png', '')[:30] + "_" + job_spec['target_filter']
     log_file = f'/blue/adamginsburg/adamginsburg/logs/w51_quickimages-{job_name}_%j.log'
     sbatch_cmd = [
         'sbatch',
@@ -512,7 +528,12 @@ def worker_create_rgb(job_spec_file):
     from reproject import reproject_interp
     import reproject
     
+    global CURRENT_TARGET_FILTER_IS_MIRI
+
     target_filter = job_spec['target_filter']
+    CURRENT_TARGET_FILTER_IS_MIRI = target_filter in MIRI_FILTERNAMES
+    transpose_mode = 'Image.ROTATE_180' if CURRENT_TARGET_FILTER_IS_MIRI else 'None'
+    print(f"Worker transpose mode for target_filter={target_filter}: {transpose_mode}")
     filters = job_spec['filters']
     stretches = job_spec['stretches']
     filename = job_spec['filename']
