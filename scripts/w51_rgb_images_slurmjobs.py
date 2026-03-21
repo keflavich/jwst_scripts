@@ -18,7 +18,8 @@ import hashlib
 
 
 def save_rgb(*args, **kwargs):
-    kwargs.setdefault('transpose', None)
+    kwargs.setdefault('transpose', Image.ROTATE_180)
+    kwargs.setdefault('alpha_only_edges', True)
     return _save_rgb(*args, **kwargs)
 
 
@@ -70,6 +71,13 @@ image_sub_filenames = {
     "f480m-f360m": "/orange/adamginsburg/jwst/w51/filter_subtractions/f480m_minus_f360m_scaled_BB.fits",
 }
 
+custom_negative_thresholds = {
+    'f2100w': -300,
+    'f1280w': -50,
+    'f1000w': -20,
+    'f770w': -30,
+    'f560w': -10,
+}
 
 submitted_rgb_filenames = set()
 MIRI_FILTERNAMES = {'f560w', 'f770w', 'f1000w', 'f1280w', 'f2100w'}
@@ -260,97 +268,98 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
         'new_basepath': new_basepath,
     })
     
-    # Special combinations
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f405n-f410m', 'f335m-f2100w', 'f770w-f2100w'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
-        ],
-        'filename': f'{png_path}/w51_RGB_405m410-335r2100-770r2100.png',
-        'alma_overlay': True,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f480m', 'f405n-f410m', 'f187n-f182m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-        ],
-        'filename': f'{png_path}/w51_RGB_480-405m410-187m182_scaled.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f480m', 'f405n-f410m', 'f187n-f182m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-        ],
-        'filename': f'{png_path}/w51_RGB_480-405m410-187m182_log.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f335m-f2100w', 'f480m-f360m', 'f405n-f410m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-        ],
-        'filename': f'{png_path}/w51_RGB_335r2100-480m360-405m410_scaled.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f335m-f2100w', 'f480m-f360m', 'f405n-f410m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-        ],
-        'filename': f'{png_path}/w51_RGB_335r2100-480m360-405m410_log.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f480m-f360m', 'f410m-f405n', 'f405n-f410m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
-        ],
-        'filename': f'{png_path}/w51_RGB_480m360-410m405-405m410_scaled.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
-    
-    submit_rgb_job({
-        'target_filter': target_filter,
-        'filters': ['f480m-f360m', 'f410m-f405n', 'f405n-f410m'],
-        'stretches': [
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-            {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
-        ],
-        'filename': f'{png_path}/w51_RGB_480m360-410m405-405m410_log.png',
-        'alma_overlay': False,
-        'new_basepath': new_basepath,
-    })
+    if False: # default to skipping special combos
+        # Special combinations
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f405n-f410m', 'f335m-f2100w', 'f770w-f2100w'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 0.1, 'max_percent': 99.9}},
+            ],
+            'filename': f'{png_path}/w51_RGB_405m410-335r2100-770r2100.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f480m', 'f405n-f410m', 'f187n-f182m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+            ],
+            'filename': f'{png_path}/w51_RGB_480-405m410-187m182_scaled.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f480m', 'f405n-f410m', 'f187n-f182m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_480-405m410-187m182_log.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f335m-f2100w', 'f480m-f360m', 'f405n-f410m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+            ],
+            'filename': f'{png_path}/w51_RGB_335r2100-480m360-405m410_scaled.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f335m-f2100w', 'f480m-f360m', 'f405n-f410m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_335r2100-480m360-405m410_log.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f480m-f360m', 'f410m-f405n', 'f405n-f410m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99}},
+            ],
+            'filename': f'{png_path}/w51_RGB_480m360-410m405-405m410_scaled.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
+        
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': ['f480m-f360m', 'f410m-f405n', 'f405n-f410m'],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_480m360-410m405-405m410_log.png',
+            'alma_overlay': False,
+            'new_basepath': new_basepath,
+        })
 
     filternames = sorted(list(image_filenames.keys()),
                          key=lambda x: int(''.join(filter(str.isdigit, x))))[::-1]
@@ -425,8 +434,12 @@ def submit_rgb_job(job_spec):
     script_path = os.path.abspath(__file__)
     python_cmd = f"python {script_path} --worker-job {job_spec_file}"
     
+    mem = {'f140m': 64,
+           'f480m': 32,
+           'f2100w': 16}[job_spec['target_filter']]
+    
     # Submit SLURM job
-    job_name = os.path.basename(job_spec['filename']).replace('.png', '')[:20]
+    job_name = os.path.basename(job_spec['filename']).replace('.png', '')[:30]
     log_file = f'/blue/adamginsburg/adamginsburg/logs/w51_quickimages-{job_name}_%j.log'
     sbatch_cmd = [
         'sbatch',
@@ -435,7 +448,7 @@ def submit_rgb_job(job_spec):
         '--qos=astronomy-dept',
         '--nodes=1',
         '--ntasks=1',
-        '--mem=64gb',
+        f'--mem={mem}gb',
         '--time=96:00:00',
         f'--output={log_file}',
         '--wrap', python_cmd
@@ -501,20 +514,28 @@ def worker_create_rgb(job_spec_file):
         else:
             raise KeyError(f"Filter {filtername} not found in image_filenames or image_sub_filenames")
 
+        nanfilled_file = repr_file.replace('.fits', '_nanfilled.fits')
+
+        if os.path.exists(nanfilled_file):
+            print(f"Loading cached nanfilled {filtername} from {nanfilled_file}")
+            filter_data[filtername] = fits.getdata(nanfilled_file)
+            continue
+
         if os.path.exists(repr_file):
             print(f"Loading cached reprojected {filtername} from {repr_file}")
-            if filtername in MIRI_FILTERNAMES:
-                filter_data[filtername] = fill_nan(fits.getdata(repr_file), big_island_threshold=10)
-            else:
-                filter_data[filtername] = fill_nan(fits.getdata(repr_file))
+            reprojected_data = fits.getdata(repr_file)
         else:
             print(f"Reprojecting {filtername} {image_file} to {repr_file}")
-            result, _ = reproject.reproject_interp(image_file, tgt_header, hdu_in='SCI')
-            fits.PrimaryHDU(data=result, header=tgt_header).writeto(repr_file, overwrite=True)
-            if filtername in MIRI_FILTERNAMES:
-                filter_data[filtername] = fill_nan(result, big_island_threshold=10)
-            else:
-                filter_data[filtername] = fill_nan(result)
+            reprojected_data, _ = reproject.reproject_interp(image_file, tgt_header, hdu_in='SCI')
+            fits.PrimaryHDU(data=reprojected_data, header=tgt_header).writeto(repr_file, overwrite=True)
+
+        if filtername in MIRI_FILTERNAMES:
+            filter_data[filtername] = fill_nan(reprojected_data, big_island_threshold=10, bad_data_min_threshold=custom_negative_thresholds[filtername])
+        else:
+            filter_data[filtername] = fill_nan(reprojected_data, bad_data_min_threshold=custom_negative_thresholds.get(filtername, 1e-5))
+
+        fits.PrimaryHDU(data=filter_data[filtername], header=tgt_header).writeto(nanfilled_file, overwrite=True)
+        print(f"Wrote nanfilled cache for {filtername} to {nanfilled_file}")
     
     # Load ALMA data if needed
     alma_data = None
