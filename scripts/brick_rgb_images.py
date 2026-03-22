@@ -28,6 +28,10 @@ image_filenames_pipe = {
     "f410m": "/orange/adamginsburg/jwst/brick/F410M/pipeline/jw02221-o001_t001_nircam_clear-f410m-merged_i2d.fits",
     "f444w": "/orange/adamginsburg/jwst/brick/F444W/pipeline/jw01182-o004_t001_nircam_clear-f444w-merged_i2d.fits",
     "f466n": "/orange/adamginsburg/jwst/brick/F466N/pipeline/jw02221-o001_t001_nircam_clear-f466n-merged_i2d.fits",
+    "f2550w": "/orange/adamginsburg/jwst/brick/F2550W/pipeline/jw02221-o002_t001_miri_f2550w_i2d.fits",
+    "f1130w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1130w-brightsky/jw03958-o003_t003_miri_f1130w-brightsky_i2d.fits",
+    "f1500w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1500w-brightsky/jw03958-o003_t003_miri_f1500w-brightsky_i2d.fits",
+    "f770w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f770w-brightsky/jw03958-o003_t003_miri_f770w-brightsky_i2d.fits",
 }
 
 # Commenting out subtracted images for now to get basic functionality working
@@ -278,7 +282,7 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/bri
 def main():
     for target_filter in ( 'f200w', 'f444w'):
         make_pngs(target_filter, image_filenames_pipe={x: y for x,y in image_filenames_pipe.items() if x.endswith("w")}, do_special_bgr=False)
-    # Updated to use f466n as default since f150w is not available in Brick dataset
+
     for target_filter in ('f466n', 'f200w', 'f187n', 'f444w'):
         make_pngs(target_filter)
 

@@ -309,6 +309,7 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log.png', avm=AVM, original_data=bgr_212_405_466)
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=bgr_212_405_466)
 
+
     rgb = np.array([
         fill_nan_for_filter('f2550w', fits.getdata(repr_image_filenames['f2550w'])),
         fill_nan_for_filter('f770w', fits.getdata(repr_image_filenames['f770w'])),
@@ -316,8 +317,8 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     ]).swapaxes(0,2).swapaxes(0,1)
 
     rgb_scaled = np.array([
-        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
-        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+        simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.0)(rgb[:,:,0]),
+        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.95)(rgb[:,:,1]),
         simple_norm(rgb[:,:,2], stretch='log', min_percent=1, max_percent=99.5)(rgb[:,:,2])
     ]).swapaxes(0,2).swapaxes(0,1)
 
