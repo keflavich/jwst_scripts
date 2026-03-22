@@ -62,9 +62,9 @@ image_filenames_pipe = {
     # "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f770w_i2d.fits",
     # "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f1280w_i2d.fits",
     # "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_no_saturation_checks/jw05365-o002_t002_miri_f2550w_i2d.fits",
-    "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F1280W_mosaic_i2d_for_catalogs.fits",
-    "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F2550W_mosaic_i2d_for_catalogs.fits",
-    "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F770W_mosaic_i2d_for_catalogs.fits",
+    "f1280w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F1280W_mosaic_i2d_for_images.fits",
+    "f2550w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F2550W_mosaic_i2d_for_images.fits",
+    "f770w": "/orange/adamginsburg/jwst/sgrb2/NB/pipeline_reruns/MIRI_mosaic/F770W_mosaic_i2d_for_images.fits",
 }
 
 image_sub_filenames_pipe = {
