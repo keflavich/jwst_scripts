@@ -18,6 +18,9 @@ from jwst_rgb.save_rgb import save_rgb #NB: brought the function back with some 
 from jwst_rgb.save_rgb import fill_nan
 
 
+MIRI_FILTERNAMES = {'f770w', 'f1280w', 'f2550w'}
+
+
 # def save_rgb(img, filename, avm=None, flip=-1):
 
 #     nan_mask = ~np.isfinite(img).all(axis=2)
@@ -85,6 +88,11 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     repr_image_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_filenames.items()}
     repr_image_sub_filenames = {x: y.replace(".fits", f"reprj_{target_filter[:-1]}.fits") for x,y in image_sub_filenames_pipe.items()}
     repr_image_sub_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_sub_filenames.items()}
+
+    def fill_nan_for_filter(filtername, data):
+        if filtername in MIRI_FILTERNAMES:
+            return fill_nan(data, big_island_threshold=10)
+        return fill_nan(data)
 
     for filtername in image_filenames_pipe:
         if not os.path.exists(repr_image_filenames[filtername]):
@@ -302,8 +310,8 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     save_rgb(bgr_scaled_log, f'{png_path}/SgrB2_BGR_212-405-466_log_alma.png', avm=AVM, alma_data=alma_sgrb2_reprojected_jwst, alma_level=alma_level, original_data=bgr_212_405_466)
 
     rgb = np.array([
-        fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
-        fill_nan(fits.getdata(repr_image_filenames['f770w'])),
+        fill_nan_for_filter('f2550w', fits.getdata(repr_image_filenames['f2550w'])),
+        fill_nan_for_filter('f770w', fits.getdata(repr_image_filenames['f770w'])),
         fits.getdata(repr_image_filenames['f480m'])
     ]).swapaxes(0,2).swapaxes(0,1)
 
@@ -318,11 +326,11 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
 
 
     ratio_images = {
-        '770d2550': fill_nan(fits.getdata(repr_image_filenames['f770w'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
-        '1280d2550': fill_nan(fits.getdata(repr_image_filenames['f1280w'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
-        '405410d480': fill_nan(fits.getdata(repr_image_sub_filenames['f405n-f410m'])) / fill_nan(fits.getdata(repr_image_filenames['f480m'])),
-        '480d2550': fill_nan(fits.getdata(repr_image_filenames['f480m'])) / fill_nan(fits.getdata(repr_image_filenames['f2550w'])),
-        '360d480': fill_nan(fits.getdata(repr_image_filenames['f360m'])) / fill_nan(fits.getdata(repr_image_filenames['f480m'])),
+        '770d2550': fill_nan_for_filter('f770w', fits.getdata(repr_image_filenames['f770w'])) / fill_nan_for_filter('f2550w', fits.getdata(repr_image_filenames['f2550w'])),
+        '1280d2550': fill_nan_for_filter('f1280w', fits.getdata(repr_image_filenames['f1280w'])) / fill_nan_for_filter('f2550w', fits.getdata(repr_image_filenames['f2550w'])),
+        '405410d480': fill_nan_for_filter('f405n-f410m', fits.getdata(repr_image_sub_filenames['f405n-f410m'])) / fill_nan_for_filter('f480m', fits.getdata(repr_image_filenames['f480m'])),
+        '480d2550': fill_nan_for_filter('f480m', fits.getdata(repr_image_filenames['f480m'])) / fill_nan_for_filter('f2550w', fits.getdata(repr_image_filenames['f2550w'])),
+        '360d480': fill_nan_for_filter('f360m', fits.getdata(repr_image_filenames['f360m'])) / fill_nan_for_filter('f480m', fits.getdata(repr_image_filenames['f480m'])),
     }
     for key, value in ratio_images.items():
         # write out the ratio images so we can look at them in CARTA
