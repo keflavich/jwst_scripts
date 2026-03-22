@@ -1,6 +1,6 @@
 import numpy as np
 import PIL
-from scipy.ndimage import binary_dilation, label
+from scipy.ndimage import binary_dilation, label, find_objects
 from reproject.hips import reproject_to_hips
 from reproject import reproject_interp
 import os
@@ -149,6 +149,8 @@ def fill_nan(data, bad_data_min_threshold=1e-5, big_island_threshold=100):
     labels_to_keep = [label_id for label_id in range(1, num_labels + 1) if not (labeled[edge] == label_id).any()]
     to_mask = np.isin(labeled, labels_to_keep)
 
+    slices = find_objects(labeled)
+
     faint_threshold = np.nanpercentile(data, 90)
     bright_threshold = np.nanpercentile(data, 99.)
     faint_value = np.nanpercentile(data, 10)
@@ -159,25 +161,30 @@ def fill_nan(data, bad_data_min_threshold=1e-5, big_island_threshold=100):
 
     # check what the surroundings of our island looks like and decide how to replace them.  The expectation is that this is mostly infilling stars, but it _could_ infill more extended regions.
     for label_id in tqdm(labels_to_keep, desc=f'Filling {nnan} NaN: '):
-        mask = labeled == label_id
+        slc = slices[label_id - 1]
+
+        slc_expanded = tuple(
+            slice(max(0, s.start - 5), min(data.shape[i], s.stop + 5))
+            for i, s in enumerate(slc))
+        mask = labeled[slc_expanded] == label_id
 
         dilated_mask = binary_dilation(mask, iterations=4 if mask.sum() > big_island_threshold else 2)
         border_mask = dilated_mask & ~mask
 
-        border_values = data[border_mask]
+        border_values = data[slc_expanded][border_mask]
 
         if mask.sum() > big_island_threshold:
             # handle MIRI giant region case?
             mask = binary_dilation(mask, iterations=2)
             replacement = np.nanpercentile(border_values, 99)
-            data[mask] = replacement
+            data[slc_expanded][mask] = replacement
         else:
             median_value = np.nanmedian(border_values)
 
             if median_value > bright_threshold:
-                data[mask] = datamax
+                data[slc_expanded][mask] = datamax
             else:
-                data[mask] = median_value
+                data[slc_expanded][mask] = median_value
             # there was some faint_value logic, but there are too many edge cases: the faint values could be negatives (in MIRI images) or something else unknown
 
     print(f"Nans filled.  nnan={np.isnan(data).sum()} and should be {to_mask.sum()} (if the first number is lower, it could be because there are negatives in the mask that we haven't forced to be nan)")

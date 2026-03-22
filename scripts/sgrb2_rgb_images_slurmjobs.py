@@ -92,6 +92,18 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
             'alma_overlay': True,
             'new_basepath': new_basepath,
         })
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'channels': [f1, f2, f3],
+            'stretches': [
+                {'stretch': 'asinh', 'min_percent': 1.5, 'max_percent': 99.5},
+                {'stretch': 'asinh', 'min_percent': 1.5, 'max_percent': 99.5},
+                {'stretch': 'asinh', 'min_percent': 1.5, 'max_percent': 99.5},
+            ],
+            'filename': f'{png_path}/SgrB2_RGB_{f1n}-{f2n}-{f3n}_asinh.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
 
     filternames_sub = sorted(list(image_sub_filenames_pipe.keys()), key=lambda x: int(''.join(filter(str.isdigit, x))))[::-1]
     for f1, f2, f3 in zip(filternames_sub, filternames_sub[1:], filternames_sub[2:]):
