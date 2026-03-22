@@ -16,7 +16,7 @@ MIRI_FILTERNAMES = {'f770w', 'f1280w', 'f2550w'}
 
 
 def save_rgb(*args, **kwargs):
-    kwargs.setdefault('transpose', Image.ROTATE_180 if CURRENT_TARGET_FILTER_IS_MIRI else None)
+    kwargs.setdefault('transpose', Image.ROTATE_180)
     kwargs.setdefault('alpha_only_edges', True)
     return _save_rgb(*args, **kwargs)
 
@@ -280,16 +280,30 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
 
 def submit_rgb_job(job_spec):
     filename = job_spec['filename']
-    if filename in submitted_rgb_filenames:
+    alma_overlay = job_spec.get('alma_overlay', False)
+
+    if alma_overlay and not filename.endswith('_alma.png'):
+        non_alma_spec = dict(job_spec)
+        non_alma_spec['alma_overlay'] = False
+
+        alma_spec = dict(job_spec)
+        alma_spec['filename'] = filename.replace('.png', '_alma.png')
+        alma_spec['alma_overlay'] = True
+
+        submit_rgb_job(non_alma_spec)
+        return submit_rgb_job(alma_spec)
+
+    submit_key = (filename, alma_overlay)
+    if submit_key in submitted_rgb_filenames:
         print(f'Skipping duplicate RGB job for {filename}')
         return None
-    submitted_rgb_filenames.add(filename)
+    submitted_rgb_filenames.add(submit_key)
 
     job_spec_dir = '/orange/adamginsburg/jwst/sgrb2/job_specs/'
     os.makedirs(job_spec_dir, exist_ok=True)
 
     spec_hash = hashlib.md5(str(sorted(job_spec.items())).encode()).hexdigest()[:8]
-    job_name_base = os.path.basename(filename).replace('.png', '')[:15]
+    job_name_base = os.path.basename(filename).replace('.png', '')[:20]
     job_spec_file = os.path.join(job_spec_dir, f'{job_name_base}_{spec_hash}.pkl')
     with open(job_spec_file, 'wb') as f:
         pickle.dump(job_spec, f)
@@ -298,7 +312,8 @@ def submit_rgb_job(job_spec):
     python_cmd = f'python {script_path} --worker-job {job_spec_file}'
 
     mem = {'f466n': 64, 'f150w': 64}.get(job_spec['target_filter'], 64)
-    job_name = os.path.basename(filename).replace('.png', '')[:30] + '_' + job_spec['target_filter']
+    alma_tag = '_alma' if alma_overlay else ''
+    job_name = os.path.basename(filename).replace('.png', '')[:30] + alma_tag + '_' + job_spec['target_filter']
     log_file = f'/blue/adamginsburg/adamginsburg/logs/sgrb2_quickimages-{job_name}_%j.log'
     sbatch_cmd = [
         'sbatch',
@@ -416,7 +431,10 @@ def worker_create_rgb(job_spec_file):
         if os.path.exists(nanfilled_file):
             data = fits.getdata(nanfilled_file)
         else:
-            data = fill_nan(repr_data)
+            if key in MIRI_FILTERNAMES:
+                data = fill_nan(repr_data, big_island_threshold=10)
+            else:
+                data = fill_nan(repr_data)
             fits.PrimaryHDU(data=data, header=tgt_header).writeto(nanfilled_file, overwrite=True)
             print(f'Wrote nanfilled cache for {key} to {nanfilled_file}')
         cache[nan_key] = data
@@ -465,15 +483,19 @@ def worker_create_rgb(job_spec_file):
     if alma_overlay:
         alma_data, alma_level = _load_alma_data(new_basepath, target_filter, tgt_header)
 
+    output_filename = filename
+    if alma_overlay and not output_filename.endswith('_alma.png'):
+        output_filename = output_filename.replace('.png', '_alma.png')
+
     save_rgb(
         rgb_scaled,
-        filename,
+        output_filename,
         avm=avm,
         alma_data=alma_data,
         alma_level=alma_level,
         original_data=original_data,
     )
-    print(f'Saved {filename}')
+    print(f'Saved {output_filename}')
 
     if os.path.exists(job_spec_file):
         os.remove(job_spec_file)
