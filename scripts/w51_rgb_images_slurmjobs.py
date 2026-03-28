@@ -442,6 +442,69 @@ def make_pngs(target_filter='f140m', new_basepath='/orange/adamginsburg/jwst/w51
             'new_basepath': new_basepath,
         })
 
+    for f1, f2, f3 in zip(filternames, filternames[2:], filternames[4:]):
+        f1n = ''.join(filter(str.isdigit, f1))
+        f2n = ''.join(filter(str.isdigit, f2))
+        f3n = ''.join(filter(str.isdigit, f3))
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
+    filternames_adj_excluded = [ff for ff in filternames if ff not in ('f187n', 'f405n')]
+    for f1, f2, f3 in zip(filternames_adj_excluded, filternames_adj_excluded[1:], filternames_adj_excluded[2:]):
+        f1n = ''.join(filter(str.isdigit, f1))
+        f2n = ''.join(filter(str.isdigit, f2))
+        f3n = ''.join(filter(str.isdigit, f3))
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'asinh', 'min_percent': 1, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
+        submit_rgb_job({
+            'target_filter': target_filter,
+            'filters': [f1, f2, f3],
+            'stretches': [
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+                {'func': simple_norm, 'kwargs': {'stretch': 'log', 'min_percent': 1.5, 'max_percent': 99.5}},
+            ],
+            'filename': f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png',
+            'alma_overlay': True,
+            'new_basepath': new_basepath,
+        })
+
 
 def submit_rgb_job(job_spec):
     """

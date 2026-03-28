@@ -377,6 +377,51 @@ def make_pngs(target_filter='f140m', new_basepath = '/orange/adamginsburg/jwst/w
         save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb)
         save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
 
+    for f1, f2, f3 in zip(filternames, filternames[2:], filternames[4:]):
+        print(f"every-other: {f1},{f2},{f3}")
+        rgb = np.array([
+            get_nanfilled_image_data(f1),
+            get_nanfilled_image_data(f2),
+            get_nanfilled_image_data(f3),
+        ]).swapaxes(0,2).swapaxes(0,1)
+        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                            simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+
+        f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
+                            simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
+                            simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+    filternames_adj_excluded = [ff for ff in filternames if ff not in ('f187n', 'f405n')]
+    for f1, f2, f3 in zip(filternames_adj_excluded, filternames_adj_excluded[1:], filternames_adj_excluded[2:]):
+        print(f"no-187n-405n: {f1},{f2},{f3}")
+        rgb = np.array([
+            get_nanfilled_image_data(f1),
+            get_nanfilled_image_data(f2),
+            get_nanfilled_image_data(f3),
+        ]).swapaxes(0,2).swapaxes(0,1)
+        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                            simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+
+        f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
+        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
+                            simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
+                            simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/w51_RGB_{f1n}-{f2n}-{f3n}_log_alma.png', avm=AVM, alma_data=alma_w51_reprojected_jwst, alma_level=alma_level, original_data=rgb)
+
 
 
 
