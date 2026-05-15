@@ -35,7 +35,7 @@ image_filenames_pipe = {
     "f187n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f187n-sub640/jw03958-o007_t005_nircam_clear-f187n-sub640_i2d.fits",
     "f210m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f210m-sub640/jw03958-o007_t005_nircam_clear-f210m-sub640_i2d.fits",
     "f335m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f335m-sub640/jw03958-o007_t005_nircam_clear-f335m-sub640_i2d.fits",
-    "f444w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",
+    #"f444w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",
     "f470n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",  # Note: same file as f444w
     "f480m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f480m-sub640/jw03958-o007_t005_nircam_clear-f480m-sub640_i2d.fits",
 }
@@ -106,6 +106,9 @@ def create_mosaic(image_files, output_path):
     return output_path
 
 def make_pngs(target_filter='f1130w', new_basepath='/orange/adamginsburg/jwst/sickle/data_reprojected/'):
+
+    transpose = Image.ROTATE_180 if target_filter in ('f470n',) else None
+
     print(f"Making PNGs for {target_filter}")
 
     png_path = f'/orange/adamginsburg/jwst/sickle/pngs_{target_filter[1:-1]}'
@@ -199,40 +202,40 @@ def make_pngs(target_filter='f1130w', new_basepath='/orange/adamginsburg/jwst/si
                                 simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
             f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
-            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM, original_data=rgb, transpose=None)
+            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}.png', avm=AVM, original_data=rgb, transpose=transpose)
 
             # Apply log stretch
             rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
                                 simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
                                 simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb, transpose=None)
+            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_log.png', avm=AVM, original_data=rgb, transpose=transpose)
 
     # Special RGB combination with optimal wavelength mapping for MIRI
     # f1500w (longest) -> Red, f1130w (middle) -> Green, f770w (shortest) -> Blue
-    if 'f1500w' in filternames and 'f1130w' in filternames and 'f770w' in filternames:
-        f_red, f_green, f_blue = 'f1500w', 'f1130w', 'f770w'
-        print(f"Creating optimal MIRI RGB: R={f_red}, G={f_green}, B={f_blue}")
+    #if 'f1500w' in filternames and 'f1130w' in filternames and 'f770w' in filternames:
+    f_red, f_green, f_blue = 'f1500w', 'f1130w', 'f770w'
+    print(f"Creating optimal MIRI RGB: R={f_red}, G={f_green}, B={f_blue}")
 
-        rgb = np.array([
-            fits.getdata(repr_image_filenames[f_red]),
-            fits.getdata(repr_image_filenames[f_green]),
-            fits.getdata(repr_image_filenames[f_blue]),
-        ]).swapaxes(0,2).swapaxes(0,1)
+    rgb = np.array([
+        fits.getdata(repr_image_filenames[f_red]),
+        fits.getdata(repr_image_filenames[f_green]),
+        fits.getdata(repr_image_filenames[f_blue]),
+    ]).swapaxes(0,2).swapaxes(0,1)
 
-        # Apply asinh stretch
-        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
-                            simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
-                            simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    # Apply asinh stretch
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,0]),
+                        simple_norm(rgb[:,:,1], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,1]),
+                        simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-        save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_MIRI_optimal.png', avm=AVM, original_data=rgb, transpose=None)
+    save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_MIRI_optimal.png', avm=AVM, original_data=rgb, transpose=transpose, hips=True)
 
-        # Apply log stretch
-        rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
-                            simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
-                            simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
+    # Apply log stretch
+    rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
+                        simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
+                        simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-        save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_MIRI_optimal_log.png', avm=AVM, original_data=rgb, transpose=None)
+    save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_MIRI_optimal_log.png', avm=AVM, original_data=rgb, transpose=transpose, hips=True)
 
     filternames_sub = sorted(list(image_sub_filenames_pipe.keys()),
                            key=lambda x: int(''.join(filter(str.isdigit, x))))[::-1]
@@ -260,13 +263,13 @@ def make_pngs(target_filter='f1130w', new_basepath='/orange/adamginsburg/jwst/si
                                 simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
             f1n, f2n, f3n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2)), ''.join(filter(str.isdigit, f3))
-            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_sub.png', avm=AVM, original_data=rgb, transpose=None)
+            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_sub.png', avm=AVM, original_data=rgb, transpose=transpose)
 
             rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,0]),
                                 simple_norm(rgb[:,:,1], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,1]),
                                 simple_norm(rgb[:,:,2], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_sub_log.png', avm=AVM, original_data=rgb, transpose=None)
+            save_rgb(rgb_scaled, f'{png_path}/Sickle_RGB_{f1n}-{f2n}-{f3n}_sub_log.png', avm=AVM, original_data=rgb, transpose=transpose)
 
     # Create single filter images from mosaicked data
     print("Creating individual mosaicked filter images:")
@@ -282,18 +285,18 @@ def make_pngs(target_filter='f1130w', new_basepath='/orange/adamginsburg/jwst/si
         fn = ''.join(filter(str.isdigit, filtername))
         # Create original data stack for transparency detection
         original_data_stack = np.stack([data, data, data], axis=2)
-        save_rgb(img_asinh, f'{png_path}/Sickle_{fn}_mosaic_asinh.png', avm=AVM, original_data=original_data_stack, transpose=None)
+        save_rgb(img_asinh, f'{png_path}/Sickle_{fn}_mosaic_asinh.png', avm=AVM, original_data=original_data_stack, transpose=transpose)
 
         # Log stretch
         norm_log = simple_norm(data, stretch='log', min_percent=1.5, max_percent=99.5)
         img_log = norm_log(data)
         img_log = np.stack([img_log, img_log, img_log], axis=2)
 
-        save_rgb(img_log, f'{png_path}/Sickle_{fn}_mosaic_log.png', avm=AVM, original_data=original_data_stack, transpose=None)
+        save_rgb(img_log, f'{png_path}/Sickle_{fn}_mosaic_log.png', avm=AVM, original_data=original_data_stack, transpose=transpose)
 
 def main():
     # Use f1130w as default target filter for sickle (middle wavelength)
-    for target_filter in ('f1130w', 'f770w', 'f1500w'):
+    for target_filter in ('f470n', 'f1130w', 'f770w',):
         make_pngs(target_filter)
 
 if __name__ == '__main__':
