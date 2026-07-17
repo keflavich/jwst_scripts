@@ -20,10 +20,11 @@ from jwst_rgb.save_rgb import save_rgb
 # Project 1939: NIRCam observations
 # Project 3571: MIRI observations
 # Project 5368: Additional NIRCam/NIRISS (if available)
+# NIRCam entries repointed from raw mastDownload i2d to astrometry-corrected pipeline mosaics where available
 image_filenames_pipe = {
     # NIRCam filters from project 1939
-    "f115w": "/orange/adamginsburg/jwst/sgra/mastDownload/JWST/jw01939-o001_t001_nircam_clear-f115w/jw01939-o001_t001_nircam_clear-f115w_i2d.fits",
-    "f212n": "/orange/adamginsburg/jwst/sgra/mastDownload/JWST/jw01939-o001_t001_nircam_clear-f212n/jw01939-o001_t001_nircam_clear-f212n_i2d.fits",
+    "f115w": "/orange/adamginsburg/jwst/sgra/F115W/pipeline/jw01939-o001_t001_nircam_clear-f115w-merged_i2d.fits",
+    "f212n": "/orange/adamginsburg/jwst/sgra/F212N/pipeline/jw01939-o001_t001_nircam_clear-f212n-merged_i2d.fits",
     "f323n": "/orange/adamginsburg/jwst/sgra/mastDownload/JWST/jw01939-o001_t001_nircam_f322w2-f323n/jw01939-o001_t001_nircam_f322w2-f323n_i2d.fits",
     "f444w": "/orange/adamginsburg/jwst/sgra/mastDownload/JWST/jw01939-o001_t001_nircam_f405n-f444w/jw01939-o001_t001_nircam_f405n-f444w_i2d.fits",
 

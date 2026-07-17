@@ -16,14 +16,15 @@ import pyavm
 from jwst_rgb.save_rgb import save_rgb
 
 # Updated image filenames for SGRC data with project code 4147
+# Entries repointed from raw mastDownload i2d to astrometry-corrected pipeline mosaics where available (f115w has no pipeline mosaic yet)
 image_filenames_pipe = {
     "f115w": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f115w/jw04147-o012_t001_nircam_clear-f115w_i2d.fits",
-    "f182m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f182m/jw04147-o012_t001_nircam_clear-f182m_i2d.fits",
-    "f212n": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f212n/jw04147-o012_t001_nircam_clear-f212n_i2d.fits",
-    "f360m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f360m/jw04147-o012_t001_nircam_clear-f360m_i2d.fits",
-    "f480m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_clear-f480m/jw04147-o012_t001_nircam_clear-f480m_i2d.fits",
-    "f162m": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_f150w2-f162m/jw04147-o012_t001_nircam_f150w2-f162m_i2d.fits",
-    "f405n": "/orange/adamginsburg/jwst/sgrc/mastDownload/JWST/jw04147-o012_t001_nircam_f405n-f444w/jw04147-o012_t001_nircam_f405n-f444w_i2d.fits",
+    "f182m": "/orange/adamginsburg/jwst/sgrc/F182M/pipeline/jw04147-o012_t001_nircam_clear-f182m-merged_i2d.fits",
+    "f212n": "/orange/adamginsburg/jwst/sgrc/F212N/pipeline/jw04147-o012_t001_nircam_clear-f212n-merged_i2d.fits",
+    "f360m": "/orange/adamginsburg/jwst/sgrc/F360M/pipeline/jw04147-o012_t001_nircam_clear-f360m-merged_i2d.fits",
+    "f480m": "/orange/adamginsburg/jwst/sgrc/F480M/pipeline/jw04147-o012_t001_nircam_clear-f480m-merged_i2d.fits",
+    "f162m": "/orange/adamginsburg/jwst/sgrc/F162M/pipeline/jw04147-o012_t001_nircam_clear-f162m-merged_i2d.fits",
+    "f405n": "/orange/adamginsburg/jwst/sgrc/F405N/pipeline/jw04147-o012_t001_nircam_clear-f405n-merged_i2d.fits",
 }
 
 # No subtracted images available for sgrc initially
