@@ -9,6 +9,88 @@ from PIL import Image
 from tqdm import tqdm
 
 
+def _flip_wcs(wcs, ny, nx, flip_rows=False, flip_cols=False):
+    """Return a copy of ``wcs`` with pixel axes reversed to match a numpy
+    flipud (flip_rows) and/or fliplr (flip_cols) of a (ny, nx) array.
+
+    array axis0 = rows = y = WCS pixel axis 2 (crpix2);
+    array axis1 = cols = x = WCS pixel axis 1 (crpix1).
+    astropy WCS slicing refuses negative steps, so transform CRPIX/CD(PC)
+    by hand: reversing pixel axis j sets crpix_j -> N_j + 1 - crpix_j and
+    negates column j of the linear transform.
+    """
+    w = wcs.deepcopy()
+    has_cd = w.wcs.has_cd()
+    mat = (w.wcs.cd if has_cd else w.wcs.get_pc()).copy()
+    crpix = w.wcs.crpix.copy()
+    if flip_cols:
+        crpix[0] = nx + 1 - crpix[0]
+        mat[:, 0] = -mat[:, 0]
+    if flip_rows:
+        crpix[1] = ny + 1 - crpix[1]
+        mat[:, 1] = -mat[:, 1]
+    w.wcs.crpix = crpix
+    if has_cd:
+        w.wcs.cd = mat
+    else:
+        w.wcs.pc = mat
+    return w
+
+
+def _avm_matching_pixels(avm, img_shape, flip, transpose):
+    """Transform ``avm`` so its WCS describes the PNG *as saved*.
+
+    save_rgb flips the pixels (``img[::flip]`` reverses rows when flip==-1)
+    and then applies a PIL ``transpose`` (ROTATE_180 reverses both axes),
+    but historically embedded the AVM unchanged -- so the embedded WCS did
+    not match the saved pixels and every HiPS came out flipped.  Apply the
+    identical net flip to the AVM's WCS here.
+    """
+    import pyavm
+
+    ny, nx = img_shape[:2]
+    # pyavm's to_wcs target_shape order is (nx, ny) and errors on aspect
+    # mismatch; the no-arg form returns the WCS at the AVM's stored
+    # ReferenceDimension, which is what we want.
+    try:
+        wcs = avm.to_wcs().celestial
+    except ValueError:
+        wcs = avm.to_wcs(target_shape=(nx, ny)).celestial
+
+    flip_rows = False
+    flip_cols = False
+    if flip == -1:
+        flip_rows ^= True
+    elif flip == 1:
+        pass
+    else:
+        raise ValueError(f"Unsupported flip={flip}; only +1/-1 handled")
+
+    if transpose is None:
+        pass
+    elif transpose == Image.ROTATE_180:
+        flip_rows ^= True
+        flip_cols ^= True
+    else:
+        raise ValueError(
+            f"Unsupported transpose={transpose}; only None/ROTATE_180 handled")
+
+    wcs_flipped = _flip_wcs(wcs, ny, nx, flip_rows=flip_rows, flip_cols=flip_cols)
+    wcs_flipped.pixel_shape = (nx, ny)
+    avm_out = pyavm.AVM.from_wcs(wcs_flipped, shape=(ny, nx))
+    # pyavm's Scale+Rotation representation hardcodes cdelt signs in to_wcs
+    # (cdelt0<0, cdelt1>0), so it silently drops any parity/handedness flip.
+    # reproject_to_hips reads the WCS via AVM.to_wcs(), so we must store the
+    # full CD matrix (flat [cd11, cd12, cd21, cd22]) which to_wcs honors
+    # verbatim -- otherwise a flipud/fliplr of the pixels is not reflected in
+    # the embedded WCS and the HiPS comes out flipped.
+    cd = wcs_flipped.pixel_scale_matrix
+    avm_out.Spatial.CDMatrix = [cd[0, 0], cd[0, 1], cd[1, 0], cd[1, 1]]
+    avm_out.Spatial.Scale = None
+    avm_out.Spatial.Rotation = None
+    return avm_out
+
+
 def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
              original_data=None, flip_alma=False,
              alpha_only_edges=True,
@@ -93,10 +175,15 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     flip_img.save(filename)
 
     if avm is not None:
+        # The passed AVM describes the un-flipped FITS WCS, but the pixels
+        # written above are flipped/transposed.  Transform the AVM to match
+        # the saved pixels so the embedded WCS (and the HiPS built from it)
+        # is correctly oriented.
+        avm_to_embed = _avm_matching_pixels(avm, img.shape, flip, transpose)
         base = os.path.basename(filename)
         dir = os.path.dirname(filename)
         avmname = os.path.join(dir, 'avm_'+base)
-        avm.embed(filename, avmname)
+        avm_to_embed.embed(filename, avmname)
         shutil.move(avmname, filename)
 
     # Save as JPEG without transparency (JPEG doesn't support alpha channel)
