@@ -18,6 +18,7 @@ from jwst_rgb.save_rgb import save_rgb
 from reproject.mosaicking import find_optimal_celestial_wcs, reproject_and_coadd
 
 # Updated image filenames for Sickle data with project code 3958 - MIRI and NIRCAM observations
+# f210m repointed from raw mastDownload i2d to astrometry-corrected pipeline mosaic; other filters have no pipeline mosaic yet
 image_filenames_pipe = {
     # MIRI filters
     "f770w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o001_t001_miri_f770w-brightsky/jw03958-o001_t001_miri_f770w-brightsky_i2d.fits",
@@ -33,7 +34,7 @@ image_filenames_pipe = {
     # NIRCAM filters
     # I##i#"f182m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f182m-sub640/jw03958-o007_t005_nircam_clear-f182m-sub640_i2d.fits",
     "f187n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f187n-sub640/jw03958-o007_t005_nircam_clear-f187n-sub640_i2d.fits",
-    "f210m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f210m-sub640/jw03958-o007_t005_nircam_clear-f210m-sub640_i2d.fits",
+    "f210m": "/orange/adamginsburg/jwst/sickle/F210M/pipeline/jw03958-o007_t001_nircam_clear-f210m-merged_i2d.fits",
     "f335m": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_clear-f335m-sub640/jw03958-o007_t005_nircam_clear-f335m-sub640_i2d.fits",
     #"f444w": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",
     "f470n": "/orange/adamginsburg/jwst/sickle/mastDownload/JWST/jw03958-o007_t005_nircam_f444w-f470n-sub640/jw03958-o007_t005_nircam_f444w-f470n-sub640_i2d.fits",  # Note: same file as f444w
