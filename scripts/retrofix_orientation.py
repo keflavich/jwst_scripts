@@ -62,6 +62,12 @@ TARGETS = {
         ('/orange/adamginsburg/jwst/cloudef/pngs_2100wo', 'f2100wo', ROT),
         ('/orange/adamginsburg/jwst/cloudef/pngs_360', 'f360', ROT),
         ('/orange/adamginsburg/jwst/cloudef/pngs_480', 'f480', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_770wo', 'f770wo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_480mo', 'f480mo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_360mo', 'f360mo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_162mo', 'f162mo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_210mo2_sc', 'f210mo2_sc', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_162mo5_sc', 'f162mo5_sc', ROT),
     ]),
     'sickle': ('/orange/adamginsburg/jwst/sickle/data_reprojected', [
         ('/orange/adamginsburg/jwst/sickle/pngs_470', 'f470', ROT),
@@ -73,19 +79,28 @@ TARGETS = {
 
 
 def find_grid_fits(reproj_dir, grid_tag):
-    """A single-filter reprojected FITS on the grid (for its true WCS)."""
-    pats = [f'*reprj_{grid_tag}*.fits', f'*reprj{grid_tag}*.fits',
-            f'*{grid_tag}*.fits']
+    """A single-filter reprojected FITS on the grid (for its true WCS).
+
+    Patterns are ordered most-specific first so an exact grid tag (f162mo)
+    does not accidentally match a longer one (f162mo5_sc).
+    """
+    def ok(f):
+        low = os.path.basename(f).lower()
+        return not any(s in low for s in ('minus', 'ratio', 'over', '_sub',
+                                          'nanfilled'))
+
+    pats = [
+        f'*reprj_{grid_tag}.fits',        # exact grid, image
+        f'*reprj_{grid_tag}_sci.fits',    # exact grid, _sci variant
+        f'*reprj_{grid_tag}_for_images.fits',
+        f'*reprj{grid_tag}.fits',
+        f'*reprj_{grid_tag}[._]*.fits',   # exact grid + suffix, boundary-guarded
+    ]
     for pat in pats:
-        for f in sorted(glob.glob(os.path.join(reproj_dir, pat))):
-            low = f.lower()
-            if any(s in low for s in ('minus', 'ratio', 'over', '_sub',
-                                      'nanfilled')):
-                continue
-            return f
-    # last resort: any reprj on that grid
-    for f in sorted(glob.glob(os.path.join(reproj_dir, f'*{grid_tag}*.fits'))):
-        return f
+        cands = [f for f in sorted(glob.glob(os.path.join(reproj_dir, pat)))
+                 if ok(f)]
+        if cands:
+            return cands[0]
     return None
 
 
