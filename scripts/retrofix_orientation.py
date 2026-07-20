@@ -1,0 +1,124 @@
+#!/usr/bin/env python
+"""
+Retro-fix HiPS orientation for one target, in place, using the faithful
+CDMatrix-from-true-WCS recipe (reembed_avm_hips.reembed_one).
+
+The rotated GC fields need this because pyavm.AVM.from_header is lossy for
+them; the fix re-embeds a faithful AVM built from the true grid WCS and
+regenerates the HiPS.  Pixels are untouched.
+
+Per target we know the transpose convention:
+  * direct-import scripts (sgra/sgrb2/sgrc/arches/quintuplet/cloudef/brick/
+    cloudc) call save_rgb with the default transpose=ROTATE_180 for EVERY
+    png, regardless of the target grid.
+  * gc2211 uses the wrapper -> None (all NIRCam).
+  * sickle: ROTATE_180 for pngs_470, None otherwise.
+
+For each png dir we need the true WCS of that grid: any single-filter
+reprojected FITS on the grid works (they share the grid WCS).
+
+Usage:
+  retrofix_orientation.py <target>            # all dirs for the target
+  retrofix_orientation.py <target> --no-hips  # AVM only (fast dry check)
+"""
+import argparse
+import glob
+import os
+import sys
+
+from PIL import Image
+
+sys.path.insert(0, os.path.dirname(__file__))
+from reembed_avm_hips import reembed_one, load_tgt_wcs  # noqa: E402
+
+ROT = Image.ROTATE_180
+
+# target -> (data_reprojected dir, [(png_dir, grid_tag, transpose), ...])
+# grid_tag is used to glob a reprojected FITS: *reprj*<grid_tag>*.fits
+TARGETS = {
+    'sgrb2': ('/orange/adamginsburg/jwst/sgrb2/NB/data_reprojected', [
+        ('/orange/adamginsburg/jwst/sgrb2/pngs_150', 'f150', ROT),
+        ('/orange/adamginsburg/jwst/sgrb2/pngs_466', 'f466', ROT),
+    ]),
+    'sgra': ('/orange/adamginsburg/jwst/sgra/data_reprojected', [
+        ('/orange/adamginsburg/jwst/sgra/pngs_770', 'f770', ROT),
+        ('/orange/adamginsburg/jwst/sgra/pngs_1280', 'f1280', ROT),
+        ('/orange/adamginsburg/jwst/sgra/pngs_444', 'f444', ROT),
+    ]),
+    'sgrc': ('/orange/adamginsburg/jwst/sgrc/data_reprojected', [
+        ('/orange/adamginsburg/jwst/sgrc/pngs_360', 'f360', ROT),
+        ('/orange/adamginsburg/jwst/sgrc/pngs_480', 'f480', ROT),
+    ]),
+    'arches': ('/orange/adamginsburg/jwst/arches/data_reprojected', [
+        ('/orange/adamginsburg/jwst/arches/pngs_212', 'f212', ROT),
+        ('/orange/adamginsburg/jwst/arches/pngs_323', 'f323', ROT),
+    ]),
+    'quintuplet': ('/orange/adamginsburg/jwst/quintuplet/data_reprojected', [
+        ('/orange/adamginsburg/jwst/quintuplet/pngs_212', 'f212', ROT),
+        ('/orange/adamginsburg/jwst/quintuplet/pngs_323', 'f323', ROT),
+    ]),
+    'cloudef': ('/orange/adamginsburg/jwst/cloudef/data_reprojected', [
+        ('/orange/adamginsburg/jwst/cloudef/pngs_210mo', 'f210mo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_2100wo', 'f2100wo', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_360', 'f360', ROT),
+        ('/orange/adamginsburg/jwst/cloudef/pngs_480', 'f480', ROT),
+    ]),
+    'sickle': ('/orange/adamginsburg/jwst/sickle/data_reprojected', [
+        ('/orange/adamginsburg/jwst/sickle/pngs_470', 'f470', ROT),
+        ('/orange/adamginsburg/jwst/sickle/pngs_1130', 'f1130', None),
+        ('/orange/adamginsburg/jwst/sickle/pngs_770', 'f770', None),
+        ('/orange/adamginsburg/jwst/sickle/pngs_1500', 'f1500', None),
+    ]),
+}
+
+
+def find_grid_fits(reproj_dir, grid_tag):
+    """A single-filter reprojected FITS on the grid (for its true WCS)."""
+    pats = [f'*reprj_{grid_tag}*.fits', f'*reprj{grid_tag}*.fits',
+            f'*{grid_tag}*.fits']
+    for pat in pats:
+        for f in sorted(glob.glob(os.path.join(reproj_dir, pat))):
+            low = f.lower()
+            if any(s in low for s in ('minus', 'ratio', 'over', '_sub',
+                                      'nanfilled')):
+                continue
+            return f
+    # last resort: any reprj on that grid
+    for f in sorted(glob.glob(os.path.join(reproj_dir, f'*{grid_tag}*.fits'))):
+        return f
+    return None
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('target', choices=sorted(TARGETS))
+    p.add_argument('--no-hips', action='store_true')
+    p.add_argument('--glob', default='*.png')
+    args = p.parse_args()
+
+    reproj_dir, dirs = TARGETS[args.target]
+    for png_dir, grid_tag, transpose in dirs:
+        if not os.path.isdir(png_dir):
+            print(f"SKIP {png_dir}: missing")
+            continue
+        ref = find_grid_fits(reproj_dir, grid_tag)
+        if ref is None:
+            print(f"SKIP {png_dir}: no grid FITS for {grid_tag} in {reproj_dir}")
+            continue
+        tgt_wcs = load_tgt_wcs(ref)
+        pngs = [x for x in sorted(glob.glob(os.path.join(png_dir, args.glob)))]
+        tname = 'ROTATE_180' if transpose is ROT else 'None'
+        print(f"[{args.target}] {png_dir}: {len(pngs)} pngs, transpose={tname}, "
+              f"ref={os.path.basename(ref)}")
+        n = 0
+        for png in pngs:
+            try:
+                reembed_one(png, tgt_wcs, transpose, make_hips=not args.no_hips)
+                n += 1
+            except (ValueError, OSError) as e:
+                print(f"  SKIP {os.path.basename(png)}: {e!r}")
+        print(f"  corrected {n}/{len(pngs)}")
+
+
+if __name__ == '__main__':
+    main()
