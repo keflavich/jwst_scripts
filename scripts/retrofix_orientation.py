@@ -75,6 +75,14 @@ TARGETS = {
         ('/orange/adamginsburg/jwst/sickle/pngs_770', 'f770', None),
         ('/orange/adamginsburg/jwst/sickle/pngs_1500', 'f1500', None),
     ]),
+    # gc2211: wrapper -> transpose=None (all NIRCam). Per-OBS grids; each png
+    # dir sits on that OBS's f277w merged i2d WCS (explicit path, not a tag).
+    'gc2211': ('/orange/adamginsburg/jwst/gc2211/images-merged', [
+        (f'/orange/adamginsburg/jwst/gc2211/pngs/{obs}',
+         f'/orange/adamginsburg/jwst/gc2211/images-merged/'
+         f'jw02211-{obs}_t001_nircam_clear-f277w-merged_i2d.fits', None)
+        for obs in ('o023', 'o028', 'o046', 'o049', 'o050')
+    ]),
 }
 
 
@@ -116,7 +124,12 @@ def main():
         if not os.path.isdir(png_dir):
             print(f"SKIP {png_dir}: missing")
             continue
-        ref = find_grid_fits(reproj_dir, grid_tag)
+        # grid_tag may be an explicit FITS path (e.g. gc2211 per-OBS grids)
+        # or a tag globbed inside reproj_dir.
+        if os.path.sep in grid_tag and os.path.exists(grid_tag):
+            ref = grid_tag
+        else:
+            ref = find_grid_fits(reproj_dir, grid_tag)
         if ref is None:
             print(f"SKIP {png_dir}: no grid FITS for {grid_tag} in {reproj_dir}")
             continue
