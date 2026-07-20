@@ -38,13 +38,19 @@ def main():
             print(f"SKIP {png_dir}: no grid FITS for {grid}")
             continue
         raw_avm = load_tgt_avm(ref)
+        # transpose=None dirs render flipped with the raw AVM and need a 180
+        # rotation (confirmed by-eye vs VVV); ROTATE_180 dirs are already
+        # correct.  NOTE: rot180 mutates pixels and is NOT idempotent -- only
+        # run this on a dir once.
+        rot180 = _transpose is None
         pngs = sorted(glob.glob(os.path.join(png_dir, args.glob)))
         print(f"[{args.target}] {png_dir}: {len(pngs)} pngs, "
-              f"ref={os.path.basename(ref)}")
+              f"ref={os.path.basename(ref)}, rot180={rot180}")
         n = 0
         for png in pngs:
             try:
-                restore_one(png, raw_avm, make_hips=not args.no_hips)
+                restore_one(png, raw_avm, make_hips=not args.no_hips,
+                            rot180=rot180)
                 n += 1
             except (ValueError, OSError) as e:
                 print(f"  SKIP {os.path.basename(png)}: {e!r}")

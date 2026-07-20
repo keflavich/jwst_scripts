@@ -87,9 +87,9 @@ TARGETS = {
     ]),
     # Below entries are for the raw-AVM RESTORE (transpose is irrelevant there).
     'w51': ('/orange/adamginsburg/jwst/w51/data_reprojected', [
-        ('/orange/adamginsburg/jwst/w51/pngs_140', 'f140', None),
-        ('/orange/adamginsburg/jwst/w51/pngs_480', 'f480', None),
-        ('/orange/adamginsburg/jwst/w51/pngs_2100', 'f2100', None),
+        ('/orange/adamginsburg/jwst/w51/pngs_140', 'f140', None),   # NIRCam grid
+        ('/orange/adamginsburg/jwst/w51/pngs_480', 'f480', None),   # NIRCam grid
+        ('/orange/adamginsburg/jwst/w51/pngs_2100', 'f2100', ROT),  # MIRI grid
     ]),
     'wd2': ('/orange/adamginsburg/jwst/wd2/data_reprojected', [
         ('/orange/adamginsburg/jwst/wd2/pngs',

@@ -20,8 +20,10 @@ import os
 import shutil
 import sys
 
+import numpy as np
 import pyavm
 from astropy.io import fits
+from PIL import Image
 from tqdm import tqdm
 from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
@@ -36,7 +38,14 @@ def load_tgt_avm(tgt_header_path):
     return pyavm.AVM.from_header(hdr)
 
 
-def restore_one(png, raw_avm, make_hips):
+def restore_one(png, raw_avm, make_hips, rot180=False):
+    # transpose=None targets (gc2211, w51 NIRCam grids, sickle non-470) come
+    # out flipped with the raw AVM and need a 180-deg rotation of the pixels
+    # (confirmed by-eye against VVV).  ROTATE_180 targets are already correct
+    # with the raw AVM (rot180=False).
+    if rot180:
+        arr = np.array(Image.open(png))
+        Image.fromarray(arr[::-1, ::-1]).save(png)
     tmp = os.path.join(os.path.dirname(png), 'avm_' + os.path.basename(png))
     raw_avm.embed(png, tmp)
     shutil.move(tmp, png)
@@ -54,6 +63,9 @@ def main():
     p.add_argument('--png-dir', required=True)
     p.add_argument('--tgt-header', required=True)
     p.add_argument('--no-hips', action='store_true')
+    p.add_argument('--rot180', action='store_true',
+                   help='Rotate pixels 180deg before embedding (transpose=None '
+                        'targets). NOT idempotent -- run exactly once per dir.')
     p.add_argument('--glob', default='*.png')
     p.add_argument('--limit', type=int, default=None)
     args = p.parse_args()
@@ -63,11 +75,12 @@ def main():
     if args.limit:
         pngs = pngs[:args.limit]
     print(f"Restoring raw AVM in {len(pngs)} PNGs in {args.png_dir} "
-          f"(hips={not args.no_hips})")
+          f"(hips={not args.no_hips}, rot180={args.rot180})")
     n = 0
     for png in pngs:
         try:
-            restore_one(png, raw_avm, make_hips=not args.no_hips)
+            restore_one(png, raw_avm, make_hips=not args.no_hips,
+                        rot180=args.rot180)
             n += 1
         except (ValueError, OSError) as e:
             print(f"  SKIP {os.path.basename(png)}: {e!r}")
