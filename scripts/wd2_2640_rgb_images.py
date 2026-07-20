@@ -89,7 +89,7 @@ def create_rgb_image(filenames: Dict[str, str], red_key: str = 'f1130w', green_k
 
 
 def reproject_images(image_filenames: Dict[str, str], target_header: fits.Header,
-                    output_dir: str, repr_suffix: str = '') -> Dict[str, str]:
+                    output_dir: str, repr_suffix: str = '', shape_out=None) -> Dict[str, str]:
     """
     Reproject images to match the target header.
 
@@ -109,7 +109,8 @@ def reproject_images(image_filenames: Dict[str, str], target_header: fits.Header
 
         if not os.path.exists(output_filename):
             print(f"Reprojecting {filtername} {filename} to {output_filename}")
-            result, _ = reproject.reproject_interp(filename, target_header, hdu_in='SCI')
+            result, _ = reproject.reproject_interp(filename, target_header, hdu_in='SCI',
+                                                   shape_out=shape_out)
             hdu = fits.PrimaryHDU(data=result, header=target_header)
             hdu.writeto(output_filename, overwrite=True)
 
