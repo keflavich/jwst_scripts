@@ -23,29 +23,30 @@ import os
 import shutil
 import sys
 
-import pyavm
 from astropy.io import fits
+from astropy.wcs import WCS
 from PIL import Image
 from tqdm import tqdm
 from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from jwst_rgb.save_rgb import _avm_matching_pixels  # noqa: E402
+from jwst_rgb.save_rgb import _faithful_flipped_avm  # noqa: E402
 
 
-def load_tgt_avm(tgt_header_path):
+def load_tgt_wcs(tgt_header_path):
+    """True celestial WCS of the target grid (not via a lossy pyavm AVM)."""
     try:
         hdr = fits.getheader(tgt_header_path, ext=('SCI', 1))
     except (KeyError, IndexError):
         hdr = fits.getheader(tgt_header_path)
-    return pyavm.AVM.from_header(hdr)
+    return WCS(hdr).celestial
 
 
-def reembed_one(png, raw_avm, transpose, make_hips):
+def reembed_one(png, tgt_wcs, transpose, make_hips):
     im = Image.open(png)
     shape = (im.size[1], im.size[0])  # ny, nx
-    corrected = _avm_matching_pixels(raw_avm, shape, flip=-1, transpose=transpose)
+    corrected = _faithful_flipped_avm(tgt_wcs, shape, flip=-1, transpose=transpose)
     tmp = os.path.join(os.path.dirname(png), 'avm_' + os.path.basename(png))
     corrected.embed(png, tmp)
     shutil.move(tmp, png)
@@ -73,7 +74,7 @@ def main():
     args = p.parse_args()
 
     transpose = Image.ROTATE_180 if args.miri else None
-    raw_avm = load_tgt_avm(args.tgt_header)
+    tgt_wcs = load_tgt_wcs(args.tgt_header)
 
     pngs = sorted(glob.glob(os.path.join(args.png_dir, args.glob)))
     if args.limit:
@@ -85,7 +86,7 @@ def main():
     n_ok = 0
     for png in pngs:
         try:
-            reembed_one(png, raw_avm, transpose, make_hips=not args.no_hips)
+            reembed_one(png, tgt_wcs, transpose, make_hips=not args.no_hips)
             n_ok += 1
             print(f"  [{n_ok}/{len(pngs)}] {os.path.basename(png)}")
         except (ValueError, OSError) as e:
