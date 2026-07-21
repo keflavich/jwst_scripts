@@ -22,6 +22,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('target', choices=sorted(TARGETS))
     p.add_argument('--no-hips', action='store_true')
+    p.add_argument('--rot180-all', action='store_true', dest='rot180_all',
+                   help='rot180 EVERY dir (confirmed by-eye: all save_rgb '
+                        'target HiPS need a 180-deg rotation). NOT idempotent.')
     p.add_argument('--glob', default='*.png')
     args = p.parse_args()
 
@@ -42,7 +45,7 @@ def main():
         # rotation (confirmed by-eye vs VVV); ROTATE_180 dirs are already
         # correct.  NOTE: rot180 mutates pixels and is NOT idempotent -- only
         # run this on a dir once.
-        rot180 = _transpose is None
+        rot180 = args.rot180_all or (_transpose is None)
         pngs = sorted(glob.glob(os.path.join(png_dir, args.glob)))
         print(f"[{args.target}] {png_dir}: {len(pngs)} pngs, "
               f"ref={os.path.basename(ref)}, rot180={rot180}")
