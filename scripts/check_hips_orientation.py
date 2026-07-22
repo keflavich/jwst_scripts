@@ -56,6 +56,11 @@ def load_png_luminance_and_avm(png_path):
         raise ValueError(f"Expected color image {png_path}, got {image.shape}")
     rgb = image[:, :, :3]
     lum = rgb.mean(axis=2)
+    # PIL loads row 0 = top, but the AVM's to_wcs() is FITS convention
+    # (row 0 = bottom).  reproject_to_hips reconciles this by flipping the
+    # image vertically (reproject/utils.py: np.array(Image.open(..))[:, ::-1]).
+    # Do the SAME flip here, otherwise every verdict is off by a flipud.
+    lum = np.flipud(lum)
     avm = pyavm.AVM.from_image(png_path)
     shape = lum.shape
     try:

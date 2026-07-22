@@ -17,6 +17,7 @@ from PIL import Image
 from reproject.mosaicking import find_optimal_celestial_wcs, reproject_and_coadd
 
 from jwst_rgb.save_rgb import save_rgb
+from jwst_rgb.save_rgb import faithful_avm
 
 
 def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:
@@ -220,7 +221,7 @@ def main():
     target_header['NAXIS1'] = shape_out[1]
     target_header['NAXIS2'] = shape_out[0]
 
-    avm = pyavm.AVM.from_header(target_header)
+    avm = faithful_avm(target_header)
 
     # Reproject images
     repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f140m_and_f210m', shape_out=shape_out)

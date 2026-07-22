@@ -10,6 +10,7 @@ from astropy.wcs import WCS
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
+from jwst_rgb.save_rgb import faithful_avm
 import subprocess
 import pickle
 import tempfile
@@ -614,7 +615,7 @@ def worker_create_rgb(job_spec_file):
     
     # Load and prepare target header for reprojection
     tgt_header = fits.getheader(image_filenames[target_filter], ext=('SCI', 1))
-    AVM = pyavm.AVM.from_header(tgt_header)
+    AVM = faithful_avm(tgt_header)
     
     # Load/reproject filter images
     filter_data = {}
