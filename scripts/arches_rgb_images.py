@@ -18,11 +18,11 @@ from jwst_rgb.save_rgb import faithful_avm
 
 # Updated image filenames for Arches Quintuplet data with project code 2045
 image_filenames_pipe = {
-    "f212n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o003_t002_nircam_clear-f212n/jw02045-o003_t002_nircam_clear-f212n_i2d.fits",
-    "f323n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o003_t002_nircam_f322w2-f323n/jw02045-o003_t002_nircam_f322w2-f323n_i2d.fits",
+    "f212n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o001_t001_nircam_clear-f212n/jw02045-o001_t001_nircam_clear-f212n_i2d.fits",
+    "f323n": "/orange/adamginsburg/jwst/arches_quintuplet/mastDownload/JWST/jw02045-o001_t001_nircam_f322w2-f323n/jw02045-o001_t001_nircam_f322w2-f323n_i2d.fits",
 }
 
-# No subtracted images available for arches_quintuplet initially
+# No subtracted images available for arches initially
 image_sub_filenames_pipe = {}
 
 def create_composite_channel(data1, data2, method='average'):
@@ -58,10 +58,10 @@ def create_composite_channel(data1, data2, method='average'):
 
     return composite
 
-def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arches_quintuplet/data_reprojected/'):
+def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arches/data_reprojected/'):
     print(f"Making PNGs for {target_filter}")
 
-    png_path = f'/orange/adamginsburg/jwst/arches_quintuplet/pngs_{target_filter[1:-1]}'
+    png_path = f'/orange/adamginsburg/jwst/arches/pngs_{target_filter[1:-1]}'
     os.makedirs(png_path, exist_ok=True)
     os.makedirs(new_basepath, exist_ok=True)
 
@@ -87,8 +87,8 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
             hdu = fits.PrimaryHDU(data=result, header=tgt_header)
             hdu.writeto(repr_image_sub_filenames[filtername], overwrite=True)
 
-    # ALMA data not available for arches_quintuplet - skipping ALMA overlay functionality
-    alma_arches_quintuplet_reprojected_jwst = None
+    # ALMA data not available for arches - skipping ALMA overlay functionality
+    alma_arches = None
     alma_level = None
 
     filternames = sorted(list(image_filenames_pipe.keys()),
@@ -189,7 +189,7 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
         save_rgb(img_log, f'{png_path}/ArchesQuintuplet_{fn}_log.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
 
 def main():
-    # Use f323n as default target filter for arches_quintuplet
+    # Use f323n as default target filter for arches
     for target_filter in ('f323n', 'f212n'):
         make_pngs(target_filter)
 

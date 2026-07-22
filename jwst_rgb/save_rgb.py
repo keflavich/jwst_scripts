@@ -9,6 +9,47 @@ from PIL import Image
 from tqdm import tqdm
 
 
+def faithful_avm(header_or_wcs, shape=None):
+    """Build a faithful AVM (as a flat Spatial.CDMatrix) from a FITS header or
+    astropy WCS.  USE THIS instead of ``pyavm.AVM.from_header``.
+
+    pyavm.AVM.from_header uses a Scale+Rotation representation that is
+    DEGENERATE near position angle 90 deg -- exactly where JWST GC fields sit
+    (observatory roll + NIRCam detector orientation).  There it reconstructs
+    rot = 180 - PA (a mirror about the 90 deg axis), throwing the HiPS off by
+    ~hundreds of arcsec growing from the image center.  Storing the full CD
+    matrix (which to_wcs honors verbatim) has no such degeneracy and is correct
+    at every roll angle.  reproject_to_hips flips the PNG internally to match
+    this WCS, so no extra flip is needed.
+    """
+    import pyavm
+    from astropy.wcs import WCS
+    from astropy.io import fits as _fits
+
+    if isinstance(header_or_wcs, WCS):
+        wcs = header_or_wcs.celestial
+        if shape is None and header_or_wcs.pixel_shape is not None:
+            nx, ny = header_or_wcs.pixel_shape
+            shape = (ny, nx)
+    else:
+        hdr = header_or_wcs
+        if not isinstance(hdr, _fits.Header):
+            hdr = _fits.Header(hdr)
+        wcs = WCS(hdr).celestial
+        if shape is None and 'NAXIS1' in hdr and 'NAXIS2' in hdr:
+            shape = (int(hdr['NAXIS2']), int(hdr['NAXIS1']))
+
+    cd = wcs.pixel_scale_matrix
+    if shape is not None:
+        wcs = wcs.deepcopy()
+        wcs.pixel_shape = (shape[1], shape[0])
+    avm = pyavm.AVM.from_wcs(wcs, shape=shape)
+    avm.Spatial.CDMatrix = [cd[0, 0], cd[0, 1], cd[1, 0], cd[1, 1]]
+    avm.Spatial.Scale = None
+    avm.Spatial.Rotation = None
+    return avm
+
+
 def _flip_wcs(wcs, ny, nx, flip_rows=False, flip_cols=False):
     """Return a copy of ``wcs`` with pixel axes reversed to match a numpy
     flipud (flip_rows) and/or fliplr (flip_cols) of a (ny, nx) array.

@@ -5,6 +5,7 @@ import os
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
+from jwst_rgb.save_rgb import faithful_avm
 import subprocess
 import pickle
 import argparse
@@ -413,7 +414,7 @@ def worker_create_rgb(job_spec_file):
     repr_image_filenames, repr_image_sub_filenames = build_reprojected_filenames(target_filter, new_basepath)
 
     tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
-    avm = pyavm.AVM.from_header(tgt_header)
+    avm = faithful_avm(tgt_header)
 
     cache = {}
 

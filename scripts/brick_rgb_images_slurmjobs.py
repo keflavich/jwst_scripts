@@ -5,6 +5,7 @@ import os
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
+from jwst_rgb.save_rgb import faithful_avm
 import subprocess
 import pickle
 import argparse
@@ -335,7 +336,7 @@ def worker_create_rgb(job_spec_file):
     except KeyError:
         tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=0)
 
-    avm = pyavm.AVM.from_header(tgt_header)
+    avm = faithful_avm(tgt_header)
     cache = {}
 
     def ensure_reprojected(key):

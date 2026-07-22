@@ -58,10 +58,10 @@ def create_composite_channel(data1, data2, method='average'):
 
     return composite
 
-def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arches_quintuplet/data_reprojected/'):
+def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/quintuplet/data_reprojected/'):
     print(f"Making PNGs for {target_filter}")
 
-    png_path = f'/orange/adamginsburg/jwst/arches_quintuplet/pngs_{target_filter[1:-1]}'
+    png_path = f'/orange/adamginsburg/jwst/quintuplet/pngs_{target_filter[1:-1]}'
     os.makedirs(png_path, exist_ok=True)
     os.makedirs(new_basepath, exist_ok=True)
 
@@ -87,8 +87,8 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
             hdu = fits.PrimaryHDU(data=result, header=tgt_header)
             hdu.writeto(repr_image_sub_filenames[filtername], overwrite=True)
 
-    # ALMA data not available for arches_quintuplet - skipping ALMA overlay functionality
-    alma_arches_quintuplet_reprojected_jwst = None
+    # ALMA data not available for quintuplet - skipping ALMA overlay functionality
+    alma_quintuplet_reprojected_jwst = None
     alma_level = None
 
     filternames = sorted(list(image_filenames_pipe.keys()),
@@ -120,14 +120,14 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
                                 simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
             f1n, f2n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2))
-            save_rgb(rgb_scaled, f'{png_path}/ArchesQuintuplet_RGB_{f1n}-{composite_method}-{f2n}.png', avm=AVM, original_data=rgb)
+            save_rgb(rgb_scaled, f'{png_path}/Quintuplet_RGB_{f1n}-{composite_method}-{f2n}.png', avm=AVM, original_data=rgb)
 
             # Apply log stretch
             rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,0]),
                                 simple_norm(rgb[:,:,1], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,1]),
                                 simple_norm(rgb[:,:,2], stretch='log', min_percent=1.5, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-            save_rgb(rgb_scaled, f'{png_path}/ArchesQuintuplet_RGB_{f1n}-{composite_method}-{f2n}_log.png', avm=AVM, original_data=rgb)
+            save_rgb(rgb_scaled, f'{png_path}/Quintuplet_RGB_{f1n}-{composite_method}-{f2n}_log.png', avm=AVM, original_data=rgb)
 
     # Handle subtracted images if available
     filternames_sub = sorted(list(image_sub_filenames_pipe.keys()),
@@ -159,13 +159,13 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
                             simple_norm(rgb[:,:,2], stretch='asinh', min_percent=1, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
         f1n, f2n = ''.join(filter(str.isdigit, f1)), ''.join(filter(str.isdigit, f2))
-        save_rgb(rgb_scaled, f'{png_path}/ArchesQuintuplet_RGB_{f1n}-composite-{f2n}_sub.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/Quintuplet_RGB_{f1n}-composite-{f2n}_sub.png', avm=AVM, original_data=rgb)
 
         rgb_scaled = np.array([simple_norm(rgb[:,:,0], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,0]),
                             simple_norm(rgb[:,:,1], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,1]),
                             simple_norm(rgb[:,:,2], stretch='log', min_percent=1.0, max_percent=99.5)(rgb[:,:,2])]).swapaxes(0,2).swapaxes(0,1)
 
-        save_rgb(rgb_scaled, f'{png_path}/ArchesQuintuplet_RGB_{f1n}-composite-{f2n}_sub_log.png', avm=AVM, original_data=rgb)
+        save_rgb(rgb_scaled, f'{png_path}/Quintuplet_RGB_{f1n}-composite-{f2n}_sub_log.png', avm=AVM, original_data=rgb)
 
     # Create single filter images
     print("Creating individual filter images:")
@@ -179,17 +179,17 @@ def make_pngs(target_filter='f323n', new_basepath='/orange/adamginsburg/jwst/arc
         img_asinh = np.stack([img_asinh, img_asinh, img_asinh], axis=2)
 
         fn = ''.join(filter(str.isdigit, filtername))
-        save_rgb(img_asinh, f'{png_path}/ArchesQuintuplet_{fn}_asinh.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
+        save_rgb(img_asinh, f'{png_path}/Quintuplet_{fn}_asinh.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
 
         # Log stretch
         norm_log = simple_norm(data, stretch='log', min_percent=1.5, max_percent=99.5)
         img_log = norm_log(data)
         img_log = np.stack([img_log, img_log, img_log], axis=2)
 
-        save_rgb(img_log, f'{png_path}/ArchesQuintuplet_{fn}_log.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
+        save_rgb(img_log, f'{png_path}/Quintuplet_{fn}_log.png', avm=AVM, original_data=np.stack([data, data, data], axis=2))
 
 def main():
-    # Use f323n as default target filter for arches_quintuplet
+    # Use f323n as default target filter for quintuplet
     for target_filter in ('f323n', 'f212n'):
         make_pngs(target_filter)
 
