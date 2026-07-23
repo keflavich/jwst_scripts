@@ -15,6 +15,7 @@ from astropy.wcs import WCS
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb
+from jwst_rgb.save_rgb import faithful_avm
 from reproject.mosaicking import find_optimal_celestial_wcs, reproject_and_coadd
 
 # Updated image filenames for Sickle data with project code 3958 - MIRI and NIRCAM observations
@@ -149,7 +150,7 @@ def make_pngs(target_filter='f1130w', new_basepath='/orange/adamginsburg/jwst/si
     else:
         # Original pipeline files use SCI extension
         tgt_header = fits.getheader(target_file, ext=('SCI', 1))
-    AVM = pyavm.AVM.from_header(tgt_header)
+    AVM = faithful_avm(tgt_header)
 
     # Create reprojected filenames based on mosaicked images
     repr_image_filenames = {}

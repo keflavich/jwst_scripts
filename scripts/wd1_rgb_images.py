@@ -12,6 +12,7 @@ import shutil
 from typing import Dict, Tuple, Optional
 from pathlib import Path
 from jwst_rgb.save_rgb import save_rgb
+from jwst_rgb.save_rgb import faithful_avm
 
 
 
@@ -144,7 +145,7 @@ def main():
 
     # Get target header and AVM metadata
     target_header = fits.getheader(os.path.join(base_path, image_filenames['f770w']), ext=('SCI', 1))
-    avm = pyavm.AVM.from_header(target_header)
+    avm = faithful_avm(target_header)
 
     # Reproject images
     repr_filenames = reproject_images(image_filenames, target_header, data_path)
@@ -165,7 +166,7 @@ def main():
             save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm, original_data=rgb_original)
 
     target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f212n']), ext=('SCI', 1))
-    avm = pyavm.AVM.from_header(target_header)
+    avm = faithful_avm(target_header)
 
     # Reproject images
     repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path)

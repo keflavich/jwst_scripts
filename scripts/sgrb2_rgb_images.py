@@ -15,6 +15,7 @@ from astropy.wcs import WCS
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb #NB: brought the function back with some modifications to keep nans white.
+from jwst_rgb.save_rgb import faithful_avm
 from jwst_rgb.save_rgb import fill_nan
 
 
@@ -82,7 +83,7 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/sgr
     os.makedirs(png_path, exist_ok=True)
 
     tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
-    AVM = pyavm.AVM.from_header(tgt_header)
+    AVM = faithful_avm(tgt_header)
 
     repr_image_filenames = {x: y.replace("i2d", f"i2d_pipeline_v0.1_reprj_{target_filter[:-1]}") for x,y in image_filenames_pipe.items()}
     repr_image_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_filenames.items()}

@@ -14,6 +14,7 @@ import shutil
 from astropy.wcs import WCS
 import pyavm
 from jwst_rgb.save_rgb import save_rgb
+from jwst_rgb.save_rgb import faithful_avm
 
 # Updated image filenames for SGRC data with project code 4147
 # Entries repointed from raw mastDownload i2d to astrometry-corrected pipeline mosaics where available (f115w has no pipeline mosaic yet)
@@ -38,7 +39,7 @@ def make_pngs(target_filter='f480m', new_basepath='/orange/adamginsburg/jwst/sgr
     os.makedirs(new_basepath, exist_ok=True)
 
     tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=('SCI', 1))
-    AVM = pyavm.AVM.from_header(tgt_header)
+    AVM = faithful_avm(tgt_header)
 
     repr_image_filenames = {x: y.replace("i2d", f"i2d_pipeline_v0.1_reprj_{target_filter[:-1]}") for x,y in image_filenames_pipe.items()}
     repr_image_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_filenames.items()}
