@@ -15,6 +15,7 @@ from astropy.wcs import WCS
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb
+from jwst_rgb.save_rgb import faithful_avm
 
 # Combined image filenames for Sgr A* data with multiple project codes
 # Project 1939: NIRCam observations
@@ -98,7 +99,7 @@ def make_pngs(target_filter='f770w', new_basepath='/orange/adamginsburg/jwst/sgr
             tgt_header[keyword] = ref_header[keyword]
 
     print(f"Combined header shape: {combined_shape}")
-    AVM = pyavm.AVM.from_header(tgt_header)
+    AVM = faithful_avm(tgt_header)
 
     repr_image_filenames = {x: y.replace("i2d", f"i2d_pipeline_v0.1_reprj_{target_filter[:-1]}") for x,y in image_filenames_pipe.items()}
     repr_image_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_filenames.items()}
