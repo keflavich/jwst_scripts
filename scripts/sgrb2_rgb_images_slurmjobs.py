@@ -332,7 +332,7 @@ def submit_rgb_job(job_spec):
         'sbatch',
         f'--job-name={job_name}',
         '--account=astronomy-dept',
-        '--qos=astronomy-dept',
+        '--qos=astronomy-dept-b',
         '--nodes=1',
         '--ntasks=1',
         f'--mem={mem}gb',
