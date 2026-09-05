@@ -6,7 +6,7 @@ RGB images for the crowded_l3 field (program 9438, obs 006).
 FIELDS ARE KEPT SEPARATE.  The pipeline provides `-merged`, `-nrca` and `-nrcb`
 mosaics per filter.  The two NIRCam modules point at DIFFERENT, NON-OVERLAPPING
 patches of sky -- module A sits at l=3.000 b=-0.001, module B at l=3.042
-b=+0.022, ~2.5 arcmin apart -- so the `-merged` mosaic (10074x4571) is mostly
+b=+0.022, ~2.5 arcmin apart -- so the `-merged` mosaic (10074x4571) is 15.7%
 empty sky between the two footprints.  Compositing that would waste most of the
 frame and stretch the two fields against each other's pixel statistics, so each
 module is treated as its own field and the merged mosaic is deliberately unused.
@@ -92,7 +92,7 @@ def throw_combos(filters):
                   ("f430m", "f300m", "f115w"),
                   ("f410m", "f210m", "f070w"),
                   ("f480m", "f335m", "f150w"),
-                  ("f460m" if "f460m" in filters else "f430m", "f182m", "f090w")):
+                  ("f430m", "f182m", "f090w")):
         if all(c in filters for c in combo):
             out.append(combo)
     # dedupe, preserve order
@@ -104,17 +104,70 @@ def throw_combos(filters):
     return uniq
 
 
-def resolve_avm(tgt_header, ref_data, png_probe_shape):
-    """Pick the dihedral whose CDMatrix AVM matches ROTATE_180 pixel layout.
+def resolve_avm(tgt_header, ref_data, png_probe_shape, png_path=None):
+    """Measure which dihedral's CDMatrix AVM matches save_rgb's pixel layout.
 
-    Determined once per grid: render the reference filter through each
-    candidate AVM and keep the one whose sky projection correlates with the
-    target FITS.  Falls back to rot180 (the value verified on every other GC
-    target in this repo) if the check cannot be run.
+    This actually renders a probe PNG through save_rgb (so the pixels are laid
+    down exactly as the real products are, transpose=ROTATE_180 included),
+    embeds each candidate CDMatrix AVM in turn, reprojects the PNG luminance
+    through that AVM onto the target FITS grid, and keeps the dihedral whose
+    projection correlates best with the reference data.
+
+    An earlier version of this function documented that measurement but simply
+    returned the rot180 answer, leaving `ref_data` unused -- the orientation was
+    verified out-of-band and then asserted here.  Asserting it is fragile: the
+    correct dihedral depends on save_rgb's transpose default, so a change there
+    would silently rotate every product by 180 degrees.  Measuring costs one
+    probe render per grid and makes the guarantee real.
     """
+    import tempfile
+    from reproject import reproject_interp
+    from PIL import Image
+    import pyavm
+
     fwcs = WCS(tgt_header).celestial
     ny, nx = png_probe_shape
-    return cdmatrix_avm(fwcs, ny, nx, "rot180")
+    candidates = ("rot180", "identity", "flipud", "fliplr")
+
+    if ref_data is None:
+        return cdmatrix_avm(fwcs, ny, nx, "rot180")
+
+    # Bin the probe (and its WCS) before rendering.  The dihedral question is
+    # about orientation, not detail, so a binned analogue answers it identically
+    # while keeping the four PNG round-trips cheap -- at full size this is four
+    # renders of a 4479x4450 frame and takes minutes.
+    k = max(1, int(max(ny, nx) // 700))
+    bw = fwcs[::k, ::k]
+    bref = np.asarray(ref_data)[::k, ::k]
+    bny, bnx = bref.shape
+    norm = simple_norm(bref, stretch="asinh", min_percent=1, max_percent=99.5)
+    probe = np.nan_to_num(np.stack([norm(bref)] * 3, axis=2))
+
+    best, best_corr = None, -np.inf
+    with tempfile.TemporaryDirectory() as td:
+        png = os.path.join(td, "probe.png")
+        for flip in candidates:
+            avm = cdmatrix_avm(bw, bny, bnx, flip)
+            _save_rgb(np.clip(probe, 0, 1), png, avm=avm, hips=False,
+                      transpose=Image.ROTATE_180, alpha_only_edges=True,
+                      verbose=False, overwrite=True)
+            lum = np.asarray(Image.open(png).convert("L"), float)[::-1]
+            awcs = pyavm.AVM.from_image(png).to_wcs().celestial
+            rep, _ = reproject_interp((lum, awcs), bw, shape_out=bref.shape)
+            m = np.isfinite(rep) & np.isfinite(bref)
+            if m.sum() < 100:
+                continue
+            x = rep[m] - rep[m].mean()
+            y = bref[m] - bref[m].mean()
+            den = np.sqrt((x * x).sum() * (y * y).sum())
+            corr = float((x * y).sum() / den) if den > 0 else -np.inf
+            print(f"    dihedral {flip:8s} corr={corr:+.3f}", flush=True)
+            if corr > best_corr:
+                best, best_corr = flip, corr
+    if best is None:
+        raise RuntimeError("could not measure the AVM dihedral")
+    print(f"  AVM dihedral = {best} (corr {best_corr:+.3f})", flush=True)
+    return cdmatrix_avm(fwcs, ny, nx, best)
 
 
 def make_pngs(field, target_filter="f210m",
@@ -182,7 +235,7 @@ def make_pngs(field, target_filter="f210m",
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--fields", nargs="+", default=list(FIELDS), choices=list(FIELDS))
-    p.add_argument("--target-filter", default="f210m")
+    p.add_argument("--target-filter", default="f210m", choices=FILTERS)
     p.add_argument("--combos", default="all", choices=["all", "rolling", "throw"])
     p.add_argument("--hips", action="store_true")
     a = p.parse_args()
