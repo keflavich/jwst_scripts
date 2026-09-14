@@ -26,6 +26,20 @@ OVERLAYS=/orange/adamginsburg/jwst/jwst_scripts/scripts/gc_treasury_overlays.py
 LOGDIR=/blue/adamginsburg/adamginsburg/logs
 STAMP=$(date +%Y%m%dT%H%M%S)
 
+# Mirror the published overlays to the starformation viewer host.  This runs
+# HERE, on the login node, rather than inside the sbatch: the compute nodes are
+# not guaranteed working non-interactive ssh, and cron is.  It pushes whatever
+# the PREVIOUS tick built -- an unconditional incremental rsync, cheap when
+# nothing changed and self-healing when a push was missed.
+#
+# Deliberately BEFORE the sbatch below.  Both take the same lock (the push
+# must not walk a tree publish() is swapping), so whichever starts first makes
+# the other skip.  Running the push here, synchronously and in seconds, means
+# it has released the lock long before the queued build ever starts -- with
+# the order reversed a slow first mirror could make the build skip a tick.
+"$PY" "$OVERLAYS" --push-only \
+  || echo "[$STAMP] overlay push to starformation failed"
+
 # Catalogue-derived overlays (red-star and red-clump density HiPS, the
 # ultra-red source catalogue).  Submitted first and unconditionally: these
 # track the vetted daophot catalogues, not the i2d mosaics, so the imaging
@@ -38,14 +52,6 @@ sbatch --job-name=gctreasury_overlays \
   --output="$LOGDIR/gctreasury_overlays_%j.log" \
   --wrap "$PY $OVERLAYS --auto --publish --threads 8"
 
-# Mirror the published overlays to the starformation viewer host.  This runs
-# HERE, on the login node, rather than inside the sbatch: the compute nodes are
-# not guaranteed working non-interactive ssh, and cron is.  It therefore pushes
-# whatever the PREVIOUS tick built, which is why it is an unconditional
-# incremental rsync rather than something gated on this tick's job -- it is
-# cheap when nothing changed and self-healing when a push was missed.
-"$PY" "$OVERLAYS" --push-only \
-  || echo "[$STAMP] overlay push to starformation failed"
 
 # Skip the sbatch entirely when there is nothing to do, so the queue does not
 # collect no-op jobs once the survey is fully built.

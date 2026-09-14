@@ -7,6 +7,7 @@ week without anyone noticing".
 """
 import json
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -134,3 +135,82 @@ def test_abmag_without_pixscale_fails_by_name():
     t = Table({"flux": [1.0, 2.0]})
     with pytest.raises(KeyError, match="PIXSCALE"):
         overlays.abmag(t)
+
+
+# --------------------------------------------------------------------------
+# what gets WRITTEN to the stamp.  The tests above cover the decision made
+# *given* a stamp; without these, reverting the partial-build guard to
+# `full = True` passes the whole suite, which is how the bug shipped.
+
+
+def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
+    """Drive main() with the builders stubbed out, so only the bookkeeping runs."""
+    import numpy as np
+    stamp = tmp_path / "stamp.json"
+    monkeypatch.setattr(overlays, "STAMP", str(stamp))
+    monkeypatch.setattr(overlays, "LOCK", str(tmp_path / "lock"))
+    monkeypatch.setattr(overlays, "OUT", str(tmp_path))
+    called = []
+    for name in ("build_red_stars", "build_rc", "build_ultrared"):
+        monkeypatch.setattr(overlays, name,
+                            lambda *a, _n=name, **k: called.append(_n))
+    monkeypatch.setattr(overlays, "publish", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "push_remote", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "report_ridge", lambda *a, **k: None)
+    fake = np.zeros(3)
+    monkeypatch.setattr(overlays, "load_matched",
+                        lambda pairs, force=False: (
+                            fake, fake, fake, fake,
+                            np.array(["o127"] * 3),
+                            overlays.fingerprint(pairs)))
+    monkeypatch.setattr(sys, "argv", ["gc_treasury_overlays.py"] + argv)
+    rc = overlays.main()
+    return rc, stamp, called
+
+
+def test_partial_build_does_not_claim_the_input_set_as_built(
+        catdir, tmp_path, monkeypatch):
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
+    assert rc == 0
+    assert called == ["build_red_stars"]
+    written = json.loads(stamp.read_text())
+    assert written.get("built") is None, (
+        "a partial build recorded the whole input set; the next --auto tick "
+        "would report everything up to date and leave rc/ultrared frozen")
+    assert written["match"]["n_obs"] == 1      # cache key is still valid
+
+
+def test_full_build_does_claim_the_input_set_as_built(catdir, tmp_path, monkeypatch):
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, [])
+    assert rc == 0
+    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"]
+    written = json.loads(stamp.read_text())
+    assert written["built"] == overlays.fingerprint(overlays.latest_pairs())
+
+
+def test_partial_build_preserves_an_existing_built_stamp(
+        catdir, tmp_path, monkeypatch):
+    """A partial build must not erase the record of the last full one either."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    previous = overlays.fingerprint(overlays.latest_pairs())
+    stamp = tmp_path / "stamp.json"
+    stamp.write_text(json.dumps({"built": previous, "match": previous}))
+    rc, stamp, _ = _run_main(monkeypatch, tmp_path, catdir, ["--only", "ultrared"])
+    assert rc == 0
+    assert json.loads(stamp.read_text())["built"] == previous
+
+
+def test_auto_rebuilds_after_a_partial_build(catdir, tmp_path, monkeypatch):
+    """End to end on the bookkeeping: --only red then --auto must still build."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--auto"])
+    assert rc == 0
+    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"], (
+        "--auto treated a partial build as complete")
