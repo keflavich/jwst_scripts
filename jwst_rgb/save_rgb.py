@@ -10,8 +10,24 @@ from tqdm import tqdm
 
 
 def faithful_avm(header_or_wcs, shape=None):
-    """Build a faithful AVM (as a flat Spatial.CDMatrix) from a FITS header or
-    astropy WCS.  USE THIS instead of ``pyavm.AVM.from_header``.
+    """Build an AVM (flat ``Spatial.CDMatrix``) describing an array EXACTLY as
+    given.
+
+    DO NOT use this for a PNG written by `save_rgb` -- use
+    `avm_for_saved_png()`.  save_rgb reverses BOTH pixel axes (``flip`` then
+    ``ROTATE_180``) and reproject undoes only one, so a WCS-aware reader
+    reconstructs a 180 degree rotation of the input.  This helper keeps the
+    FITS CRPIX *and* stores the true CD, so it defeats the accidental CD
+    negation that leaves a raw ``AVM.from_header`` merely translated: the
+    result is a full 180 degree rotation about the field centre, which on a
+    320x240 test frame measures the image diagonal in the corners and ~0 at the
+    centre, against 2.46" everywhere for ``AVM.from_header`` and 0.000" for
+    ``avm_for_saved_png``.  The sentence that used to close this docstring --
+    "reproject_to_hips flips the PNG internally to match this WCS, so no extra
+    flip is needed" -- counted one of the two reversals and was wrong.
+
+    It stays correct for its original purpose: describing an array that is NOT
+    flipped on the way out.
 
     pyavm.AVM.from_header uses a Scale+Rotation representation that is
     DEGENERATE near position angle 90 deg -- exactly where JWST GC fields sit
@@ -19,8 +35,7 @@ def faithful_avm(header_or_wcs, shape=None):
     rot = 180 - PA (a mirror about the 90 deg axis), throwing the HiPS off by
     ~hundreds of arcsec growing from the image center.  Storing the full CD
     matrix (which to_wcs honors verbatim) has no such degeneracy and is correct
-    at every roll angle.  reproject_to_hips flips the PNG internally to match
-    this WCS, so no extra flip is needed.
+    at every roll angle.
     """
     import pyavm
     from astropy.wcs import WCS
@@ -78,6 +93,61 @@ def _flip_wcs(wcs, ny, nx, flip_rows=False, flip_cols=False):
     return w
 
 
+def avm_for_saved_png(wcs, ny, nx, flip=-1, transpose=Image.ROTATE_180):
+    """Build the AVM that describes a PNG **as save_rgb writes it**.
+
+    USE THIS for anything that will be read back by a WCS-aware tool
+    (reproject_to_hips, Aladin, Aladin Lite).
+
+    save_rgb takes a FITS-convention array ``A`` (row 0 = bottom) and writes
+    ``Image.fromarray(A[::flip]).transpose(transpose)``.  A FITS/AVM reader
+    indexes from the bottom-left, so what it reconstructs from the file is
+    ``np.array(png)[::-1]``.  Composing those steps for the defaults
+    (flip=-1, ROTATE_180) gives ``D[j, i] = A[ny-1-j, nx-1-i]``: a 180 degree
+    rotation of the input.  The embedded WCS must therefore carry BOTH pixel
+    axes reversed -- ``crpix_j -> N_j + 1 - crpix_j`` and the matching column
+    of CD negated.
+
+    Embedding the unmodified ``AVM.from_header(...)`` instead leaves CRPIX at
+    its FITS value.  pyavm's Scale+Rotation round-trip happens to return the
+    negated CD, so the image lands at the right scale and orientation and
+    only the reference pixel is wrong; the resulting sky offset is
+    ``|N_j + 1 - 2*crpix_j|`` pixels per axis.  That vanishes when CRPIX sits
+    at the image centre, which is why the error went unnoticed, and reaches
+    ~1.3 arcsec on a JWST stage 3 mosaic whose CRPIX is tens of pixels off
+    centre.
+
+    Parameters
+    ----------
+    wcs : `~astropy.wcs.WCS`
+        The TRUE celestial WCS of the input array, e.g. ``WCS(header)``.  Do
+        not pass ``pyavm.AVM.from_header(...).to_wcs()`` -- pyavm's
+        Scale+Rotation model is lossy for rotated fields.
+    ny, nx : int
+        Shape of the input array.
+    flip, transpose :
+        The same values passed to `save_rgb`.
+
+    Returns
+    -------
+    pyavm.AVM
+        With the result stored as a flat ``Spatial.CDMatrix``; pyavm's
+        ``to_wcs()`` honours CDMatrix verbatim.
+    """
+    import pyavm
+
+    flip_rows, flip_cols = _reader_flip(flip, transpose)
+    wcs_flipped = _flip_wcs(wcs.celestial, ny, nx,
+                            flip_rows=flip_rows, flip_cols=flip_cols)
+    avm = pyavm.AVM.from_wcs(wcs_flipped, shape=(ny, nx))
+    w = wcs_flipped.wcs
+    cd = w.cd if w.has_cd() else w.get_pc() * w.cdelt[:, None]
+    avm.Spatial.CDMatrix = [cd[0, 0], cd[0, 1], cd[1, 0], cd[1, 1]]
+    avm.Spatial.Scale = None
+    avm.Spatial.Rotation = None
+    return avm
+
+
 def _net_flip(flip, transpose):
     """(flip, PIL transpose) -> (flip_rows, flip_cols) applied to the pixels.
 
@@ -105,8 +175,30 @@ def _net_flip(flip, transpose):
     return flip_rows, flip_cols
 
 
+def _reader_flip(flip, transpose):
+    """(flip, PIL transpose) -> (flip_rows, flip_cols) taking the FITS-order
+    input array to the array a WCS-aware reader reconstructs from the PNG.
+
+    This is `_net_flip` -- the reversals applied to the pixels -- plus one more
+    row reversal for the PIL(top-down) <-> FITS(bottom-up) convention, since
+    AVM and FITS both index from the bottom-left while PIL row 0 is the top.
+    That single extra term is the whole difference between this and
+    `_faithful_flipped_avm`, and it is why that helper is off by a row flip.
+    """
+    flip_rows, flip_cols = _net_flip(flip, transpose)
+    return (not flip_rows), flip_cols
+
+
 def _faithful_flipped_avm(wcs, img_shape, flip, transpose):
     """Build an AVM (as CDMatrix) describing the PNG *as saved* from a TRUE WCS.
+
+    UNUSED, and wrong for a save_rgb PNG -- use `avm_for_saved_png()`.  It
+    applies `_net_flip` (the reversals done to the pixels) without the
+    PIL(top-down) <-> FITS(bottom-up) row reversal a FITS reader then adds, so
+    it is off by exactly one row flip; on the 320x240 test frame that is 7.41"
+    in the corners against 0.000" for the correct builder.  Kept only because
+    older layers on disk were built with it and the history is worth reading.
+
 
     ``wcs`` must be a faithful celestial astropy WCS of the un-flipped image
     (e.g. ``WCS(fits_header)``).  Do NOT pass ``pyavm.AVM.from_header(...)
@@ -234,12 +326,13 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     flip_img.save(filename)
 
     if avm is not None:
-        # Embed the AVM as-is.  reproject_to_hips flips the PNG internally to
-        # match this FITS-convention WCS (reproject/utils.py [:, ::-1]), so the
-        # raw AVM.from_header(target_header) yields correctly-oriented HiPS.
-        # Do NOT pre-flip the AVM to "match" the pixels -- that double-flips
-        # (the mistake the _flip_wcs / _avm_matching_pixels helpers made; they
-        # are kept only for reference and are unused).
+        # Embed the AVM as given.  Callers must hand in an AVM that already
+        # describes the PNG as written -- build it with avm_for_saved_png().
+        # reproject_to_hips undoes only the PIL top-down row order
+        # (reproject/utils.py [:, ::-1]); the column reversal that ROTATE_180
+        # also applies survives, so the net is a 180 degree rotation of the
+        # input array.  A raw AVM.from_header(target_header) keeps the FITS
+        # CRPIX and lands the image |N+1-2*crpix| pixels off per axis.
         base = os.path.basename(filename)
         dir = os.path.dirname(filename)
         avmname = os.path.join(dir, 'avm_'+base)
