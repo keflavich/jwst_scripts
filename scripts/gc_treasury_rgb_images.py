@@ -309,7 +309,10 @@ def check_orientation(hips_dir, src_fits):
         if "=" in ln:
             k, v = ln.split("=", 1)
             p[k.strip()] = v.strip()
-    n, scale = 400, 1.0
+    # 0.5"/px rather than 1": the tolerance below is 0.3", and on a 1" grid
+    # even upsample_factor=20 puts the method's floor uncomfortably close to it
+    # while resampling a 0.03"/px mosaic.  Same sky coverage, 4x the samples.
+    n, scale = 800, 0.5
     gw = WCS(naxis=2)
     gw.wcs.crpix = [n / 2 + 0.5, n / 2 + 0.5]
     gw.wcs.cdelt = [-scale / 3600, scale / 3600]
@@ -349,8 +352,12 @@ def check_orientation(hips_dir, src_fits):
     try:
         from skimage.registration import phase_cross_correlation
     except ImportError:
-        print("  astrometry: scikit-image unavailable; translation not checked")
-        return ok
+        # Returning `ok` here would report the layer fine with the astrometry
+        # gate silently skipped, which is the failure this check exists to
+        # prevent.  None means "not checked".
+        print("  WARNING: scikit-image unavailable; ASTROMETRY GATE SKIPPED -- "
+              "the orientation result below does not cover translation")
+        return None
     shift, _, _ = phase_cross_correlation(B, A, upsample_factor=20)
     off = float(np.hypot(*shift) * scale)          # gw is `scale` arcsec/px
     flag = "OK" if off <= ASTROMETRY_TOL_ARCSEC else "OFF"
@@ -751,7 +758,10 @@ def cmd_publish():
     pyramid for the duration.
     """
     import time
-    stamp = time.strftime("%Y%m%d")
+    # Seconds, not just the date: with a date-only stamp a second run on the
+    # same day finds {n}_stale_{stamp} already there and shutil.move puts the
+    # live tree INSIDE it rather than beside it.
+    stamp = time.strftime("%Y%m%dT%H%M%S")
     src = [f"{OUTDIR}/{COADD_NAME}"] + sorted(
         glob.glob(f"{OUTDIR}/GCTreasury_*_RGB_480-mean-212_hips"))
     for s in src:
@@ -763,10 +773,29 @@ def cmd_publish():
         shutil.rmtree(stage, ignore_errors=True)
         shutil.copytree(s, stage)
         if os.path.isdir(dest):
-            shutil.move(dest, f"{WEB}/{n}_stale_{stamp}")
+            aside = f"{WEB}/{n}_stale_{stamp}"
+            if os.path.exists(aside):                  # same-second re-run
+                shutil.rmtree(aside, ignore_errors=True)
+            shutil.move(dest, aside)
         shutil.move(stage, dest)
+        _prune_stale(n)
         print(f"  published {n}")
     return 0
+
+
+# How many superseded copies of a layer to keep in the web root.  These are
+# full tile pyramids and there are 50+ layers, so without a cap every publish
+# leaves another complete copy behind in a live web root.
+KEEP_STALE = 1
+
+
+def _prune_stale(name):
+    """Drop all but the newest KEEP_STALE `<name>_stale_*` trees."""
+    old = sorted(glob.glob(f"{WEB}/{name}_stale_*"))
+    for d in old[:-KEEP_STALE] if KEEP_STALE else old:
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"    pruned {os.path.basename(d)}")
 
 
 def _read_props(d):
