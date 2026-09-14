@@ -38,6 +38,15 @@ sbatch --job-name=gctreasury_overlays \
   --output="$LOGDIR/gctreasury_overlays_%j.log" \
   --wrap "$PY $OVERLAYS --auto --publish --threads 8"
 
+# Mirror the published overlays to the starformation viewer host.  This runs
+# HERE, on the login node, rather than inside the sbatch: the compute nodes are
+# not guaranteed working non-interactive ssh, and cron is.  It therefore pushes
+# whatever the PREVIOUS tick built, which is why it is an unconditional
+# incremental rsync rather than something gated on this tick's job -- it is
+# cheap when nothing changed and self-healing when a push was missed.
+"$PY" "$OVERLAYS" --push-only \
+  || echo "[$STAMP] overlay push to starformation failed"
+
 # Skip the sbatch entirely when there is nothing to do, so the queue does not
 # collect no-op jobs once the survey is fully built.
 if ! "$PY" "$SCRIPT" --list 2>/dev/null | grep -q "complete in all 2 filters: o"; then

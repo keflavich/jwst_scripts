@@ -70,6 +70,13 @@ WEB = "/orange/adamginsburg/web/public/avm_images"
 CACHE = f"{OUT}/.overlay_match_cache.npz"
 STAMP = f"{OUT}/.overlay_fingerprint.json"
 LOCK = f"{OUT}/.overlays.lock"
+# The viewer is served from starformation, which is a separate tree from the
+# data.rc web root; publishing to WEB alone leaves the overlays invisible there.
+REMOTE = ("starformation:/h/cnswww-starformation.astro/"
+          "starformation.astro.ufl.edu/htdocs/avm_images/")
+LAYERS = ["jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips"]
+CATALOGUE_FILES = ["jwst_ultrared_stars.ecsv", "jwst_ultrared_stars.fits",
+                   "jwst_ultrared_stars.json"]
 
 AB_ZP_JY = 3631.0
 MATCH_ARCSEC = 0.1
@@ -334,8 +341,7 @@ def publish(dry=False):
     there directly.  Symlinked layers are dereferenced on the starformation
     copy (-L) so the remote gets real files."""
     import subprocess
-    layers = ["jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips"]
-    for name in layers:
+    for name in LAYERS:
         src = f"{OUT}/{name}"
         if not os.path.isdir(src):
             print(f"  {name}: not built; skipping")
@@ -356,6 +362,32 @@ def publish(dry=False):
         os.replace(stage, dest)
         shutil.rmtree(old, ignore_errors=True)
         print(f"  published {dest}", flush=True)
+
+
+def push_remote(dry=False):
+    """Mirror the published overlays to the starformation viewer host.
+
+    Runs from wherever it is invoked, so the caller has to have working
+    non-interactive ssh -- cron does, on the login node.  -L dereferences
+    symlinked layers so the remote gets real files.  No --delete: this tree is
+    shared with products this script does not own.
+    """
+    import subprocess
+    srcs = [f"{WEB}/{n}/" for n in LAYERS if os.path.isdir(f"{WEB}/{n}")]
+    for src in srcs:
+        name = os.path.basename(src.rstrip("/"))
+        cmd = ["rsync", "-a", "-L", "--partial", src, f"{REMOTE}{name}/"]
+        print("  " + " ".join(cmd), flush=True)
+        if not dry:
+            subprocess.run(cmd, check=True)
+    files = [f"{WEB}/{f}" for f in CATALOGUE_FILES if os.path.exists(f"{WEB}/{f}")]
+    if files:
+        cmd = ["rsync", "-a", "-L", "--partial"] + files + [REMOTE]
+        print("  " + " ".join(cmd), flush=True)
+        if not dry:
+            subprocess.run(cmd, check=True)
+    print(f"  pushed {len(srcs)} layer(s) and {len(files)} catalogue file(s)",
+          flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +413,12 @@ def main():
     ap.add_argument("--force", action="store_true", help="rebuild regardless")
     ap.add_argument("--publish", action="store_true",
                     help="copy the HiPS layers into the web root when done")
+    ap.add_argument("--push-remote", action="store_true",
+                    help="also mirror the published overlays to starformation "
+                         "(needs working non-interactive ssh)")
+    ap.add_argument("--push-only", action="store_true",
+                    help="mirror whatever is already published to starformation "
+                         "and exit; takes no lock and builds nothing")
     ap.add_argument("--refit", action="store_true",
                     help="report the RC ridge and exit without building")
     ap.add_argument("--level", type=int, default=None)
@@ -388,6 +426,15 @@ def main():
     ap.add_argument("--only", choices=("red", "rc", "ultrared"), action="append",
                     help="build a subset (repeatable)")
     a = ap.parse_args()
+
+    # Stands on its own so a scheduler can push from a host with working ssh
+    # while the build runs elsewhere.  Deliberately ahead of the --auto
+    # up-to-date check: a push can be outstanding even when nothing needs
+    # rebuilding, which is the normal case on the tick after a build.
+    if a.push_only:
+        print("pushing published overlays to starformation")
+        push_remote()
+        return 0
 
     pairs = latest_pairs()
     if not pairs:
@@ -424,6 +471,9 @@ def main():
         if a.publish:
             print("publishing")
             publish()
+        if a.push_remote:
+            print("pushing to starformation")
+            push_remote()
         with open(STAMP, "w") as fh:
             json.dump({"built": fp, "match": fp,
                        "when": time.strftime("%Y-%m-%dT%H:%M:%S")}, fh, indent=1)
