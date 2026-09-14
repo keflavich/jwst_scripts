@@ -78,6 +78,71 @@ def _flip_wcs(wcs, ny, nx, flip_rows=False, flip_cols=False):
     return w
 
 
+def avm_for_saved_png(wcs, ny, nx, flip=-1, transpose=Image.ROTATE_180):
+    """Build the AVM that describes a PNG **as save_rgb writes it**.
+
+    USE THIS for anything that will be read back by a WCS-aware tool
+    (reproject_to_hips, Aladin, Aladin Lite).
+
+    save_rgb takes a FITS-convention array ``A`` (row 0 = bottom) and writes
+    ``Image.fromarray(A[::flip]).transpose(transpose)``.  A FITS/AVM reader
+    indexes from the bottom-left, so what it reconstructs from the file is
+    ``np.array(png)[::-1]``.  Composing those steps for the defaults
+    (flip=-1, ROTATE_180) gives ``D[j, i] = A[ny-1-j, nx-1-i]``: a 180 degree
+    rotation of the input.  The embedded WCS must therefore carry BOTH pixel
+    axes reversed -- ``crpix_j -> N_j + 1 - crpix_j`` and the matching column
+    of CD negated.
+
+    Embedding the unmodified ``AVM.from_header(...)`` instead leaves CRPIX at
+    its FITS value.  pyavm's Scale+Rotation round-trip happens to return the
+    negated CD, so the image lands at the right scale and orientation and
+    only the reference pixel is wrong; the resulting sky offset is
+    ``|N_j + 1 - 2*crpix_j|`` pixels per axis.  That vanishes when CRPIX sits
+    at the image centre, which is why the error went unnoticed, and reaches
+    ~1.3 arcsec on a JWST stage 3 mosaic whose CRPIX is tens of pixels off
+    centre.
+
+    Parameters
+    ----------
+    wcs : `~astropy.wcs.WCS`
+        The TRUE celestial WCS of the input array, e.g. ``WCS(header)``.  Do
+        not pass ``pyavm.AVM.from_header(...).to_wcs()`` -- pyavm's
+        Scale+Rotation model is lossy for rotated fields.
+    ny, nx : int
+        Shape of the input array.
+    flip, transpose :
+        The same values passed to `save_rgb`.
+
+    Returns
+    -------
+    pyavm.AVM
+        With the result stored as a flat ``Spatial.CDMatrix``; pyavm's
+        ``to_wcs()`` honours CDMatrix verbatim.
+    """
+    import pyavm
+
+    rot = transpose == Image.ROTATE_180
+    if flip not in (1, -1):
+        raise ValueError(f"Unsupported flip={flip}; only +1/-1 handled")
+    if transpose is not None and not rot:
+        raise ValueError(
+            f"Unsupported transpose={transpose}; only None/ROTATE_180 handled")
+
+    # the trailing ^ True is the PIL(top-down) <-> FITS(bottom-up) convention
+    flip_rows = (flip == -1) ^ rot ^ True
+    flip_cols = rot
+
+    wcs_flipped = _flip_wcs(wcs.celestial, ny, nx,
+                            flip_rows=flip_rows, flip_cols=flip_cols)
+    avm = pyavm.AVM.from_wcs(wcs_flipped, shape=(ny, nx))
+    w = wcs_flipped.wcs
+    cd = w.cd if w.has_cd() else w.get_pc() * w.cdelt[:, None]
+    avm.Spatial.CDMatrix = [cd[0, 0], cd[0, 1], cd[1, 0], cd[1, 1]]
+    avm.Spatial.Scale = None
+    avm.Spatial.Rotation = None
+    return avm
+
+
 def _net_flip(flip, transpose):
     """(flip, PIL transpose) -> (flip_rows, flip_cols) applied to the pixels.
 
@@ -234,12 +299,13 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
     flip_img.save(filename)
 
     if avm is not None:
-        # Embed the AVM as-is.  reproject_to_hips flips the PNG internally to
-        # match this FITS-convention WCS (reproject/utils.py [:, ::-1]), so the
-        # raw AVM.from_header(target_header) yields correctly-oriented HiPS.
-        # Do NOT pre-flip the AVM to "match" the pixels -- that double-flips
-        # (the mistake the _flip_wcs / _avm_matching_pixels helpers made; they
-        # are kept only for reference and are unused).
+        # Embed the AVM as given.  Callers must hand in an AVM that already
+        # describes the PNG as written -- build it with avm_for_saved_png().
+        # reproject_to_hips undoes only the PIL top-down row order
+        # (reproject/utils.py [:, ::-1]); the column reversal that ROTATE_180
+        # also applies survives, so the net is a 180 degree rotation of the
+        # input array.  A raw AVM.from_header(target_header) keeps the FITS
+        # CRPIX and lands the image |N+1-2*crpix| pixels off per axis.
         base = os.path.basename(filename)
         dir = os.path.dirname(filename)
         avmname = os.path.join(dir, 'avm_'+base)
