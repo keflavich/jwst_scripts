@@ -34,10 +34,12 @@ image_filenames_pipe = {
     'f410m': '/orange/adamginsburg/jwst/brick/F410M/pipeline/jw02221-o001_t001_nircam_clear-f410m-merged_i2d.fits',
     'f444w': '/orange/adamginsburg/jwst/brick/F444W/pipeline/jw01182-o004_t001_nircam_clear-f444w-merged_i2d.fits',
     'f466n': '/orange/adamginsburg/jwst/brick/F466N/pipeline/jw02221-o001_t001_nircam_clear-f466n-merged_i2d.fits',
+    # MIRI o003 astrometry was corrected 2026-09-03 (MIRICOR='20260903');
+    # the old mastDownload copies carry no MIRICOR and are ~3.6 arcsec off.
     'f2550w': '/orange/adamginsburg/jwst/brick/F2550W/pipeline/jw02221-o002_t001_miri_f2550w_i2d.fits',
-    'f1130w': '/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1130w-brightsky/jw03958-o003_t003_miri_f1130w-brightsky_i2d.fits',
-    'f1500w': '/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1500w-brightsky/jw03958-o003_t003_miri_f1500w-brightsky_i2d.fits',
-    'f770w': '/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f770w-brightsky/jw03958-o003_t003_miri_f770w-brightsky_i2d.fits',
+    'f1130w': '/orange/adamginsburg/jwst/sickle/F1130W/pipeline/jw03958-o003_t001_miri_f1130w_i2d.fits',
+    'f1500w': '/orange/adamginsburg/jwst/sickle/F1500W/pipeline/jw03958-o003_t001_miri_f1500w_i2d.fits',
+    'f770w': '/orange/adamginsburg/jwst/sickle/F770W/pipeline/jw03958-o003_t001_miri_f770w_i2d.fits',
 }
 
 
@@ -277,11 +279,28 @@ def submit_rgb_job(job_spec):
     return job_spec_file
 
 
+def _cache_is_stale(cache_file, source_file):
+    """True if the reprojected cache predates the mosaic it came from.
+
+    The cache is keyed on filename only, so a re-reduced mosaic silently keeps
+    serving the old reprojection.  That is how the Brick HiPS ended up ~1.4 px
+    (0.087") off: the caches were written 2025-07 and the mosaics re-reduced
+    2026-08/09, moving the astrometric frame between epochs.  Comparing mtimes
+    makes a re-reduction invalidate the cache automatically.
+    """
+    try:
+        return os.path.getmtime(cache_file) < os.path.getmtime(source_file)
+    except OSError:
+        return True
+
+
 def _reproject_if_needed(input_file, output_file, tgt_header):
     import reproject
 
-    if os.path.exists(output_file):
+    if os.path.exists(output_file) and not _cache_is_stale(output_file, input_file):
         return fits.getdata(output_file)
+    if os.path.exists(output_file):
+        print(f'Reprojection cache STALE (source is newer): {output_file}')
 
     print(f'Reprojecting {input_file} to {output_file}')
     try:
@@ -381,14 +400,48 @@ def worker_create_rgb(job_spec_file):
         cache[nan_key] = data
         return data
 
+    def _wants_nanfill(key):
+        """Only MIRI channels get NaN-filled.
+
+        fill_nan exists to paper over MIRI saturation regions.  Applied to a
+        NIRCam channel it invents a border-median value for pixels that are NaN
+        in THAT channel but carry real data in the others -- 1.77% of pixels in
+        the f444w/f356w/f200w set -- so the filled island shows up as a flat
+        false-coloured blob (olive/blue/red) in the composite.  That is the
+        regression that broke Brick_RGB_444-356-200: the good 2025-08-01 build
+        predates the nanfill caches, and the 2026-03 ones introduced them.
+        """
+        return key in MIRI_FILTERNAMES
+
     def resolve_channel(channel_token):
         if channel_token.startswith('sum:'):
             expr = channel_token.split(':', 1)[1]
             left, right = expr.split('+', 1)
-            return get_data_for_key(left, nanfill=True) + get_data_for_key(right, nanfill=True)
-        return get_data_for_key(channel_token, nanfill=True)
+            return (get_data_for_key(left, nanfill=_wants_nanfill(left))
+                    + get_data_for_key(right, nanfill=_wants_nanfill(right)))
+        return get_data_for_key(channel_token, nanfill=_wants_nanfill(channel_token))
 
-    rgb = np.array([resolve_channel(ch) for ch in channels]).swapaxes(0, 2).swapaxes(0, 1)
+    # Deterministic guard against fill_nan false colour.
+    #
+    # fill_nan runs per channel, so a pixel that is NaN in one channel but real
+    # in the others gets an invented border-median value in that channel only,
+    # and the composite shows a flat olive/blue/red island.  Rather than try to
+    # detect the blobs in the rendered PNG (a heuristic that cannot separate them
+    # from dark sky), forbid the situation in the data: a pixel may keep a filled
+    # value only where EVERY channel was NaN, so a fill can never invent colour.
+    _raw = [get_data_for_key(ch, nanfill=False) if not ch.startswith('sum:')
+            else resolve_channel(ch) for ch in channels]
+    _filled = [resolve_channel(ch) for ch in channels]
+    _nan = [np.isnan(r) for r in _raw]
+    _nan_any = np.logical_or.reduce(_nan)
+    _nan_all = np.logical_and.reduce(_nan)
+    _inconsistent = _nan_any & ~_nan_all
+    if _inconsistent.any():
+        print(f'  masking {100*_inconsistent.mean():.2f}% of pixels that are NaN in some '
+              f'but not all channels (would otherwise become false colour)', flush=True)
+        for arr in _filled:
+            arr[_inconsistent] = np.nan
+    rgb = np.array(_filled).swapaxes(0, 2).swapaxes(0, 1)
     original_data = rgb.copy()
 
     rgb_scaled = np.array([

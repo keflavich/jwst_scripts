@@ -29,10 +29,12 @@ image_filenames_pipe = {
     "f410m": "/orange/adamginsburg/jwst/brick/F410M/pipeline/jw02221-o001_t001_nircam_clear-f410m-merged_i2d.fits",
     "f444w": "/orange/adamginsburg/jwst/brick/F444W/pipeline/jw01182-o004_t001_nircam_clear-f444w-merged_i2d.fits",
     "f466n": "/orange/adamginsburg/jwst/brick/F466N/pipeline/jw02221-o001_t001_nircam_clear-f466n-merged_i2d.fits",
+    # MIRI o003 astrometry was corrected 2026-09-03 (MIRICOR='20260903');
+    # the old mastDownload copies carry no MIRICOR and are ~3.6 arcsec off.
     "f2550w": "/orange/adamginsburg/jwst/brick/F2550W/pipeline/jw02221-o002_t001_miri_f2550w_i2d.fits",
-    "f1130w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1130w-brightsky/jw03958-o003_t003_miri_f1130w-brightsky_i2d.fits",
-    "f1500w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f1500w-brightsky/jw03958-o003_t003_miri_f1500w-brightsky_i2d.fits",
-    "f770w": "/orange/adamginsburg/jwst//sickle/mastDownload/JWST/jw03958-o003_t003_miri_f770w-brightsky/jw03958-o003_t003_miri_f770w-brightsky_i2d.fits",
+    "f1130w": "/orange/adamginsburg/jwst/sickle/F1130W/pipeline/jw03958-o003_t001_miri_f1130w_i2d.fits",
+    "f1500w": "/orange/adamginsburg/jwst/sickle/F1500W/pipeline/jw03958-o003_t001_miri_f1500w_i2d.fits",
+    "f770w": "/orange/adamginsburg/jwst/sickle/F770W/pipeline/jw03958-o003_t001_miri_f770w_i2d.fits",
 }
 
 # Commenting out subtracted images for now to get basic functionality working
@@ -63,7 +65,12 @@ def make_pngs(target_filter='f466n', new_basepath='/orange/adamginsburg/jwst/bri
     repr_image_sub_filenames = {x: (new_basepath+os.path.basename(y)) for x,y in repr_image_sub_filenames.items()}
 
     for filtername in image_filenames_pipe:
-        if not os.path.exists(repr_image_filenames[filtername]):
+        _c, _srcf = repr_image_filenames[filtername], image_filenames_pipe[filtername]
+        _stale = (os.path.exists(_c) and os.path.exists(_srcf)
+                  and os.path.getmtime(_c) < os.path.getmtime(_srcf))
+        if _stale:
+            print(f'Reprojection cache STALE (source newer), redoing: {_c}')
+        if (not os.path.exists(_c)) or _stale:
             print(f"Reprojecting {filtername} {image_filenames_pipe[filtername]} to {repr_image_filenames[filtername]}")
             try:
                 result,_ = reproject.reproject_interp(image_filenames_pipe[filtername], tgt_header, hdu_in='SCI')
