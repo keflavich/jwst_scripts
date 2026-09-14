@@ -126,6 +126,11 @@ def fingerprint(pairs):
 
 
 def abmag(t):
+    if "PIXSCALE" not in t.meta:
+        raise KeyError(
+            "catalogue has no PIXSCALE in its metadata; refusing to guess -- "
+            "the short- and long-wave scales differ by a factor 4 in solid "
+            "angle, which is 1.5 mag")
     ps = t.meta["PIXSCALE"] * u.arcsec
     fjy = (np.asarray(t["flux"]) * u.MJy / u.sr * (ps ** 2).to(u.sr)).to(u.Jy).value
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -133,7 +138,13 @@ def abmag(t):
 
 
 def match_catalogs(pairs, tol=MATCH_ARCSEC):
-    """Cross-filter positional match; returns colour, F480M, ra, dec, obs."""
+    """Cross-filter positional match; returns colour, F480M, ra, dec, obs.
+
+    Nearest-neighbour with no uniqueness pass, so in a field this crowded
+    several F480M detections can claim the same F212N source within the
+    tolerance.  That slightly inflates the density maps.  The tolerance is
+    ~3 short-wave pixels, comfortably inside the astrometric scatter between
+    the two filters, so tightening it would cost real matches instead."""
     col, m480, ra, dec, who = [], [], [], [], []
     for obs, v in pairs.items():
         a = Table.read(v["f212n"][1])
@@ -371,18 +382,29 @@ def push_remote(dry=False):
     non-interactive ssh -- cron does, on the login node.  -L dereferences
     symlinked layers so the remote gets real files.  No --delete: this tree is
     shared with products this script does not own.
+
+    The CALLER must hold the lock.  publish() swaps each layer in with
+    os.rename + os.replace, and an rsync walking the tree across those two
+    calls sees it vanish and be replaced underneath, mirroring half a pyramid
+    to a live viewer host.  Nothing orders the cron's push against the build
+    job it just submitted, so the push takes the same lock the build does.
     """
     import subprocess
     srcs = [f"{WEB}/{n}/" for n in LAYERS if os.path.isdir(f"{WEB}/{n}")]
     for src in srcs:
         name = os.path.basename(src.rstrip("/"))
-        cmd = ["rsync", "-a", "-L", "--partial", src, f"{REMOTE}{name}/"]
+        # --partial-dir, never bare --partial: bare --partial keeps a
+        # half-transferred file at the DESTINATION name, so an interrupted push
+        # serves truncated tiles until the next tick repairs them.  A partial
+        # dir keeps the resume benefit without ever exposing a fragment.
+        cmd = ["rsync", "-a", "-L", "--partial-dir=.rsync-partial",
+               src, f"{REMOTE}{name}/"]
         print("  " + " ".join(cmd), flush=True)
         if not dry:
             subprocess.run(cmd, check=True)
     files = [f"{WEB}/{f}" for f in CATALOGUE_FILES if os.path.exists(f"{WEB}/{f}")]
     if files:
-        cmd = ["rsync", "-a", "-L", "--partial"] + files + [REMOTE]
+        cmd = ["rsync", "-a", "-L", "--partial-dir=.rsync-partial"] + files + [REMOTE]
         print("  " + " ".join(cmd), flush=True)
         if not dry:
             subprocess.run(cmd, check=True)
@@ -432,8 +454,18 @@ def main():
     # up-to-date check: a push can be outstanding even when nothing needs
     # rebuilding, which is the normal case on the tick after a build.
     if a.push_only:
-        print("pushing published overlays to starformation")
-        push_remote()
+        # Same lock as the build: publish() may be swapping trees in right now.
+        # Skipping is the right answer rather than waiting -- the next tick
+        # pushes, and the products are unchanged in the meantime.
+        if not take_lock():
+            print("a build holds the lock; leaving the push to the next tick")
+            return 0
+        try:
+            print("pushing published overlays to starformation")
+            push_remote()
+        finally:
+            if os.path.exists(LOCK):
+                os.remove(LOCK)
         return 0
 
     pairs = latest_pairs()
@@ -474,9 +506,23 @@ def main():
         if a.push_remote:
             print("pushing to starformation")
             push_remote()
+        # The match cache is valid for this input set whatever subset was
+        # built, but "built" must only claim a FULL build: recording it after
+        # --only would make the next --auto tick report everything up to date
+        # and leave the layers it skipped frozen until some other catalogue
+        # changes.
+        full = want == {"red", "rc", "ultrared"}
+        stamp = {"match": fp, "when": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if full:
+            stamp["built"] = fp
+        elif os.path.exists(STAMP):
+            with open(STAMP) as fh:
+                stamp["built"] = json.load(fh).get("built")
         with open(STAMP, "w") as fh:
-            json.dump({"built": fp, "match": fp,
-                       "when": time.strftime("%Y-%m-%dT%H:%M:%S")}, fh, indent=1)
+            json.dump(stamp, fh, indent=1)
+        if not full:
+            print(f"partial build ({', '.join(sorted(want))}); "
+                  f"not marking the input set as built")
         print("done")
         return 0
     finally:

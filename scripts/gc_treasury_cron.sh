@@ -49,7 +49,19 @@ sbatch --job-name=gctreasury_overlays \
 
 # Skip the sbatch entirely when there is nothing to do, so the queue does not
 # collect no-op jobs once the survey is fully built.
-if ! "$PY" "$SCRIPT" --list 2>/dev/null | grep -q "complete in all 2 filters: o"; then
+#
+# "the check said no" and "the check failed" have to stay distinguishable.
+# Piping --list straight into grep conflated them: any failure -- an import
+# error, a moved path, a reworded message -- made the negated pipeline true, so
+# every tick from then on reported "nothing to submit" and exited 0, with
+# 2>/dev/null hiding the reason.  A silently disabled pipeline looks exactly
+# like a finished one.
+if ! LIST_OUT=$("$PY" "$SCRIPT" --list 2>&1); then
+  echo "[$STAMP] --list FAILED; not submitting.  Output:"
+  printf '%s\n' "$LIST_OUT" | tail -20
+  exit 1
+fi
+if ! printf '%s\n' "$LIST_OUT" | grep -q "complete in all 2 filters: o"; then
   echo "[$STAMP] no observation complete in both filters; nothing to submit"
   exit 0
 fi
