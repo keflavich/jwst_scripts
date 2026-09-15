@@ -848,6 +848,12 @@ def set_union_view(coadd_dir, layers):
                  for c, f in zip(cen, fovs))
     fov = 2.0 * radius
     fn = os.path.join(coadd_dir, "properties")
+    if not os.path.exists(fn):
+        # the live NIRCam coadd directory has Norder* and no properties, so
+        # this is reachable rather than theoretical
+        print(f"  no properties in {os.path.basename(coadd_dir)}; "
+              f"cannot set the default view")
+        return
     lines, seen = [], set()
     repl = {"hips_initial_ra": f"{ctr.ra.deg:.10f}",
             "hips_initial_dec": f"{ctr.dec.deg:.10f}",
@@ -867,7 +873,7 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
-def cmd_coadd(miri=False, bgmatch=False):
+def cmd_coadd(miri=False, bgmatch=False, full=False):
     """Coadd every per-observation HiPS into one growing mosaic.
 
     NIRCam and MIRI are coadded separately: the two point at different sky and
@@ -907,15 +913,64 @@ def cmd_coadd(miri=False, bgmatch=False):
         out = f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME}"
     else:
         out = f"{OUTDIR}/{COADD_NAME}"
+
+    from jwst_rgb.incremental_coadd import (
+        hardlink_tree, merge_layer, plan_coadd, save_manifest,
+        stamp_release_date)
+
+    action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
+        else plan_coadd(out, layers)
+    print(f"coadd plan: {action} ({reason})")
+
+    if action == "none":
+        return 0
+
+    if action == "append":
+        # Clone by hardlink and merge only the new layers.  merge_layer writes
+        # composites through a temp file + os.replace, so the tiles shared with
+        # the previous coadd are never mutated in place.
+        stage = out + ".new"
+        shutil.rmtree(stage, ignore_errors=True)
+        hardlink_tree(out, stage)
+        total_c = total_x = 0
+        for L in new_layers:
+            c, x = merge_layer(L, stage)
+            total_c += c
+            total_x += x
+            print(f"  + {os.path.basename(L)}: {c} copied, {x} composited")
+        save_manifest(stage, layers)
+        set_union_view(stage, layers)
+        # without this the appended coadd keeps the first layer's date and
+        # publish_hips_layers.py never ships it
+        print(f"  hips_release_date -> {stamp_release_date(stage)}")
+        old_dir = out + ".old"
+        shutil.rmtree(old_dir, ignore_errors=True)
+        os.rename(out, old_dir)
+        os.replace(stage, out)
+        shutil.rmtree(old_dir, ignore_errors=True)
+        print(f"done: {out} (+{total_c} tiles copied, {total_x} composited; "
+              f"a full rebuild would have touched "
+              f"{sum(_tile_count(L) for L in layers)})")
+        return 0
+
     if os.path.exists(out):
         shutil.rmtree(out)
     print(f"coadding {len(layers)} observation HiPS -> {out}")
     for L in layers:
         print(f"  {os.path.basename(L)}")
     coadd_hips(layers, out)
+    save_manifest(out, layers)
     set_union_view(out, layers)
+    print(f"  hips_release_date -> {stamp_release_date(out)}")
     print(f"done: {out}")
     return 0
+
+
+def _tile_count(directory, tile_format="png"):
+    n = 0
+    for _, _, filenames in os.walk(directory):
+        n += sum(1 for f in filenames if f.endswith("." + tile_format))
+    return n
 
 
 def main():
@@ -941,6 +996,9 @@ def main():
                     help="with --auto, also install into the avm_images web tree")
     ap.add_argument("--avm", choices=("raw", "rot180"), default="raw",
                     help="AVM form; raw is the documented path (default)")
+    ap.add_argument("--full-coadd", action="store_true",
+                    help="force a full coadd rebuild instead of appending new "
+                         "layers to the existing one")
     ap.add_argument("--no-hips", action="store_true", help="png only")
     a = ap.parse_args()
 
@@ -951,7 +1009,7 @@ def main():
     if a.auto:
         return cmd_auto(publish=a.publish)
     if a.coadd:
-        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch)
+        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd)
 
     inv, obs = inventory()
     targets = ([a.obs] if a.obs else
