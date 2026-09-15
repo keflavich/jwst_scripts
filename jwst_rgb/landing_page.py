@@ -25,29 +25,60 @@ ALADIN_PARAMS = {"showSettingsControl": "true"}
 
 _CALL = re.compile(r"buildLandingPage\(\s*\{")
 
+#: Marker so the injected block is recognised on a later run and not repeated.
+CSS_MARK = "gc-treasury landing page overrides"
+
+#: Collapse the left panel by default; see the module docstring for why these
+#: selectors are safe against the stylesheet the template injects at runtime.
+PANEL_CSS = f"""<style>
+/* {CSS_MARK} */
+/* The collapsed drawer is 100px of chrome plus a blue disc over the image.
+   Zero-width hides both; the hamburger stays, because it is a child of body
+   rather than of the container. */
+.box_v .menu-container {{ width: 0; }}
+/* The disc the container used to draw, moved onto the label that opens it. */
+label.hamburger {{ background-color: #1377d6; }}
+</style>
+"""
+
 
 def params_snippet(params=None):
     return ", ".join(f"{k}: {v}" for k, v in (params or ALADIN_PARAMS).items())
 
 
-def patch_landing_page(path, params=None):
-    """Add aladinParams to one index.html.  Returns True when it changed.
+def patch_landing_page(path, params=None, css=True):
+    """Apply our landing page overrides to one index.html.
 
-    Idempotent: a page that already names the option is left alone, so this can
-    run on every build without accumulating duplicate keys.
+    Two independent edits: the aladinParams that expose Aladin Lite's settings
+    control, and a stylesheet that collapses the left panel.  Either may
+    already be present -- a page built before one of them was added has the
+    other -- so each is applied on its own and the return says whether
+    anything changed.
+
+    Idempotent, so this can run on every build without accumulating duplicates.
     """
     with open(path) as fh:
         s = fh.read()
     if "buildLandingPage" not in s:
         return False
-    if all(k in s for k in (params or ALADIN_PARAMS)):
-        return False
-    new, n = _CALL.subn(
-        "buildLandingPage({aladinParams: {%s}, " % params_snippet(params), s, count=1)
-    if not n:
+    before = s
+    if not all(k in s for k in (params or ALADIN_PARAMS)):
+        s, n = _CALL.subn(
+            "buildLandingPage({aladinParams: {%s}, " % params_snippet(params),
+            s, count=1)
+        if not n:
+            return False
+    if css and CSS_MARK not in s:
+        if "</head>" in s:
+            s = s.replace("</head>", PANEL_CSS + "</head>", 1)
+        else:
+            # no head to land in; the template builds the body itself, so
+            # anywhere before the call works
+            s = PANEL_CSS + s
+    if s == before:
         return False
     with open(path, "w") as fh:
-        fh.write(new)
+        fh.write(s)
     return True
 
 

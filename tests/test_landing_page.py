@@ -91,3 +91,64 @@ def test_a_custom_option_set_is_honoured(tmp_path):
     p.write_text(AS_WRITTEN)
     patch_landing_page(str(p), {"showReticle": "false"})
     assert "aladinParams: {showReticle: false}" in p.read_text()
+
+
+from jwst_rgb.landing_page import CSS_MARK, PANEL_CSS   # noqa: E402
+
+
+def test_the_panel_css_is_injected(page):
+    patch_landing_page(page)
+    s = open(page).read()
+    assert CSS_MARK in s
+    assert ".box_v .menu-container { width: 0; }" in s
+
+
+def test_the_css_lands_inside_head(page):
+    patch_landing_page(page)
+    s = open(page).read()
+    assert s.index(CSS_MARK) < s.index("</head>")
+
+
+def test_a_page_that_already_has_the_params_still_gets_the_css(tmp_path):
+    """The 399 pages patched before the panel work were in exactly this state."""
+    p = tmp_path / "index.html"
+    p.write_text(AS_WRITTEN.replace(
+        "buildLandingPage({",
+        "buildLandingPage({aladinParams: {showSettingsControl: true}, "))
+    assert patch_landing_page(str(p)) is True
+    s = p.read_text()
+    assert CSS_MARK in s
+    assert s.count("aladinParams") == 1
+
+
+def test_both_edits_are_idempotent_together(page):
+    assert patch_landing_page(page) is True
+    first = open(page).read()
+    assert patch_landing_page(page) is False
+    assert open(page).read() == first
+    assert first.count(CSS_MARK) == 1
+    assert first.count("aladinParams") == 1
+
+
+def test_the_collapsed_rule_loses_to_the_templates_expanded_rule():
+    """The drawer must still open.
+
+    Template: `#hamburger:checked~.box_v .menu-container` is (1,2,0).
+    Ours:     `.box_v .menu-container`                    is (0,2,0).
+    An id beats two classes, so checking the box still widens the panel -- and
+    that holds regardless of which <style> the browser sees first, which is why
+    there is no !important here.
+    """
+    assert "!important" not in PANEL_CSS
+    assert "#hamburger" not in PANEL_CSS      # we never restate the open state
+
+
+def test_the_toggle_itself_is_never_hidden():
+    """Zero-width plus overflow:hidden would take the disc with the strip.
+
+    The label is a child of body, so it survives; the background-color moves
+    the disc onto it.  Hiding the label instead would make the panel
+    unreachable.
+    """
+    assert "label.hamburger" in PANEL_CSS
+    assert "display: none" not in PANEL_CSS
