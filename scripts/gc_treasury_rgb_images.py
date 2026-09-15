@@ -573,9 +573,15 @@ def miri_solve_offsets(keys, pairs):
     """Least-squares additive offsets from the pairwise differences.
 
     One equation per overlapping pair, off_a - off_b = median(A-B), plus a
-    mean-zero constraint so the system is determined and the overall level of
-    the mosaic is not dragged up or down.  Tiles with no overlap at all simply
-    get zero, which is the honest answer -- nothing ties them to the rest.
+    mean-zero row so the overall level of the mosaic is not dragged up or down.
+    That row is belt-and-braces: lstsq with rcond=None returns the
+    minimum-norm solution, which is already mean-zero, and dropping the row
+    leaves both the connected and the disconnected cases unchanged.  It stays
+    because it makes the constraint visible in the system rather than implicit
+    in a solver flag.
+
+    Tiles with no overlap at all get zero, which is the answer the data
+    supports -- nothing ties them to the rest.
     """
     idx = {k: i for i, k in enumerate(keys)}
     rows, rhs = [], []

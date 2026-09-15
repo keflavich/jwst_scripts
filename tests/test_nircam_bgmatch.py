@@ -149,3 +149,27 @@ def test_plain_and_bgmatch_have_distinct_names():
     assert G.png_for("o127", True).endswith("_bgmatch.png")
     assert "_bgmatch_hips" in G.hips_for("o127", True)
     assert G.COADD_NAME != G.BGMATCH_COADD_NAME
+
+
+def test_background_match_binning_stays_off():
+    """The comment says do not re-enable; this makes that a check.
+
+    Block-averaging by 8 cuts the reprojected area by 64 and turns a ten-hour
+    match into ten minutes, which is why someone will try it.  Measured against
+    values the unbinned path had already produced:
+
+        pair          unbinned     bin=8      error
+        o098-o105       0.1317   -0.6077    -0.7394
+        o098-o107       1.2270    0.5990    -0.6280
+        o102-o109       0.0447   -0.5624    -0.6071
+
+    A roughly constant -0.6, the same size as the offsets being solved for.
+    Strict NaN propagation did not help, ruling out the footprint-edge
+    explanation, and factor 1 reproduced the unbinned values to -0.0000, so the
+    bias belongs to the binning rather than to the comparison.  The mechanism
+    is unconfirmed.
+
+    Raising BG_MATCH_BIN should fail here with that reason rather than quietly
+    corrupting every field's correction.  Re-run the comparison first.
+    """
+    assert G.BG_MATCH_BIN == 1
