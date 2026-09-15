@@ -570,7 +570,13 @@ def cmd_miri_match():
     lo, hi = np.percentile(pooled, [1.0, 99.5])
     print(f"\nshared stretch limits from the pooled, offset-corrected data: "
           f"{lo:.4f} .. {hi:.4f}")
+    # "fields" is what the solve was RUN over, which is not the same as
+    # "offsets": a field with no overlapping neighbour is considered and comes
+    # back unmatched.  Recording both lets the scheduler tell "nothing new has
+    # arrived" from "this field can never be matched", and so re-solve on the
+    # first rather than on every tick.
     json.dump({"offsets": off, "vmin": float(lo), "vmax": float(hi),
+               "fields": sorted(paths),
                "pairs": [[a, b, d, n] for a, b, d, n in pairs]},
               open(MIRI_MATCH_JSON, "w"), indent=1)
     print(f"wrote {MIRI_MATCH_JSON}")
@@ -659,6 +665,32 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
             raise RuntimeError(f"{obs}: MIRI build produced no Norder3")
         print(f"  wrote {hips_dir}", flush=True)
     return png, hips_dir
+
+
+def miri_match_is_stale(miri):
+    """Has a MIRI field arrived since the background match was last solved?
+
+    `miri` is the current {obs: path}.  Returns the reason, or None when the
+    match already covers what is on disk.
+
+    Compares against the field set the solve was RUN over rather than the
+    offsets it produced.  A field with no overlapping neighbour is covered by
+    the run and absent from the offsets, so comparing offsets would re-solve
+    on every tick for as long as that field exists.
+    """
+    if not os.path.exists(MIRI_MATCH_JSON):
+        return "no background match on disk"
+    match = load_miri_match()
+    if not match:
+        return "background match unreadable"
+    covered = match.get("fields")
+    if covered is None:
+        # written before the field set was recorded; one refresh adds it
+        return "background match predates field-set tracking"
+    new = sorted(set(miri) - set(covered))
+    if new:
+        return f"{len(new)} field(s) not in the match: {', '.join(new)}"
+    return None
 
 
 def miri_needs_build(obs, src, bgmatch=False):
@@ -833,6 +865,20 @@ def cmd_auto(publish=False):
         # so the two mosaics can be compared directly on the same sky.
         miri = find_i2d(MIRI_FILTER)
         print(f"  {len(miri)} MIRI {MIRI_FILTER.upper()} mosaic(s)")
+        # Without this the background-matched flavour silently stops tracking
+        # the survey: fields that land after the last hand-run solve report
+        # NOMATCH for ever.  Re-rendering follows on its own, since
+        # miri_needs_build treats a match newer than a png as stale.
+        why = miri_match_is_stale(miri)
+        if why:
+            print(f"  refreshing the MIRI background match -- {why}",
+                  flush=True)
+            try:
+                cmd_miri_match()
+            except (OSError, ValueError, TypeError, KeyError,
+                    RuntimeError) as exc:
+                print(f"  MIRI match FAILED {type(exc).__name__}: {exc}; "
+                      f"the bgmatch flavour will be left as it is", flush=True)
         miri_built = {False: [], True: []}
         for bgmatch in (False, True):
             tag = "MIRI+bg" if bgmatch else "MIRI"
@@ -885,6 +931,8 @@ def cmd_auto(publish=False):
                 cmd_coadd(miri=True, bgmatch=bgmatch)
             else:
                 print(f"nothing new for {name}; left alone")
+        if any(miri_built.values()) and publish:
+            cmd_publish()
         if failed:
             print(f"FAILED: {', '.join(failed)}")
             return 1
@@ -924,6 +972,11 @@ def cmd_publish():
                 seen.add(d)
                 keep.append(d)
         src = keep
+    # The MIRI coadds were never in this list, so a rebuilt one stayed in the
+    # build tree.  The per-field MIRI layers stay out deliberately: the mosaic
+    # is the product, and 34 more trees is a lot of rsync for nothing.
+    src += [f"{OUTDIR}/{MIRI_COADD_NAME}",
+            f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME}"]
     for s in src:
         if not os.path.isdir(os.path.join(s, "Norder3")):
             print(f"  skipping {os.path.basename(s)}: no Norder3")
