@@ -1086,6 +1086,26 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
+def unreadable_layers(layers):
+    """Which of these HiPS directories coadd_hips would fail to read.
+
+    coadd_hips opens every layer's properties before it writes anything, so
+    this is the check that has to happen before the output is removed.
+
+    A layer mid-build looks exactly like one that failed halfway:
+    reproject_to_hips writes the tiles first and properties last.  Both are
+    reported the same way, because from here they are the same thing -- a
+    directory that is not yet a HiPS.
+    """
+    out = []
+    for L in layers:
+        if not os.path.exists(os.path.join(L, "properties")):
+            out.append(f"{os.path.basename(L)}: no properties")
+        elif not os.path.isdir(os.path.join(L, "Norder3")):
+            out.append(f"{os.path.basename(L)}: no Norder3")
+    return out
+
+
 def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     """Coadd every per-observation HiPS into one growing mosaic.
 
@@ -1179,6 +1199,21 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
               f"{sum(_tile_count(L) for L in layers)})")
         return 0
 
+    # Read what the inputs must provide before destroying what we have.
+    # coadd_hips opens every layer's properties as its first act, so an
+    # unreadable input after the rmtree costs the existing coadd.
+    unreadable = unreadable_layers(layers)
+    if unreadable:
+        print(f"NOT rebuilding {os.path.basename(out)}: "
+              f"{len(unreadable)} input layer(s) are not readable")
+        for u in unreadable:
+            print(f"  {u}")
+        # A layer mid-build looks exactly like one that failed halfway:
+        # reproject_to_hips writes the tiles first and properties last.
+        print("  a layer being written looks like this too; "
+              "the next run picks it up")
+        return 1
+
     if os.path.exists(out):
         shutil.rmtree(out)
     print(f"coadding {len(layers)} observation HiPS -> {out}")
@@ -1243,6 +1278,25 @@ def main():
     if a.coadd:
         return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
                          stretch=a.stretch)
+
+    if a.miri:
+        # MIRI is one filter and its own set of layers, so it has its own
+        # inventory and its own builder.  Selecting a single field matters for
+        # the background-matched flavour: a fresh solve invalidates all 34, and
+        # serially that is most of a day.
+        miri = find_i2d(MIRI_FILTER)
+        targets = [a.obs] if a.obs else sorted(miri)
+        missing = [o for o in targets if o not in miri]
+        if missing:
+            print(f"no MIRI {MIRI_FILTER.upper()} mosaic for: "
+                  f"{', '.join(missing)}")
+            return 1
+        for o in targets:
+            png, hd = build_miri_obs(o, bgmatch=a.bgmatch,
+                                     hips=not a.no_hips)
+            if hd:
+                check_orientation(hd, miri[o])
+        return 0
 
     inv, obs = inventory()
     targets = ([a.obs] if a.obs else
