@@ -205,7 +205,7 @@ def cmd_list():
     return 0
 
 
-def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
+def build_obs(obs, avm_mode="raw", hips=True, stretch="pct"):   # DEFAULT_STRETCH
     """One observation -> RGB png + HiPS, returned as (png, hips_dir).
 
     `stretch` picks a key from STRETCHES.  One flavour per call rather than a
@@ -247,6 +247,26 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
             (shdu.data.astype(float), WCS(shdu.header).celestial),
             twcs, shape_out=(ny, nx))
 
+    match = None
+    if stretch_match(stretch):
+        match = load_nircam_match()
+        if not match:
+            raise RuntimeError(f"{obs}: no background match on disk; "
+                               f"run --nircam-match first")
+        missing = [f for f in FILTERS
+                   if obs not in match["filters"].get(f, {}).get("offsets", {})]
+        if missing:
+            raise RuntimeError(f"{obs}: no background offset for "
+                               f"{', '.join(missing)}; re-run --nircam-match")
+        # Subtract BEFORE the green channel is formed: green is the pixelwise
+        # mean of the two filters, so correcting it separately afterwards would
+        # not be the mean of the corrected pair.
+        for f in FILTERS:
+            o = match["filters"][f]["offsets"][obs]
+            data[f] = data[f] - o
+            print(f"  {f.upper()} background offset {o:+.6f} removed",
+                  flush=True)
+
     long_, short_ = data["f480m"], data["f212n"]
     # A pixel that is NaN in one channel but real in the others would otherwise
     # render as a flat false-coloured island; forbid the mixed state outright.
@@ -265,13 +285,30 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
     # in MJy/sr --
     # long_/short_ come off the i2d untouched and mid is their pixelwise mean,
     # so vmin/vmax are in MJy/sr as intended.
-    kw = STRETCHES[stretch]
-    scaled = np.stack([np.nan_to_num(
-        simple_norm(c, **kw)(c)) for c in chans], axis=2)
-    print(f"  stretch '{stretch}': {kw}", flush=True)
+    kw = stretch_kwargs(stretch)
+    if stretch_match(stretch):
+        # Cuts come from the match table, one pair per channel, so a given
+        # MJy/sr is one colour across the whole mosaic.  Green is the pixelwise
+        # mean of the two filters, so its limits are the mean of theirs: a
+        # pixel at both filters' vmin lands exactly at the green vmin.
+        cuts = [(match["filters"][FILTERS[0]]["vmin"],
+                 match["filters"][FILTERS[0]]["vmax"]),
+                (match["green"]["vmin"], match["green"]["vmax"]),
+                (match["filters"][FILTERS[1]]["vmin"],
+                 match["filters"][FILTERS[1]]["vmax"])]
+        scaled = np.stack([np.nan_to_num(
+            simple_norm(c, vmin=lo, vmax=hi, **kw)(c))
+            for c, (lo, hi) in zip(chans, cuts)], axis=2)
+        print(f"  shared cuts R {cuts[0][0]:.4f}..{cuts[0][1]:.4f}  "
+              f"G {cuts[1][0]:.4f}..{cuts[1][1]:.4f}  "
+              f"B {cuts[2][0]:.4f}..{cuts[2][1]:.4f}", flush=True)
+    else:
+        scaled = np.stack([np.nan_to_num(
+            simple_norm(c, **kw)(c)) for c in chans], axis=2)
+        print(f"  stretch '{stretch}': {kw}", flush=True)
 
     # obs may carry a _nrca/_nrcb module tag
-    name = os.path.basename(png_for(obs, bgmatch=bgmatch, stretch=stretch))[:-4]
+    name = os.path.basename(png_for(obs, stretch=stretch))[:-4]
     png = f"{OUTDIR}/{name}.png"
     # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
     # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
@@ -404,11 +441,32 @@ def check_orientation(hips_dir, src_fits):
 # entry is that function's cuts.  Values below vmin come back as -1.0
 # (simple_norm's `invalid`) and values above vmax above 1.0; the np.clip(0, 1)
 # at the call site is what bounds both.
+#   bgmatch  cuts and per-field offsets from the measured background match,
+#            so equal sky is equal COLOUR as well as equal brightness.  The
+#            other three leave each field's level where the pipeline put it;
+#            this one ties the levels together first.  Its cuts live in
+#            nircam_background_match.json rather than in this table, which is
+#            what the "match" key says.
 STRETCHES = {
     "pct": dict(stretch="asinh", min_percent=1, max_percent=99.5),
     "vminmax": dict(stretch="asinh", vmin=-0.5, vmax=100),
     "log": dict(stretch="log", vmin=-0.5, vmax=500),
+    "bgmatch": dict(stretch="asinh", clip=True, match="nircam"),
 }
+
+#: Keys in a STRETCHES entry that are ours rather than simple_norm's.
+_STRETCH_META = ("match",)
+
+
+def stretch_kwargs(stretch):
+    """The simple_norm call for a flavour, with our own keys removed."""
+    return {k: v for k, v in STRETCHES[stretch].items()
+            if k not in _STRETCH_META}
+
+
+def stretch_match(stretch):
+    """Which match table this flavour needs, or None when it needs none."""
+    return STRETCHES[stretch].get("match")
 # The flavour that keeps the historical un-suffixed filename.  Changing this
 # would rename products that are already published and listed in two viewers,
 # so it stays put.
@@ -441,13 +499,13 @@ def stretch_suffix(stretch):
     return "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
 
 
-def png_for(obs, bgmatch=False, stretch=DEFAULT_STRETCH):
+def png_for(obs, stretch=DEFAULT_STRETCH):
     return (f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212"
             f"{stretch_suffix(stretch)}.png")
 
 
-def hips_for(obs, bgmatch=False, stretch=DEFAULT_STRETCH):
-    return png_for(obs, bgmatch, stretch).replace(".png", "_hips")
+def hips_for(obs, stretch=DEFAULT_STRETCH):
+    return png_for(obs, stretch).replace(".png", "_hips")
 
 
 def miri_suffix(bgmatch):
@@ -462,7 +520,35 @@ def miri_hips_for(obs, bgmatch=False):
     return f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W{miri_suffix(bgmatch)}_hips"
 
 
+# Block-averaging factor for background matching.  MEASURE AT 1.
+#
+# Binning looks like it should be free: a pairwise median over shared sky is a
+# large-scale quantity, and binning by 8 cuts the reprojected area by 64, which
+# turns a ten-hour NIRCam match into ten minutes.  It is not free.  Measured
+# against values the unbinned path had already produced:
+#
+#     pair          unbinned     bin=8      error
+#     o098-o105       0.1317   -0.6077    -0.7394
+#     o098-o107       1.2270    0.5990    -0.6280
+#     o102-o109       0.0447   -0.5624    -0.6071
+#
+# A roughly constant -0.6, which is the same size as the offsets being solved
+# for, so it would have corrupted every tile's correction while reading as a
+# clean speedup.  Strict NaN propagation (np.mean rather than np.nanmean, so a
+# partly-blank block goes blank instead of averaging its valid half) did not
+# help, which rules out the footprint-edge explanation.  Running the same
+# harness at factor 1 reproduced the unbinned values to -0.0000, so this is a
+# property of binning and not of the comparison.
+#
+# The mechanism is unconfirmed.  The plausible one is that binning collapses
+# the noise the full-resolution difference is dominated by, leaving asymmetric
+# real structure that sigma clipping then trims off-centre -- but that is a
+# hypothesis, and the number above is the measurement.  Do not re-enable this
+# without re-running that comparison.
+BG_MATCH_BIN = 1
+
 MIRI_MATCH_JSON = f"{OUTDIR}/miri_background_match.json"
+NIRCAM_MATCH_JSON = f"{OUTDIR}/nircam_background_match.json"
 
 
 def miri_measure_pairs(paths):
@@ -478,25 +564,95 @@ def miri_measure_pairs(paths):
     from reproject import reproject_interp
 
     keys = sorted(paths)
-    data, wcs_ = {}, {}
-    for k in keys:
+
+    def binned(data, wcs, factor=BG_MATCH_BIN):
+        """Block-average, with the WCS moved to match.
+
+        Reversing a pixel axis is not involved here, so only the scale and the
+        reference pixel change: binning by f puts the new pixel centres at
+        (crpix - 0.5)/f + 0.5 and multiplies the linear transform by f.
+        """
+        if factor <= 1:
+            return data, wcs
+        from astropy.nddata import block_reduce
+        ny_, nx_ = data.shape
+        cy_, cx_ = (ny_ // factor) * factor, (nx_ // factor) * factor
+        out = block_reduce(data[:cy_, :cx_], factor, func=np.nanmean)
+        w = wcs.deepcopy()
+        w.wcs.crpix = [(wcs.wcs.crpix[0] - 0.5) / factor + 0.5,
+                       (wcs.wcs.crpix[1] - 0.5) / factor + 0.5]
+        if w.wcs.has_cd():
+            w.wcs.cd = w.wcs.cd * factor
+        else:
+            w.wcs.cdelt = w.wcs.cdelt * factor
+        return out, w
+
+    def load(k):
+        """Read one mosaic.  Deliberately NOT cached across the whole run: at
+        11440x4736 a NIRCam frame is ~433 MB as float64, so holding twenty at
+        once is ~8.7 GB before any reprojection buffer -- which OOM-killed this
+        function on the login node with no traceback and no output."""
         hdu = next(h for h in fits.open(paths[k])
                    if h.data is not None and h.data.ndim == 2)
-        data[k] = hdu.data.astype(float)
-        wcs_[k] = WCS(hdu.header).celestial
+        return hdu.data.astype(float), WCS(hdu.header).celestial
+
+    wcs_, shape_, box = {}, {}, {}
+    for k in keys:
+        with fits.open(paths[k]) as hl:
+            hdu = next(h for h in hl if h.data is not None and h.data.ndim == 2)
+            wcs_[k] = WCS(hdu.header).celestial
+            shape_[k] = hdu.shape                    # header only, no read
+        ny_, nx_ = shape_[k]
+        c = wcs_[k].pixel_to_world([0, nx_ - 1, 0, nx_ - 1],
+                                   [0, 0, ny_ - 1, ny_ - 1])
+        box[k] = (c.ra.deg.min(), c.ra.deg.max(),
+                  c.dec.deg.min(), c.dec.deg.max())
+
+    def may_overlap(a, b):
+        """Corner bounding boxes, as a cheap veto before reprojecting.
+
+        N pointings give N(N-1)/2 pairs -- 190 for 20 NIRCam fields, and twice
+        that across two filters -- while a full-frame reproject_interp of an
+        11440x4736 mosaic costs seconds.  Only neighbours actually overlap, so
+        the great majority of that work produces "too little shared sky" and is
+        discarded.  The box test is approximate, but it only ever VETOES; the
+        real intersection count below still decides which pairs count.
+        """
+        ra0a, ra1a, d0a, d1a = box[a]
+        ra0b, ra1b, d0b, d1b = box[b]
+        pad = 0.01                                   # deg, forgiving at edges
+        return not (ra1a < ra0b - pad or ra1b < ra0a - pad or
+                    d1a < d0b - pad or d1b < d0a - pad)
+
     pairs = []
+    skipped = 0
     for i, a in enumerate(keys):
-        for b in keys[i + 1:]:
-            reB, _ = reproject_interp((data[b], wcs_[b]), wcs_[a],
-                                      shape_out=data[a].shape)
-            m = np.isfinite(data[a]) & np.isfinite(reB)
-            if m.sum() < 5000:                      # too little shared sky
+        partners = [b for b in keys[i + 1:] if may_overlap(a, b)]
+        skipped += len(keys[i + 1:]) - len(partners)
+        if not partners:
+            continue
+        dataA, wcsA = binned(*load(a))               # one frame held per outer
+        for b in partners:
+            dataB, wcsB = binned(*load(b))
+            reB, _ = reproject_interp((dataB, wcsB), wcsA,
+                                      shape_out=dataA.shape)
+            del dataB
+            m = np.isfinite(dataA) & np.isfinite(reB)
+            # same area of sky as the original 5000 full-resolution pixels
+            if m.sum() < max(64, 5000 // (BG_MATCH_BIN ** 2)):
+                del reB
                 continue
-            _, med, _ = sigma_clipped_stats((data[a] - reB)[m], sigma=3.0,
+            _, med, _ = sigma_clipped_stats((dataA - reB)[m], sigma=3.0,
                                             maxiters=5)
-            pairs.append((a, b, float(med), int(m.sum())))
+            del reB
+            # report in full-resolution pixels so the solve's area weighting
+            # keeps the meaning it had before binning
+            pairs.append((a, b, float(med), int(m.sum()) * BG_MATCH_BIN ** 2))
             print(f"  {a}-{b}: {m.sum():7d} shared px, median diff "
                   f"{med:+.4f}", flush=True)
+    if skipped:
+        print(f"  ({skipped} pair(s) vetoed by footprint before reprojecting)",
+              flush=True)
     return keys, pairs
 
 
@@ -504,9 +660,15 @@ def miri_solve_offsets(keys, pairs):
     """Least-squares additive offsets from the pairwise differences.
 
     One equation per overlapping pair, off_a - off_b = median(A-B), plus a
-    mean-zero constraint so the system is determined and the overall level of
-    the mosaic is not dragged up or down.  Tiles with no overlap at all simply
-    get zero, which is the honest answer -- nothing ties them to the rest.
+    mean-zero row so the overall level of the mosaic is not dragged up or down.
+    That row is belt-and-braces: lstsq with rcond=None returns the
+    minimum-norm solution, which is already mean-zero, and dropping the row
+    leaves both the connected and the disconnected cases unchanged.  It stays
+    because it makes the constraint visible in the system rather than implicit
+    in a solver flag.
+
+    Tiles with no overlap at all get zero, which is the answer the data
+    supports -- nothing ties them to the rest.
     """
     idx = {k: i for i, k in enumerate(keys)}
     rows, rhs = [], []
@@ -574,6 +736,88 @@ def cmd_miri_match():
                "pairs": [[a, b, d, n] for a, b, d, n in pairs]},
               open(MIRI_MATCH_JSON, "w"), indent=1)
     print(f"wrote {MIRI_MATCH_JSON}")
+    return 0
+
+
+def load_nircam_match():
+    import json
+    if not os.path.exists(NIRCAM_MATCH_JSON):
+        return None
+    with open(NIRCAM_MATCH_JSON) as fh:
+        return json.load(fh)
+
+
+def cmd_nircam_match():
+    """Measure NIRCam background offsets and shared stretch, per filter.
+
+    The NIRCam layers have the same two seam causes the MIRI ones did -- tiles
+    sitting on different sky levels, and each stretched on its OWN percentiles
+    so equal sky renders as unequal colour -- but two differences matter.
+
+    It is a colour image, so an offset has to be solved SEPARATELY for each
+    filter.  A single offset applied to both would shift brightness without
+    fixing colour, and a wrong relative offset between F480M and F212N tints a
+    whole tile, which is more obvious than a brightness seam, not less.
+
+    The pair measurement and the least-squares solve are the MIRI ones
+    (miri_measure_pairs / miri_solve_offsets).  They take a dict of paths and
+    know nothing about the filter, so calling them once per filter is the whole
+    of the difference -- worth reusing rather than reimplementing, since the
+    mean-zero constraint and the shared-area weighting are the subtle parts.
+
+    The green channel is the pixelwise mean of the two, so its shared limits
+    are the mean of theirs: a pixel sitting at both filters' vmin lands exactly
+    at the green vmin.
+    """
+    import json
+    import time
+    from astropy.io import fits
+
+    inv, _ = inventory()
+    out = {"filters": {}}
+    for filt in FILTERS:
+        paths = dict(inv.get(filt, {}))
+        fresh = {k: v for k, v in paths.items()
+                 if time.time() - os.path.getmtime(v) < SETTLE_SECONDS}
+        for k in fresh:
+            print(f"  skipping {k} ({filt}): written in the last "
+                  f"{SETTLE_SECONDS // 60} min")
+            paths.pop(k)
+        if len(paths) < 2:
+            print(f"{filt}: need at least two settled mosaics to match")
+            return 1
+        print(f"\nmatching backgrounds across {len(paths)} {filt.upper()} mosaics",
+              flush=True)
+        keys, pairs = miri_measure_pairs(paths)
+        if not pairs:
+            print(f"{filt}: no overlapping pairs; nothing to tie together")
+            return 1
+        off = miri_solve_offsets(keys, pairs)
+        print(f"\n{filt.upper()} offsets (subtracted from each tile):")
+        for k in keys:
+            print(f"  {k}: {off[k]:+.6f}")
+        pooled = []
+        for k in keys:
+            with fits.open(paths[k]) as hl:
+                hdu = next(h for h in hl
+                           if h.data is not None and h.data.ndim == 2)
+                d = hdu.data.astype(float) - off[k]
+            v = d[np.isfinite(d)]
+            pooled.append(v[:: max(1, v.size // 200000)].copy())
+            del d, v                                 # one frame at a time
+        pooled = np.concatenate(pooled)
+        lo, hi = np.percentile(pooled, [1.0, 99.5])
+        print(f"{filt.upper()} shared stretch: {lo:.6f} .. {hi:.6f}")
+        out["filters"][filt] = {
+            "offsets": off, "vmin": float(lo), "vmax": float(hi),
+            "pairs": [[a, b, d, n] for a, b, d, n in pairs]}
+
+    lo_g = np.mean([out["filters"][f]["vmin"] for f in FILTERS])
+    hi_g = np.mean([out["filters"][f]["vmax"] for f in FILTERS])
+    out["green"] = {"vmin": float(lo_g), "vmax": float(hi_g)}
+    print(f"\ngreen (pixelwise mean) shared stretch: {lo_g:.6f} .. {hi_g:.6f}")
+    json.dump(out, open(NIRCAM_MATCH_JSON, "w"), indent=1)
+    print(f"wrote {NIRCAM_MATCH_JSON}")
     return 0
 
 
@@ -714,6 +958,15 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
         src = inv[f].get(obs)
         if src and time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
             return "SETTLING"
+    if stretch_match(stretch):
+        # Same rule as MIRI: the table existing is not enough, because
+        # build_obs raises on a field the table does not cover.  Reporting it
+        # as NOMATCH keeps those fields out of the FAILED list on every tick.
+        match = load_nircam_match()
+        if not match or any(
+                obs not in match["filters"].get(f, {}).get("offsets", {})
+                for f in FILTERS):
+            return "NOMATCH"
     png = png_for(obs, stretch=stretch)
     if not os.path.exists(png):
         return "no RGB yet"
@@ -724,6 +977,11 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     hips = hips_for(obs, stretch=stretch)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "RGB exists but its HiPS is missing or incomplete"
+    if stretch_match(stretch) and os.path.exists(NIRCAM_MATCH_JSON) and \
+            os.path.getmtime(NIRCAM_MATCH_JSON) > os.path.getmtime(png):
+        # A new solution changes the offset AND the shared cuts for every
+        # field, not only for the ones whose data moved.
+        return "background match is newer than the png"
     t_png = os.path.getmtime(png)
     for f in FILTERS:
         src = inv[f].get(obs)
@@ -808,6 +1066,10 @@ def cmd_auto(publish=False):
             if why == "SETTLING":
                 print(f"  {o} {stretch}: source written in the last "
                       f"{SETTLE_SECONDS // 60} min; leaving it to settle")
+                continue
+            if why == "NOMATCH":
+                print(f"  {o} {stretch}: no background match for this field; "
+                      f"run --nircam-match")
                 continue
             if not why:
                 print(f"  {o} {stretch}: up to date")
@@ -1163,6 +1425,9 @@ def main():
     ap.add_argument("--bgmatch", action="store_true",
                     help="with --coadd --miri, rebuild the background-matched "
                          "MIRI mosaic instead of the plain one")
+    ap.add_argument("--nircam-match", action="store_true",
+                    help="measure NIRCam background offsets and shared cuts "
+                         "per filter, for the bgmatch flavour")
     ap.add_argument("--miri-match", action="store_true",
                     help="measure MIRI background offsets + shared stretch")
     ap.add_argument("--auto", action="store_true",
@@ -1183,6 +1448,8 @@ def main():
 
     if a.list:
         return cmd_list()
+    if a.nircam_match:
+        return cmd_nircam_match()
     if a.miri_match:
         return cmd_miri_match()
     if a.auto:
