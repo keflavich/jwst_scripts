@@ -14,6 +14,17 @@ Two traps this encodes (both bit earlier work on this repo):
   * Apply a CORRELATION FLOOR (r >= 0.35).  Below it there is no measurement
     -- report "not measurable", not a number.
 
+A third trap shows up specifically on a COADD of layers with different native
+resolutions (e.g. jwst_miri_hips, which merges MIRI fields whose pixel scales
+range widely): HipsSampler.hips_order() reports the DEEPEST order present
+ANYWHERE in the directory, but a field whose own layer tops out shallower
+(cloudef's MIRI native order is 12; some other layer in the same coadd reaches
+14) has no leaf tile at that deeper order over its own footprint.  Sampling
+naively at the reported order then returns all-NaN there -- not because the
+coadd lacks the field, but because this simple sampler (unlike a real HiPS
+client) does not climb the pyramid to a shallower populated tile.
+_sample_with_fallback does that climb by hand.
+
 Usage
 -----
   verify_field_astrometry.py HIPS_DIR LABEL1=path1.fits [LABEL2=path2.fits ...]
@@ -27,10 +38,32 @@ from reproject import reproject_interp
 from skimage.registration import phase_cross_correlation
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from check_hips_astrometry import HipsSampler  # noqa: E402
+from check_hips_astrometry import HipsSampler, TILE_BITS  # noqa: E402
 
 R_FLOOR = 0.35            # below this it is not a measurement
 OFFSET_TARGET_ARCSEC = 0.3
+MIN_FALLBACK_ORDER = 3    # give up climbing the pyramid below this
+
+
+def _sample_with_fallback(hips_dir, coords, min_order=MIN_FALLBACK_ORDER):
+    """HipsSampler.sample(), climbing to a shallower order if the reported
+    (globally deepest) order has no tile over this particular patch.
+
+    Returns (values, order_used).
+    """
+    from astropy_healpix import HEALPix
+
+    samp = HipsSampler(hips_dir)
+    vals = samp.sample(coords)
+    order = samp.order
+    while not np.isfinite(vals).any() and order > min_order:
+        order -= 1
+        samp.order = order
+        samp.hp_hi = HEALPix(nside=2 ** (order + TILE_BITS), order="nested",
+                             frame=samp.frame_name)
+        samp._cache.clear()
+        vals = samp.sample(coords)
+    return vals, order
 
 
 def prep(a):
@@ -68,8 +101,8 @@ def measure(hips, src, n=500, scale=0.4):
     gw.wcs.crval = [ctr.ra.deg, ctr.dec.deg]
     gw.wcs.ctype = ["RA---TAN", "DEC--TAN"]
     yy, xx = np.mgrid[0:n, 0:n]
-    got = HipsSampler(hips).sample(
-        gw.pixel_to_world(xx.ravel(), yy.ravel())).astype(float).reshape(n, n)
+    got, _order = _sample_with_fallback(hips, gw.pixel_to_world(xx.ravel(), yy.ravel()))
+    got = got.astype(float).reshape(n, n)
     ref, _ = reproject_interp((d, fw), gw, shape_out=(n, n))
     A, B = prep(got), prep(ref)
     if A is None or B is None:

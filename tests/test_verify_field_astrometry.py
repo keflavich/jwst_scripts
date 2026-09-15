@@ -44,3 +44,67 @@ def test_check_passes_for_a_good_measurement(monkeypatch):
     results, ok = V.check("dummy_hips", {"o004": "dummy.fits"})
     assert results["o004"] == (0.05, 0.9)
     assert ok
+
+
+def _write_tile(hips_dir, order, ipix, value):
+    """A minimal single-tile HiPS directory entry, grayscale PNG."""
+    import os
+    from PIL import Image
+    d = (ipix // 10000) * 10000
+    tile_dir = os.path.join(hips_dir, f"Norder{order}", f"Dir{d}")
+    os.makedirs(tile_dir, exist_ok=True)
+    arr = np.full((512, 512), value, dtype=np.uint8)
+    Image.fromarray(arr, mode="L").save(os.path.join(tile_dir, f"Npix{ipix}.png"))
+
+
+def _tile_index(order, coord):
+    from astropy_healpix import HEALPix
+    hp = HEALPix(nside=2 ** (order + 9), order="nested", frame="galactic")
+    ipix_hi = int(hp.skycoord_to_healpix(coord))
+    return ipix_hi >> 18
+
+
+def test_sample_with_fallback_climbs_to_a_shallower_populated_order(tmp_path):
+    """A coadd can report a deep global hips_order (from some OTHER field)
+    while this field's own layer only ever reached a shallower one -- the
+    real bug found while verifying jwst_miri_hips against cloudef, whose
+    MIRI layer tops out at order 12 inside a coadd that reaches order 14
+    elsewhere. Sampling must climb down to the order that actually has a
+    tile here, not return all-NaN."""
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    hips = tmp_path / "fake_hips"
+    hips.mkdir()
+    (hips / "properties").write_text(
+        "hips_order = 5\nhips_frame = galactic\n")
+    # a directory exists for the deep order (as a real coadd would have,
+    # from some other field) but with no tile covering our test coordinate
+    (hips / "Norder5").mkdir()
+    (hips / "Norder4").mkdir()
+
+    coord = SkyCoord(l=1.0 * u.deg, b=1.0 * u.deg, frame="galactic")
+    ipix3 = _tile_index(3, coord)
+    _write_tile(str(hips), 3, ipix3, 200)
+
+    coords = SkyCoord(l=[1.0] * u.deg, b=[1.0] * u.deg, frame="galactic")
+    vals, order_used = V._sample_with_fallback(str(hips), coords, min_order=1)
+    assert order_used == 3
+    assert np.isfinite(vals).all()
+    assert vals[0] == 200
+
+
+def test_sample_with_fallback_gives_up_below_min_order(tmp_path):
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    hips = tmp_path / "empty_hips"
+    hips.mkdir()
+    (hips / "properties").write_text(
+        "hips_order = 4\nhips_frame = galactic\n")
+    (hips / "Norder4").mkdir()
+
+    coords = SkyCoord(l=[1.0] * u.deg, b=[1.0] * u.deg, frame="galactic")
+    vals, order_used = V._sample_with_fallback(str(hips), coords, min_order=2)
+    assert order_used == 2
+    assert not np.isfinite(vals).any()
