@@ -100,14 +100,24 @@ def test_classify_field_on_a_real_header(obs, field):
     assert C.classify_field(c.l.deg, c.b.deg) == field
 
 
-def test_the_field_centres_are_not_interchangeable():
-    """The swap the reviewer tried must fail here.
+def test_measured_pointings_classify_without_the_cluster_tree():
+    """The same pin as the real-header tests, with nothing on disk.
 
-    Each field's own centre has to classify as itself, which no longer holds
-    if the two entries trade places.
+    Those tests skip on a machine without /orange, and this repo has no CI, so
+    a checkout without the cluster tree is the normal case for anyone else on
+    the branch -- the FIELD_CENTERS swap survives there unless something holds
+    it data-free.
+
+    The literals are the measured pointings recorded in the module docstring,
+    written out rather than read back from FIELD_CENTERS: a test that takes a
+    field's coordinates out of the table and asks which key they belong to is
+    self-consistent under any permutation of that table, so it cannot see the
+    swap.  o006 is the one carrying the point -- it sits in the cloudef/
+    directory tree and points at the control field.
     """
-    for field, (l, b) in C.FIELD_CENTERS.items():
-        assert C.classify_field(l, b) == field
+    assert C.classify_field(0.4901, 0.0104) == "cloudef"          # o004
+    assert C.classify_field(0.5213, 0.0243) == "cloudef"          # o008
+    assert C.classify_field(0.4182, 0.1927) == "cloudef_control"  # o006
 
 
 def test_the_saved_png_avm_builder_is_pinned():
