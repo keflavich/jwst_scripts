@@ -1075,7 +1075,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
 
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, plan_coadd, save_manifest,
-        stamp_release_date)
+        stamp_identity, stamp_release_date)
 
     action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
         else plan_coadd(out, layers)
@@ -1102,6 +1102,10 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
         # without this the appended coadd keeps the first layer's date and
         # publish_hips_layers.py never ships it
         print(f"  hips_release_date -> {stamp_release_date(stage)}")
+        # ...and without this it keeps the first layer's obs_title and
+        # creator_did, so the mosaic and that single field are one dataset
+        print("  identity -> {} / {}".format(
+            *stamp_identity(stage, os.path.basename(out))))
         old_dir = out + ".old"
         shutil.rmtree(old_dir, ignore_errors=True)
         os.rename(out, old_dir)
@@ -1121,6 +1125,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     save_manifest(out, layers)
     set_union_view(out, layers)
     print(f"  hips_release_date -> {stamp_release_date(out)}")
+    print("  identity -> {} / {}".format(*stamp_identity(out)))
     print(f"done: {out}")
     return 0
 
