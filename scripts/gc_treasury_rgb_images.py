@@ -205,8 +205,13 @@ def cmd_list():
     return 0
 
 
-def build_obs(obs, avm_mode="raw", hips=True):
-    """One observation -> RGB png + HiPS, returned as (png, hips_dir)."""
+def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
+    """One observation -> RGB png + HiPS, returned as (png, hips_dir).
+
+    `stretch` picks a key from STRETCHES.  One flavour per call rather than a
+    loop over all of them, so a new flavour can be built for every field
+    without rebuilding -- and risking -- the ones already verified.
+    """
     from astropy.io import fits
     from astropy.wcs import WCS
     from astropy.visualization import simple_norm
@@ -254,43 +259,47 @@ def build_obs(obs, avm_mode="raw", hips=True):
         short_ = np.where(bad, np.nan, short_)
     mid = np.nanmean(np.stack([long_, short_]), axis=0)
 
-    for stretchtype, lo, hi in (('pct', (1, 99.5)), ('vminmax', -0.5, 100)):
-        chans = [long_, mid, short_]
-        scaled = np.stack([np.nan_to_num(
-            (simple_norm(c, stretch="asinh", min_percent=lo, max_percent=hi)(c)) if stretchtype == 'pct'
-             else simple_norm(c, stretch="asinh", vmin=lo, vmax=hi)(c)))
-            for c in chans], axis=2)
+    chans = [long_, mid, short_]
+    # STRETCHES keys are the flavour names; the kwargs go straight to
+    # simple_norm, which applies them to the RAW FITS values in MJy/sr --
+    # long_/short_ come off the i2d untouched and mid is their pixelwise mean,
+    # so vmin/vmax are in MJy/sr as intended.
+    kw = STRETCHES[stretch]
+    scaled = np.stack([np.nan_to_num(
+        simple_norm(c, stretch="asinh", **kw)(c)) for c in chans], axis=2)
+    print(f"  stretch '{stretch}': {kw}", flush=True)
 
-        name = f"GCTreasury_{obs}_RGB_480-mean-212_{stretchtype}"  # obs may carry a _nrca/_nrcb module tag
-        png = f"{OUTDIR}/{name}.png"
-        # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
-        # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
-        # rotated by 180 degrees, so CRPIX has to be reflected on both axes.
-        # AVM.from_header(thdu.header) left CRPIX at its FITS value and put every
-        # tile |N+1-2*crpix| pixels off (1.26" for o112).
-        avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
-        if avm_mode == "rot180":
-            from apply_cdmatrix_flip import cdmatrix_avm
-            avm = cdmatrix_avm(twcs, ny, nx, "rot180")
-        _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
-                  alpha_only_edges=True, original_data=np.stack(chans, axis=2),
-                  hips=False)
-        print(f"  wrote {png}", flush=True)
+    # obs may carry a _nrca/_nrcb module tag
+    name = os.path.basename(png_for(obs, bgmatch=bgmatch, stretch=stretch))[:-4]
+    png = f"{OUTDIR}/{name}.png"
+    # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
+    # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
+    # rotated by 180 degrees, so CRPIX has to be reflected on both axes.
+    # AVM.from_header(thdu.header) left CRPIX at its FITS value and put every
+    # tile |N+1-2*crpix| pixels off (1.26" for o112).
+    avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
+    if avm_mode == "rot180":
+        from apply_cdmatrix_flip import cdmatrix_avm
+        avm = cdmatrix_avm(twcs, ny, nx, "rot180")
+    _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
+              alpha_only_edges=True, original_data=np.stack(chans, axis=2),
+              hips=False)
+    print(f"  wrote {png}", flush=True)
 
-        hips_dir = None
-        if hips:
-            from tqdm import tqdm
-            from reproject.hips import reproject_to_hips
-            hips_dir = f"{OUTDIR}/{name}_hips"
-            if os.path.exists(hips_dir):
-                shutil.rmtree(hips_dir)
-            reproject_to_hips(png, coord_system_out="galactic", level=None,
-                              reproject_function=reproject_interp,
-                              output_directory=hips_dir, threads=16,
-                              progress_bar=tqdm)
-            if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
-                raise RuntimeError(f"{obs}: build produced no Norder3")
-            print(f"  wrote {hips_dir}", flush=True)
+    hips_dir = None
+    if hips:
+        from tqdm import tqdm
+        from reproject.hips import reproject_to_hips
+        hips_dir = f"{OUTDIR}/{name}_hips"
+        if os.path.exists(hips_dir):
+            shutil.rmtree(hips_dir)
+        reproject_to_hips(png, coord_system_out="galactic", level=None,
+                          reproject_function=reproject_interp,
+                          output_directory=hips_dir, threads=16,
+                          progress_bar=tqdm)
+        if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
+            raise RuntimeError(f"{obs}: build produced no Norder3")
+        print(f"  wrote {hips_dir}", flush=True)
     return png, hips_dir
 
 
@@ -372,8 +381,39 @@ def check_orientation(hips_dir, src_fits):
     return ok and off <= ASTROMETRY_TOL_ARCSEC
 
 
-def png_for(obs):
-    return f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212.png"
+# Rendering flavours.  kwargs go to simple_norm and are applied to the RAW
+# FITS values in MJy/sr.
+#
+#   pct      per-image percentiles.  Each tile is stretched on its own data,
+#            which is what makes equal sky render as unequal colour across the
+#            mosaic -- the seams the bgmatch layer exists to remove.
+#   vminmax  one fixed pair of cuts for every image, so a given MJy/sr is the
+#            same colour everywhere.  Fixes the stretch half of the seam
+#            problem without needing the per-field offsets bgmatch solves for.
+STRETCHES = {
+    "pct": dict(min_percent=1, max_percent=99.5),
+    "vminmax": dict(vmin=-0.5, vmax=100),
+}
+DEFAULT_STRETCH = "pct"
+
+
+def stretch_suffix(stretch):
+    """The default flavour keeps the historical un-suffixed name.
+
+    Renaming it would orphan every published layer and every per-observation
+    HiPS already on disk, and silently break png_for/needs_build and the coadd
+    glob, which matches ..._RGB_480-mean-212_hips exactly.
+    """
+    return "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
+
+
+def png_for(obs, bgmatch=False, stretch=DEFAULT_STRETCH):
+    return (f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212"
+            f"{stretch_suffix(stretch)}.png")
+
+
+def hips_for(obs, bgmatch=False, stretch=DEFAULT_STRETCH):
+    return png_for(obs, bgmatch, stretch).replace(".png", "_hips")
 
 
 def miri_suffix(bgmatch):
@@ -886,11 +926,17 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
     if miri:
         pat = f"GCTreasury_*_MIRI_F770W{miri_suffix(bgmatch)}_hips"
     else:
-        pat = "GCTreasury_*_RGB_480-mean-212_hips"
+        pat = f"GCTreasury_*_RGB_480-mean-212{stretch_suffix(stretch)}_hips"
     layers = sorted(glob.glob(f"{OUTDIR}/{pat}"))
     if miri and not bgmatch:
         # the plain glob also matches the _bgmatch layers; keep them apart
         layers = [L for L in layers if "_bgmatch_hips" not in L]
+    if not miri and stretch == DEFAULT_STRETCH:
+        # ...and the default NIRCam glob would otherwise swallow every other
+        # flavour, since their names only differ by a suffix
+        for other in STRETCHES:
+            if other != DEFAULT_STRETCH:
+                layers = [L for L in layers if f"_{other}_hips" not in L]
     # Retire layers whose source is no longer current -- chiefly the per-module
     # halves once a -merged mosaic supersedes them.  Renamed, never deleted.
     active = set(find_i2d(MIRI_FILTER) if miri else inventory()[1])
@@ -898,7 +944,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
     for L in layers:
         b = os.path.basename(L)
         tail = (f"_MIRI_F770W{miri_suffix(bgmatch)}_hips" if miri
-                else "_RGB_480-mean-212_hips")
+                else f"_RGB_480-mean-212{stretch_suffix(stretch)}_hips")
         key = b[len("GCTreasury_"):-len(tail)]
         if key in active:
             keep.append(L)
@@ -914,7 +960,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
     if miri:
         out = f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME}"
     else:
-        out = f"{OUTDIR}/{COADD_NAME}"
+        out = f"{OUTDIR}/{COADD_NAME}{stretch_suffix(stretch)}"
 
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, plan_coadd, save_manifest,
@@ -1001,6 +1047,10 @@ def main():
     ap.add_argument("--full-coadd", action="store_true",
                     help="force a full coadd rebuild instead of appending new "
                          "layers to the existing one")
+    ap.add_argument("--stretch", choices=sorted(STRETCHES), default=DEFAULT_STRETCH,
+                    help="rendering flavour: pct = per-image percentiles "
+                         "(default, historical name), vminmax = one fixed pair "
+                         "of cuts in MJy/sr for every image")
     ap.add_argument("--no-hips", action="store_true", help="png only")
     a = ap.parse_args()
 
@@ -1020,7 +1070,8 @@ def main():
         print("nothing to build: no observation has i2d in every filter yet")
         return 1
     for o in targets:
-        png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips)
+        png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips,
+                            stretch=a.stretch)
         if hd:
             check_orientation(hd, inv[TARGET_FILTER][o])
     return 0
