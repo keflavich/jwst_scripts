@@ -31,6 +31,7 @@ Usage
   gc_treasury_rgb_images.py --coadd              # rebuild the combined mosaic
 """
 import argparse
+import contextlib
 import glob
 import os
 import re
@@ -1086,6 +1087,49 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
+@contextlib.contextmanager
+def coadd_lock(what, wait=True, poll=60, timeout=6 * 3600):
+    """Hold .auto.lock for the duration, or wait for whoever has it.
+
+    Every writer of a coadd has to take this: --auto has always taken it, and
+    a manual --coadd that ignored it raced the cron and produced a coadd with a
+    sixth of its tiles and a zero exit status.
+
+    Released in a finally, because the other half of this pipeline's lock
+    history is runs that left the file behind and starved the schedule.
+    """
+    import time
+    lock = f"{OUTDIR}/.auto.lock"
+    os.makedirs(OUTDIR, exist_ok=True)
+    waited = 0
+    while os.path.exists(lock):
+        age = time.time() - os.path.getmtime(lock)
+        if age > 6 * 3600:
+            print(f"stale lock ({age / 3600:.1f} h old); taking it")
+            break
+        if not wait:
+            raise RuntimeError(f"{lock} held ({age / 60:.0f} min); not starting {what}")
+        if waited == 0:
+            try:
+                holder = open(lock).read().strip()
+            except OSError:
+                holder = "unreadable"
+            print(f"waiting for {lock} ({age / 60:.0f} min old; {holder}) "
+                  f"before {what}", flush=True)
+        time.sleep(poll)
+        waited += poll
+        if waited > timeout:
+            raise RuntimeError(f"gave up waiting for {lock} after "
+                               f"{timeout // 3600} h; not starting {what}")
+    open(lock, "w").write(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')} "
+                          f"{what}\n")
+    try:
+        yield
+    finally:
+        if os.path.exists(lock):
+            os.remove(lock)
+
+
 def unreadable_layers(layers):
     """Which of these HiPS directories coadd_hips would fail to read.
 
@@ -1276,8 +1320,12 @@ def main():
     if a.auto:
         return cmd_auto(publish=a.publish)
     if a.coadd:
-        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
-                         stretch=a.stretch)
+        # cmd_auto holds the lock around its own recoadds, so this is taken
+        # here rather than inside cmd_coadd, which both paths call.
+        what = f"--coadd {'miri' if a.miri else a.stretch}"
+        with coadd_lock(what):
+            return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
+                             stretch=a.stretch)
 
     if a.miri:
         # MIRI is one filter and its own set of layers, so it has its own
