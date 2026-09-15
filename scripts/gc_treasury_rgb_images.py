@@ -627,8 +627,18 @@ def miri_needs_build(obs, src, bgmatch=False):
     import time
     if time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
         return "SETTLING"
-    if bgmatch and not os.path.exists(MIRI_MATCH_JSON):
-        return "NOMATCH"
+    if bgmatch:
+        # Existence of the table is not enough: it carries offsets for the
+        # fields --miri-match was last run over, and build_miri_obs raises on
+        # any field missing from it.  Checking only the file meant every
+        # uncovered field reported "no MIRI png yet", got built, and turned up
+        # as a FAILED entry on every single tick -- noise that buries real
+        # failures.  Report it as what it is.
+        if not os.path.exists(MIRI_MATCH_JSON):
+            return "NOMATCH"
+        match = load_miri_match()
+        if not match or obs not in match.get("offsets", {}):
+            return "NOMATCH"
     png = miri_png_for(obs, bgmatch)
     if not os.path.exists(png):
         return "no MIRI png yet"
@@ -684,6 +694,27 @@ def needs_build(obs, inv):
     return None
 
 
+def _pending_summary():
+    """What an unblocked --auto tick would build right now, as display lines.
+
+    Read-only: used to report work stuck behind a held lock.
+    """
+    inv, obs_all = inventory()
+    out = []
+    for o in [o for o in obs_all if all(o in inv[f] for f in FILTERS)]:
+        why = needs_build(o, inv)
+        if why and why != "SETTLING":
+            out.append(f"{o} NIRCam -- {why}")
+    miri = find_i2d(MIRI_FILTER)
+    for bgmatch in (False, True):
+        tag = "MIRI+bg" if bgmatch else "MIRI"
+        for o, src in sorted(miri.items()):
+            why = miri_needs_build(o, src, bgmatch)
+            if why and why not in ("SETTLING", "NOMATCH"):
+                out.append(f"{o} {tag} -- {why}")
+    return out
+
+
 def cmd_auto(publish=False):
     """Build whatever is buildable and not yet built, then recoadd if anything
     changed.  Safe to run on a schedule: a lock file keeps a slow build from
@@ -695,7 +726,34 @@ def cmd_auto(publish=False):
     if os.path.exists(lock):
         age = time.time() - os.path.getmtime(lock)
         if age < 6 * 3600:
+            # Say what is WAITING, not just that we are blocked.  A long
+            # rebuild holding this lock starves the cron silently: every tick
+            # printed one line and exited, so three observations whose L3
+            # landed mid-rebuild sat unbuilt for hours and the only trace was
+            # needs_build reporting "no RGB yet" to nobody.  A held lock with
+            # nothing pending is routine; a held lock with work queued behind
+            # it is worth seeing in the log.
             print(f"another run holds the lock ({age / 60:.0f} min old); exiting")
+            # Two independent things can fail here, so they get separate
+            # handlers: an unreadable lock file must not also cost us the
+            # pending list, which is the half that actually says what is stuck.
+            try:
+                print(f"  {lock} says: {open(lock).read().strip()}")
+            except OSError as exc:
+                print(f"  (could not read the lock file: "
+                      f"{type(exc).__name__}: {exc})")
+            try:
+                pending = _pending_summary()
+            except (OSError, KeyError, ValueError, TypeError) as exc:
+                print(f"  (could not summarise pending work: "
+                      f"{type(exc).__name__}: {exc})")
+            else:
+                if pending:
+                    print(f"  WAITING ON THE LOCK: {len(pending)} item(s)")
+                    for line in pending:
+                        print(f"    {line}")
+                else:
+                    print("  nothing pending behind it")
             return 0
         print(f"stale lock ({age / 3600:.1f} h old); taking it")
     open(lock, "w").write(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
