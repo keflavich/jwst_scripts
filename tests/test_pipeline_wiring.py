@@ -122,3 +122,100 @@ def test_the_cron_script_stops_when_sbatch_is_missing():
     i = s.index("command -v sbatch")
     assert "exit 127" in s[i:i + 400]
     assert s.index("export PATH=/opt/slurm/bin") < s.index("sbatch --job-name")
+
+
+# --- the call sites, not just the helpers ----------------------------------
+#
+# Each of the three fixes in this branch could be deleted with the suite green,
+# because every test exercised the helper directly and none went through the
+# code that calls it.  These drive the call sites.
+
+import sys                                                      # noqa: E402
+
+import pytest                                                   # noqa: E402
+
+G = pytest.importorskip("gc_treasury_rgb_images")
+
+
+def _layer(d, name, properties=True):
+    p = d / name
+    (p / "Norder3").mkdir(parents=True)
+    if properties:
+        (p / "properties").write_text("hips_order = 14\n")
+    return str(p)
+
+
+def test_cmd_coadd_checks_inputs_before_removing_the_output(tmp_path,
+                                                            monkeypatch):
+    """The ordering is the fix, and nothing pinned it.
+
+    Replacing unreadable_layers(layers) with [] leaves every other test green
+    while reproducing the o114 failure: rmtree the output, then die reading an
+    input.
+    """
+    out = tmp_path / "jwst_gc_treasury_hips"
+    (out / "Norder3").mkdir(parents=True)
+    (out / "properties").write_text("hips_order = 14\n")
+    (out / "Norder3" / "Npix1.png").write_bytes(b"x")
+
+    layers = [_layer(tmp_path, "GCTreasury_o001_RGB_480-mean-212_hips"),
+              _layer(tmp_path, "GCTreasury_o002_RGB_480-mean-212_hips",
+                     properties=False)]           # mid-build: tiles, no properties
+
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
+    monkeypatch.setattr(G, "inventory", lambda: ({}, ["o001", "o002"]))
+    monkeypatch.setattr(G.glob, "glob", lambda pat: sorted(layers))
+
+    def explode(*a, **k):                         # coadd_hips must never run
+        raise AssertionError("coadd_hips called with an unreadable input")
+    monkeypatch.setattr("reproject.hips.coadd_hips", explode)
+
+    rc = G.cmd_coadd(full=True)
+    assert rc == 1
+    assert (out / "Norder3" / "Npix1.png").exists(), \
+        "the existing coadd was destroyed before its inputs were checked"
+
+
+def test_main_takes_the_lock_around_a_manual_coadd(tmp_path, monkeypatch):
+    """The lock is taken in main(), and no test went through main().
+
+    Deleting the `with coadd_lock(...)` left all four lock tests passing,
+    because they call the context manager directly.
+    """
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    seen = {}
+
+    def fake_coadd(**kw):
+        seen["held"] = os.path.exists(os.path.join(str(tmp_path), ".auto.lock"))
+        return 0
+
+    monkeypatch.setattr(G, "cmd_coadd", fake_coadd)
+    monkeypatch.setattr(sys, "argv", ["gc_treasury_rgb_images.py", "--coadd"])
+    assert G.main() == 0
+    assert seen.get("held") is True, "cmd_coadd ran without the lock held"
+    assert not os.path.exists(os.path.join(str(tmp_path), ".auto.lock")), \
+        "the lock outlived the run"
+
+
+def test_cmd_publish_acts_on_both_miri_coadds(tmp_path, monkeypatch):
+    """Asserting on inspect.getsource passes for a comment mentioning the name.
+
+    This drives cmd_publish with the copy stubbed and asks what it acted on,
+    which also covers the `src = keep` rebind that filters the flavour globs.
+    """
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    monkeypatch.setattr(G, "WEB", str(tmp_path / "web"))
+    for name in (G.MIRI_COADD_NAME, G.MIRI_BGMATCH_COADD_NAME,
+                 G.coadd_name_for(G.DEFAULT_STRETCH)):
+        (tmp_path / name / "Norder3").mkdir(parents=True)
+        (tmp_path / name / "properties").write_text("hips_order = 14\n")
+
+    acted = []
+    monkeypatch.setattr(G.shutil, "copytree",
+                        lambda s, d, **k: acted.append(os.path.basename(s)))
+    monkeypatch.setattr(G.shutil, "move", lambda s, d: None)
+    monkeypatch.setattr(G.shutil, "rmtree", lambda *a, **k: None)
+    G.cmd_publish()
+    for name in (G.MIRI_COADD_NAME, G.MIRI_BGMATCH_COADD_NAME):
+        assert name in acted, f"cmd_publish did not act on {name}"

@@ -828,7 +828,15 @@ def cmd_auto(publish=False):
                     print("  nothing pending behind it")
             return 0
         print(f"stale lock ({age / 3600:.1f} h old); taking it")
-    open(lock, "w").write(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+        try:
+            os.remove(lock)
+        except FileNotFoundError:
+            pass
+    try:
+        _claim_lock(lock, "--auto")
+    except FileExistsError:
+        print("another run took the lock as this one started; exiting")
+        return 0
     try:
         inv, obs_all = inventory()
         ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
@@ -919,7 +927,10 @@ def cmd_auto(publish=False):
             if built[stretch]:
                 print(f"built {len(built[stretch])} for {name}: "
                       f"{', '.join(built[stretch])} -- recoadding")
-                cmd_coadd(stretch=stretch)
+                if cmd_coadd(stretch=stretch):
+                    # the input guard refuses by returning non-zero; without
+                    # this the tick prints its reason and still reports success
+                    failed.append(f"coadd:{name}")
             else:
                 print(f"nothing new for {name}; left alone")
         if any(built.values()) and publish:
@@ -929,7 +940,8 @@ def cmd_auto(publish=False):
             if miri_built[bgmatch]:
                 print(f"built {len(miri_built[bgmatch])} for {name}: "
                       f"{', '.join(miri_built[bgmatch])} -- recoadding")
-                cmd_coadd(miri=True, bgmatch=bgmatch)
+                if cmd_coadd(miri=True, bgmatch=bgmatch):
+                    failed.append(f"coadd:{name}")
             else:
                 print(f"nothing new for {name}; left alone")
         if any(miri_built.values()) and publish:
@@ -1087,6 +1099,22 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
+def _claim_lock(lock, what):
+    """Create the lock file, or raise FileExistsError if someone beat us.
+
+    O_CREAT|O_EXCL rather than exists() then open(): the check-then-create
+    version lets two processes that arrive together both proceed, which is the
+    failure the lock exists to prevent.
+    """
+    import time
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, f"{os.getpid()} "
+                     f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {what}\n".encode())
+    finally:
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def coadd_lock(what, wait=True, poll=60, timeout=6 * 3600):
     """Hold .auto.lock for the duration, or wait for whoever has it.
@@ -1106,6 +1134,11 @@ def coadd_lock(what, wait=True, poll=60, timeout=6 * 3600):
         age = time.time() - os.path.getmtime(lock)
         if age > 6 * 3600:
             print(f"stale lock ({age / 3600:.1f} h old); taking it")
+            # the claim below is O_EXCL, so the stale file has to go first
+            try:
+                os.remove(lock)
+            except FileNotFoundError:
+                pass                       # someone else cleared it; fine
             break
         if not wait:
             raise RuntimeError(f"{lock} held ({age / 60:.0f} min); not starting {what}")
@@ -1121,8 +1154,12 @@ def coadd_lock(what, wait=True, poll=60, timeout=6 * 3600):
         if waited > timeout:
             raise RuntimeError(f"gave up waiting for {lock} after "
                                f"{timeout // 3600} h; not starting {what}")
-    open(lock, "w").write(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')} "
-                          f"{what}\n")
+    try:
+        _claim_lock(lock, what)
+    except FileExistsError:
+        # someone took it between our last look and now
+        raise RuntimeError(f"{lock} was taken while we waited; "
+                           f"not starting {what}")
     try:
         yield
     finally:
