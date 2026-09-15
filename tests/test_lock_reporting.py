@@ -108,3 +108,51 @@ def test_a_stale_lock_is_taken_rather_than_reported(tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     assert "stale lock" in out
     assert "WAITING ON THE LOCK" not in out
+
+
+# --- every writer of a coadd has to take the lock ---------------------------
+
+def test_coadd_lock_holds_and_releases(tmp_path, monkeypatch):
+    import gc_treasury_rgb_images as G
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    lock = tmp_path / ".auto.lock"
+    with G.coadd_lock("--coadd pct"):
+        assert lock.exists()
+        assert "--coadd pct" in lock.read_text()
+    assert not lock.exists()
+
+
+def test_coadd_lock_releases_when_the_body_raises(tmp_path, monkeypatch):
+    """An orphaned lock starves the cron for hours; that has happened here."""
+    import gc_treasury_rgb_images as G
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    lock = tmp_path / ".auto.lock"
+    with pytest.raises(ValueError):
+        with G.coadd_lock("--coadd pct"):
+            raise ValueError("boom")
+    assert not lock.exists()
+
+
+def test_coadd_lock_refuses_rather_than_racing(tmp_path, monkeypatch):
+    """The failure this prevents: a manual --coadd and the cron's recoadd
+    writing one output directory at once produced a coadd with 2007 of its
+    11426 tiles and a zero exit status."""
+    import gc_treasury_rgb_images as G
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    (tmp_path / ".auto.lock").write_text("999 held by someone else\n")
+    with pytest.raises(RuntimeError, match="held"):
+        with G.coadd_lock("--coadd pct", wait=False):
+            pass
+
+
+def test_a_stale_lock_is_taken(tmp_path, monkeypatch):
+    import os
+    import time
+    import gc_treasury_rgb_images as G
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    lock = tmp_path / ".auto.lock"
+    lock.write_text("1 ancient\n")
+    old = time.time() - 7 * 3600
+    os.utime(lock, (old, old))
+    with G.coadd_lock("--coadd pct", wait=False):
+        assert "--coadd pct" in lock.read_text()

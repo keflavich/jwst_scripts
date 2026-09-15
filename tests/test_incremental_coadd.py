@@ -245,3 +245,55 @@ def test_stamp_release_date_tolerates_a_coadd_with_no_properties(tmp_path):
     d = tmp_path / "noprops"
     d.mkdir()
     assert stamp_release_date(str(d)) is None
+
+
+# --- the output must not be destroyed before the inputs are checked --------
+
+def _layer(tmp_path, name, properties=True, norder3=True):
+    d = tmp_path / name
+    d.mkdir()
+    if norder3:
+        (d / "Norder3").mkdir()
+    if properties:
+        (d / "properties").write_text("hips_order = 14\n")
+    return str(d)
+
+
+def test_a_complete_layer_set_is_readable(tmp_path):
+    import gc_treasury_rgb_images as G
+    layers = [_layer(tmp_path, f"L{i}_hips") for i in range(3)]
+    assert G.unreadable_layers(layers) == []
+
+
+def test_a_layer_without_properties_is_caught(tmp_path):
+    """The real failure: reproject_to_hips writes properties LAST, so a layer
+    still being built looks exactly like one that died halfway.
+
+    cmd_coadd's full rebuild used to rmtree the output and only then call
+    coadd_hips, which opens every layer's properties as its first act.  An
+    11,000-tile mosaic was deleted and the rebuild then died on
+    GCTreasury_o114_RGB_480-mean-212_hips/properties, which appeared a few
+    minutes later when that layer finished.
+    """
+    import gc_treasury_rgb_images as G
+    layers = [_layer(tmp_path, "good_hips"),
+              _layer(tmp_path, "midbuild_hips", properties=False)]
+    bad = G.unreadable_layers(layers)
+    assert len(bad) == 1
+    assert "midbuild_hips" in bad[0] and "no properties" in bad[0]
+
+
+def test_a_layer_without_norder3_is_caught(tmp_path):
+    import gc_treasury_rgb_images as G
+    layers = [_layer(tmp_path, "shell_hips", norder3=False)]
+    bad = G.unreadable_layers(layers)
+    assert len(bad) == 1 and "no Norder3" in bad[0]
+
+
+def test_every_bad_layer_is_named_not_just_the_first(tmp_path):
+    """One run should say everything that has to be fixed."""
+    import gc_treasury_rgb_images as G
+    layers = [_layer(tmp_path, "a_hips"),
+              _layer(tmp_path, "b_hips", properties=False),
+              _layer(tmp_path, "c_hips", norder3=False)]
+    assert len(G.unreadable_layers(layers)) == 2
