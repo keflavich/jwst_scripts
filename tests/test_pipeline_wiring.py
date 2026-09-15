@@ -219,3 +219,43 @@ def test_cmd_publish_acts_on_both_miri_coadds(tmp_path, monkeypatch):
     G.cmd_publish()
     for name in (G.MIRI_COADD_NAME, G.MIRI_BGMATCH_COADD_NAME):
         assert name in acted, f"cmd_publish did not act on {name}"
+
+
+def test_a_refused_coadd_makes_the_tick_fail(tmp_path, monkeypatch):
+    """cmd_coadd's refusal has to reach the tick's exit status.
+
+    The input guard returns non-zero, and cmd_auto discarded it: the tick
+    printed NOT rebuilding, `failed` stayed empty, and cmd_auto returned 0.
+    A mid-build input layer arrives on the cron far more often than by hand,
+    so the one path that reports the guard firing was the one that dropped it.
+    """
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    monkeypatch.setattr(G, "cmd_coadd", lambda **kw: 1)
+    monkeypatch.setattr(G, "cmd_publish", lambda *a, **k: 0)
+    monkeypatch.setattr(G, "build_obs", lambda o, **k: (None, None))
+    monkeypatch.setattr(G, "build_miri_obs", lambda o, **k: (None, None))
+    monkeypatch.setattr(G, "needs_build", lambda o, inv, **k: "no RGB yet")
+    monkeypatch.setattr(G, "miri_needs_build", lambda o, s, bg=False: None)
+    monkeypatch.setattr(G, "miri_match_is_stale", lambda m: None)
+    monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
+    monkeypatch.setattr(G, "inventory",
+                        lambda: ({f: {"o001": "x"} for f in G.FILTERS},
+                                 ["o001"]))
+    assert G.cmd_auto() == 1
+
+
+def test_the_lock_claim_is_exclusive(tmp_path):
+    """open(lock, "w") reads as a simplification of the O_EXCL claim.
+
+    It is not: the plain open overwrites whatever is there, so two processes
+    arriving together both proceed, which is the failure the lock exists to
+    prevent.  Without this test the comment is the only thing stopping that
+    edit.
+    """
+    lock = str(tmp_path / ".auto.lock")
+    with open(lock, "w") as fh:
+        fh.write("someone else\n")
+    with pytest.raises(FileExistsError):
+        G._claim_lock(lock, "--coadd pct")
+    # and the holder's file is untouched
+    assert open(lock).read() == "someone else\n"
