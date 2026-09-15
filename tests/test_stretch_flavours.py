@@ -18,10 +18,22 @@ def test_every_flavour_names_its_stretch_function():
         assert "stretch" in kw, f"{name} does not name a stretch function"
 
 
+def test_stretch_kwargs_drops_our_own_keys():
+    """A flavour entry is a simple_norm call plus our metadata.
+
+    "match" says where the cuts come from, and simple_norm has no such
+    argument, so passing the entry through unfiltered is a TypeError.
+    """
+    assert "match" in G.STRETCHES["bgmatch"]
+    assert "match" not in G.stretch_kwargs("bgmatch")
+    assert G.stretch_match("bgmatch") == "nircam"
+    assert G.stretch_match("pct") is None
+
+
 @pytest.mark.parametrize("name", sorted(G.STRETCHES))
 def test_every_flavour_is_a_valid_simple_norm_call(name):
     d = np.linspace(-1, 1000, 64).reshape(8, 8)
-    out = simple_norm(d, **G.STRETCHES[name])(d)
+    out = simple_norm(d, **G.stretch_kwargs(name))(d)
     assert np.isfinite(np.clip(out, 0, 1)).all()
 
 
