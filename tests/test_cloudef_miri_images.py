@@ -55,3 +55,116 @@ def test_exposure_level_products_are_excluded_from_i2d_matching():
         "jw02092004004_02101_00001_mirimage_i2d.fits")
     assert not C._DATA.match(
         "jw02092-o008_t001_miri_f2100w_cat.ecsv")
+
+
+# --- the two gaps a reviewer found by mutating the module -------------------
+
+REAL_MOSAICS = {
+    # (obs, field it actually sits on).  o006 lives in the cloudef/ directory
+    # tree and points at the CONTROL field; that mismatch is the reason
+    # classify_field exists, so it is the thing worth pinning.
+    "o004": "cloudef",
+    "o006": "cloudef_control",
+    "o008": "cloudef",
+}
+
+
+def _mosaic(obs):
+    import glob
+    hits = glob.glob(
+        f"/orange/adamginsburg/jwst/cloudef*/F770W/pipeline/"
+        f"jw02092-{obs}_t*_miri_f770w_i2d.fits")
+    return hits[0] if hits else None
+
+
+@pytest.mark.parametrize("obs,field", sorted(REAL_MOSAICS.items()))
+def test_classify_field_on_a_real_header(obs, field):
+    """Pin which name goes with which sky position.
+
+    Swapping the two FIELD_CENTERS entries left the whole suite passing: the
+    centres are ~0.20 deg apart and FIELD_TOL_DEG is 0.1, so each sits inside
+    the other's tolerance band and nothing held the mapping.  Reading a real
+    header ties the names to the sky rather than to each other.
+    """
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    path = _mosaic(obs)
+    if path is None:
+        pytest.skip(f"no F770W mosaic on disk for {obs}")
+    with fits.open(path) as hl:
+        hdu = next(h for h in hl if h.data is not None and h.data.ndim == 2)
+        w = WCS(hdu.header).celestial
+        ny, nx = hdu.data.shape
+    c = w.pixel_to_world(nx / 2, ny / 2).galactic
+    assert C.classify_field(c.l.deg, c.b.deg) == field
+
+
+def test_the_field_centres_are_not_interchangeable():
+    """The swap the reviewer tried must fail here.
+
+    Each field's own centre has to classify as itself, which no longer holds
+    if the two entries trade places.
+    """
+    for field, (l, b) in C.FIELD_CENTERS.items():
+        assert C.classify_field(l, b) == field
+
+
+def test_the_saved_png_avm_builder_is_pinned():
+    """save_rgb writes the PNG rotated 180 relative to the FITS array.
+
+    avm_for_saved_png reflects CRPIX on both axes to describe the PNG as
+    written; faithful_avm does not, and substituting it puts every tile
+    |N + 1 - 2*crpix| pixels off -- 1.26" for one measured field, and 3.8" for
+    two archival MIRI layers found the same day.  Swapping the import left the
+    suite passing, so the distinction is pinned here on the numbers rather
+    than on the name.
+    """
+    import numpy as np
+    from astropy.wcs import WCS
+    from jwst_rgb.save_rgb import avm_for_saved_png, faithful_avm
+
+    ny, nx = 400, 600
+    w = WCS(naxis=2)
+    w.wcs.crpix = [137.0, 251.0]          # deliberately off centre
+    w.wcs.cdelt = [-1 / 3600, 1 / 3600]
+    w.wcs.crval = [266.5, -28.6]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    saved = avm_for_saved_png(w, ny, nx)
+    naive = faithful_avm(w, (ny, nx))     # its signature is (wcs, shape)
+    sx, sy = saved.Spatial.ReferencePixel
+    fx, fy = naive.Spatial.ReferencePixel
+    # the reflection is the whole point: x -> nx + 1 - x, y -> ny + 1 - y
+    assert sx == pytest.approx(nx + 1 - 137.0, abs=1e-6)
+    assert sy == pytest.approx(ny + 1 - 251.0, abs=1e-6)
+    assert not (np.isclose(sx, fx) and np.isclose(sy, fy)), \
+        "avm_for_saved_png and faithful_avm agree; the builders are not distinct"
+
+
+def test_the_module_imports_the_saved_png_builder_by_name():
+    """The numeric test above shows the two builders differ; this shows which
+    one the module actually calls.
+
+    Substituting `from jwst_rgb.save_rgb import faithful_avm as
+    avm_for_saved_png` left the suite passing, because nothing exercised the
+    import.  Aliasing under the same local name defeats a check on the call
+    site, so the check is on what is imported.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(C))
+    imported = [
+        (n.module, a.name, a.asname)
+        for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+        for a in n.names
+        if n.module == "jwst_rgb.save_rgb"
+    ]
+    names = {orig for _, orig, _ in imported}
+    assert "avm_for_saved_png" in names, (
+        f"module imports {names or 'nothing'} from jwst_rgb.save_rgb; the "
+        f"saved-PNG AVM builder must be avm_for_saved_png")
+    assert "faithful_avm" not in names, (
+        "faithful_avm does not reflect CRPIX for a rot180 PNG; using it here "
+        "puts every tile |N + 1 - 2*crpix| pixels off")
