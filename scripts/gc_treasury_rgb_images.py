@@ -291,6 +291,7 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
     if hips:
         from tqdm import tqdm
         from reproject.hips import reproject_to_hips
+        from jwst_rgb.landing_page import patch_hips_dir
         hips_dir = f"{OUTDIR}/{name}_hips"
         if os.path.exists(hips_dir):
             shutil.rmtree(hips_dir)
@@ -298,6 +299,9 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
                           progress_bar=tqdm)
+        # the CDS landing page reproject writes leaves Aladin Lite's settings
+        # control off, and the reticle toggle lives inside it
+        patch_hips_dir(hips_dir)
         if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
             raise RuntimeError(f"{obs}: build produced no Norder3")
         print(f"  wrote {hips_dir}", flush=True)
@@ -640,6 +644,7 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
     if hips:
         from tqdm import tqdm
         from reproject.hips import reproject_to_hips
+        from jwst_rgb.landing_page import patch_hips_dir
         hips_dir = miri_hips_for(obs, bgmatch)
         if os.path.exists(hips_dir):
             shutil.rmtree(hips_dir)
@@ -647,6 +652,9 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
                           progress_bar=tqdm)
+        # the CDS landing page reproject writes leaves Aladin Lite's settings
+        # control off, and the reticle toggle lives inside it
+        patch_hips_dir(hips_dir)
         if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
             raise RuntimeError(f"{obs}: MIRI build produced no Norder3")
         print(f"  wrote {hips_dir}", flush=True)
@@ -1076,6 +1084,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, plan_coadd, save_manifest,
         stamp_identity, stamp_release_date)
+    from jwst_rgb.landing_page import patch_hips_dir
 
     action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
         else plan_coadd(out, layers)
@@ -1106,6 +1115,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
         # creator_did, so the mosaic and that single field are one dataset
         print("  identity -> {} / {}".format(
             *stamp_identity(stage, os.path.basename(out))))
+        patch_hips_dir(stage)
         old_dir = out + ".old"
         shutil.rmtree(old_dir, ignore_errors=True)
         os.rename(out, old_dir)
@@ -1122,6 +1132,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     for L in layers:
         print(f"  {os.path.basename(L)}")
     coadd_hips(layers, out)
+    patch_hips_dir(out)
     save_manifest(out, layers)
     set_union_view(out, layers)
     print(f"  hips_release_date -> {stamp_release_date(out)}")
