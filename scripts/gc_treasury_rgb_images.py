@@ -260,13 +260,14 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
     mid = np.nanmean(np.stack([long_, short_]), axis=0)
 
     chans = [long_, mid, short_]
-    # STRETCHES keys are the flavour names; the kwargs go straight to
-    # simple_norm, which applies them to the RAW FITS values in MJy/sr --
+    # STRETCHES keys are the flavour names; the entry is the complete
+    # simple_norm call -- function and cuts -- applied to the RAW FITS values
+    # in MJy/sr --
     # long_/short_ come off the i2d untouched and mid is their pixelwise mean,
     # so vmin/vmax are in MJy/sr as intended.
     kw = STRETCHES[stretch]
     scaled = np.stack([np.nan_to_num(
-        simple_norm(c, stretch="asinh", **kw)(c)) for c in chans], axis=2)
+        simple_norm(c, **kw)(c)) for c in chans], axis=2)
     print(f"  stretch '{stretch}': {kw}", flush=True)
 
     # obs may carry a _nrca/_nrcb module tag
@@ -290,6 +291,7 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
     if hips:
         from tqdm import tqdm
         from reproject.hips import reproject_to_hips
+        from jwst_rgb.landing_page import patch_hips_dir
         hips_dir = f"{OUTDIR}/{name}_hips"
         if os.path.exists(hips_dir):
             shutil.rmtree(hips_dir)
@@ -297,6 +299,9 @@ def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False, stretch="pct"):
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
                           progress_bar=tqdm)
+        # the CDS landing page reproject writes leaves Aladin Lite's settings
+        # control off, and the reticle toggle lives inside it
+        patch_hips_dir(hips_dir)
         if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
             raise RuntimeError(f"{obs}: build produced no Norder3")
         print(f"  wrote {hips_dir}", flush=True)
@@ -390,11 +395,40 @@ def check_orientation(hips_dir, src_fits):
 #   vminmax  one fixed pair of cuts for every image, so a given MJy/sr is the
 #            same colour everywhere.  Fixes the stretch half of the seam
 #            problem without needing the per-field offsets bgmatch solves for.
+#   log      fixed cuts like vminmax, log instead of asinh, and a ceiling 5x
+#            higher.  The bright end is where the two differ: asinh at
+#            vmax=100 saturates the cluster cores, log to 500 keeps structure
+#            in them at the cost of compressing the faint end.
+#
+# The "stretch" key names the simple_norm function; everything else in the
+# entry is that function's cuts.  Values below vmin come back as -1.0
+# (simple_norm's `invalid`) and values above vmax above 1.0; the np.clip(0, 1)
+# at the call site is what bounds both.
 STRETCHES = {
-    "pct": dict(min_percent=1, max_percent=99.5),
-    "vminmax": dict(vmin=-0.5, vmax=100),
+    "pct": dict(stretch="asinh", min_percent=1, max_percent=99.5),
+    "vminmax": dict(stretch="asinh", vmin=-0.5, vmax=100),
+    "log": dict(stretch="log", vmin=-0.5, vmax=500),
 }
+# The flavour that keeps the historical un-suffixed filename.  Changing this
+# would rename products that are already published and listed in two viewers,
+# so it stays put.
 DEFAULT_STRETCH = "pct"
+
+# The flavour that is the primary science product going forward -- what the
+# viewers show by default.  Independent of DEFAULT_STRETCH, which is only about
+# filenames.
+PRIMARY_STRETCH = "vminmax"
+
+
+def coadd_name_for(stretch=None):
+    """jwst_gc_treasury_hips / jwst_gc_treasury_vminmax_hips.
+
+    The suffix goes before _hips so the names sort and read like the MIRI pair
+    (jwst_gc_treasury_miri_bgmatch_hips), rather than trailing after it.
+    """
+    if stretch is None or stretch == DEFAULT_STRETCH:
+        return COADD_NAME
+    return COADD_NAME.replace("_hips", f"_{stretch}_hips")
 
 
 def stretch_suffix(stretch):
@@ -610,6 +644,7 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
     if hips:
         from tqdm import tqdm
         from reproject.hips import reproject_to_hips
+        from jwst_rgb.landing_page import patch_hips_dir
         hips_dir = miri_hips_for(obs, bgmatch)
         if os.path.exists(hips_dir):
             shutil.rmtree(hips_dir)
@@ -617,6 +652,9 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
                           progress_bar=tqdm)
+        # the CDS landing page reproject writes leaves Aladin Lite's settings
+        # control off, and the reticle toggle lives inside it
+        patch_hips_dir(hips_dir)
         if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
             raise RuntimeError(f"{obs}: MIRI build produced no Norder3")
         print(f"  wrote {hips_dir}", flush=True)
@@ -660,7 +698,7 @@ def miri_needs_build(obs, src, bgmatch=False):
     return None
 
 
-def needs_build(obs, inv):
+def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     """Is this observation missing an RGB, or is its RGB older than its data?
 
     The mtime comparison matters more than usual here: 10678 has no astrometric
@@ -676,14 +714,14 @@ def needs_build(obs, inv):
         src = inv[f].get(obs)
         if src and time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
             return "SETTLING"
-    png = png_for(obs)
+    png = png_for(obs, stretch=stretch)
     if not os.path.exists(png):
         return "no RGB yet"
     # The HiPS has to be checked separately.  A run killed between writing the
     # png and finishing the pyramid leaves a png NEWER than its sources, which
     # every later tick then reads as up to date -- so the observation silently
     # never reaches the coadd.  That happened to o135_nrcb.
-    hips = f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212_hips"
+    hips = hips_for(obs, stretch=stretch)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "RGB exists but its HiPS is missing or incomplete"
     t_png = os.path.getmtime(png)
@@ -701,10 +739,11 @@ def _pending_summary():
     """
     inv, obs_all = inventory()
     out = []
-    for o in [o for o in obs_all if all(o in inv[f] for f in FILTERS)]:
-        why = needs_build(o, inv)
-        if why and why != "SETTLING":
-            out.append(f"{o} NIRCam -- {why}")
+    for stretch in sorted(STRETCHES):
+        for o in [o for o in obs_all if all(o in inv[f] for f in FILTERS)]:
+            why = needs_build(o, inv, stretch=stretch)
+            if why and why != "SETTLING":
+                out.append(f"{o} NIRCam/{stretch} -- {why}")
     miri = find_i2d(MIRI_FILTER)
     for bgmatch in (False, True):
         tag = "MIRI+bg" if bgmatch else "MIRI"
@@ -762,31 +801,33 @@ def cmd_auto(publish=False):
         ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
               f"{len(ready)} observation(s) complete in all filters")
-        built, failed = [], []
-        for o in ready:
-            why = needs_build(o, inv)
+        built, failed = {k: [] for k in STRETCHES}, []
+        for stretch in sorted(STRETCHES):
+          for o in ready:
+            why = needs_build(o, inv, stretch=stretch)
             if why == "SETTLING":
-                print(f"  {o}: source written in the last "
+                print(f"  {o} {stretch}: source written in the last "
                       f"{SETTLE_SECONDS // 60} min; leaving it to settle")
                 continue
             if not why:
-                print(f"  {o}: up to date")
+                print(f"  {o} {stretch}: up to date")
                 continue
-            print(f"  {o}: building -- {why}", flush=True)
+            print(f"  {o} {stretch}: building -- {why}", flush=True)
             try:
-                _, hd = build_obs(o)
+                _, hd = build_obs(o, stretch=stretch)
             except Exception as exc:                       # keep going on the rest
-                print(f"  {o}: FAILED {type(exc).__name__}: {exc}", flush=True)
-                failed.append(o)
+                print(f"  {o} {stretch}: FAILED {type(exc).__name__}: {exc}",
+                      flush=True)
+                failed.append(f"{o}:{stretch}")
                 continue
             if hd:
                 try:
                     check_orientation(hd, inv[TARGET_FILTER][o])
                 except (RuntimeError, OSError, ValueError, TypeError,
                         KeyError) as exc:
-                    print(f"  {o}: orientation check unavailable "
+                    print(f"  {o} {stretch}: orientation check unavailable "
                           f"({type(exc).__name__}: {exc})", flush=True)
-            built.append(o)
+            built[stretch].append(o)
         # MIRI parallel: its own field, its own monochrome layers, its own
         # coadds.  Two flavours of every tile -- plain and background-matched --
         # so the two mosaics can be compared directly on the same sky.
@@ -826,13 +867,16 @@ def cmd_auto(publish=False):
                               f"({type(exc).__name__}: {exc})", flush=True)
                 miri_built[bgmatch].append(o)
 
-        if built:
-            print(f"built {len(built)}: {', '.join(built)} -- recoadding NIRCam")
-            cmd_coadd()
-            if publish:
-                cmd_publish()
-        else:
-            print("nothing new to build; NIRCam coadd left alone")
+        for stretch in sorted(STRETCHES):
+            name = coadd_name_for(stretch)
+            if built[stretch]:
+                print(f"built {len(built[stretch])} for {name}: "
+                      f"{', '.join(built[stretch])} -- recoadding")
+                cmd_coadd(stretch=stretch)
+            else:
+                print(f"nothing new for {name}; left alone")
+        if any(built.values()) and publish:
+            cmd_publish()
         for bgmatch in (False, True):
             name = MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME
             if miri_built[bgmatch]:
@@ -862,8 +906,24 @@ def cmd_publish():
     # same day finds {n}_stale_{stamp} already there and shutil.move puts the
     # live tree INSIDE it rather than beside it.
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    src = [f"{OUTDIR}/{COADD_NAME}"] + sorted(
-        glob.glob(f"{OUTDIR}/GCTreasury_*_RGB_480-mean-212_hips"))
+    src = []
+    for stretch in sorted(STRETCHES):
+        sfx = stretch_suffix(stretch)
+        src.append(f"{OUTDIR}/{coadd_name_for(stretch)}")
+        src += sorted(glob.glob(
+            f"{OUTDIR}/GCTreasury_*_RGB_480-mean-212{sfx}_hips"))
+    if DEFAULT_STRETCH in STRETCHES:
+        # the un-suffixed glob also matches every suffixed flavour
+        others = [f"_{k}_hips" for k in STRETCHES if k != DEFAULT_STRETCH]
+        keep, seen = [], set()
+        for d in src:
+            b = os.path.basename(d)
+            if b.endswith("_RGB_480-mean-212_hips") and any(o in b for o in others):
+                continue
+            if d not in seen:
+                seen.add(d)
+                keep.append(d)
+        src = keep
     for s in src:
         if not os.path.isdir(os.path.join(s, "Norder3")):
             print(f"  skipping {os.path.basename(s)}: no Norder3")
@@ -973,7 +1033,7 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
-def cmd_coadd(miri=False, bgmatch=False, full=False):
+def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     """Coadd every per-observation HiPS into one growing mosaic.
 
     NIRCam and MIRI are coadded separately: the two point at different sky and
@@ -1018,11 +1078,13 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
     if miri:
         out = f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME}"
     else:
-        out = f"{OUTDIR}/{COADD_NAME}{stretch_suffix(stretch)}"
+        # suffix goes BEFORE _hips, matching jwst_gc_treasury_miri_bgmatch_hips
+        out = f"{OUTDIR}/{coadd_name_for(stretch)}"
 
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, plan_coadd, save_manifest,
-        stamp_release_date)
+        stamp_identity, stamp_release_date)
+    from jwst_rgb.landing_page import patch_hips_dir
 
     action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
         else plan_coadd(out, layers)
@@ -1049,6 +1111,11 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
         # without this the appended coadd keeps the first layer's date and
         # publish_hips_layers.py never ships it
         print(f"  hips_release_date -> {stamp_release_date(stage)}")
+        # ...and without this it keeps the first layer's obs_title and
+        # creator_did, so the mosaic and that single field are one dataset
+        print("  identity -> {} / {}".format(
+            *stamp_identity(stage, os.path.basename(out))))
+        patch_hips_dir(stage)
         old_dir = out + ".old"
         shutil.rmtree(old_dir, ignore_errors=True)
         os.rename(out, old_dir)
@@ -1065,9 +1132,11 @@ def cmd_coadd(miri=False, bgmatch=False, full=False):
     for L in layers:
         print(f"  {os.path.basename(L)}")
     coadd_hips(layers, out)
+    patch_hips_dir(out)
     save_manifest(out, layers)
     set_union_view(out, layers)
     print(f"  hips_release_date -> {stamp_release_date(out)}")
+    print("  identity -> {} / {}".format(*stamp_identity(out)))
     print(f"done: {out}")
     return 0
 
@@ -1119,7 +1188,8 @@ def main():
     if a.auto:
         return cmd_auto(publish=a.publish)
     if a.coadd:
-        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd)
+        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
+                         stretch=a.stretch)
 
     inv, obs = inventory()
     targets = ([a.obs] if a.obs else

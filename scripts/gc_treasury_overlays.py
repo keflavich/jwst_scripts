@@ -90,8 +90,15 @@ ULTRARED_CUT = 4.0
 # density grid
 PIXEL_ARCSEC, SMOOTH_ARCSEC = 2.0, 6.0
 
+# The qualifier group is the point: reductions gain tags over time
+# (resbgsub, ...) and a pattern that does not allow for them does not fail --
+# it silently selects an older iteration.
+FILTERS_USED = ("f212n", "f480m")
+
 CAT_RE = re.compile(
-    r"(f\d+[a-z])_merged_(o\d+)_indivexp_merged_m(\d+)_dao_basic_vetted\.fits$")
+    r"(f\d+[a-z])_merged_(o\d+)_indivexp_merged_"
+    r"((?:[a-z0-9]+_)*)"                      # optional qualifiers, e.g. resbgsub_
+    r"m(\d+)_dao_basic_vetted\.fits$")
 
 
 # --------------------------------------------------------------------------
@@ -102,20 +109,59 @@ def latest_pairs():
     """{obs: {filter: (iteration, path)}} keeping the highest m<N> per filter,
     restricted to observations vetted in BOTH filters."""
     have = {}
-    for f in glob.glob(f"{CAT}/f*_merged_o*_indivexp_merged_m*_dao_basic_vetted.fits"):
+    # Glob broadly and let CAT_RE decide.  The old pattern required "merged_m"
+    # to be adjacent, so ..._indivexp_merged_resbgsub_m5_... was filtered out
+    # before the regex ever saw it -- fixing the regex alone changed nothing.
+    for f in glob.glob(f"{CAT}/f*_merged_o*_indivexp_merged_*dao_basic_vetted.fits"):
         m = CAT_RE.search(os.path.basename(f))
         if not m:
             continue
-        filt, obs, it = m.group(1), m.group(2), int(m.group(3))
+        filt, obs, qual, it = m.group(1), m.group(2), m.group(3), int(m.group(4))
         d = have.setdefault(obs, {})
+        # rank on the iteration number alone; a qualifier is a variant of an
+        # iteration, not a competitor to it
         if filt not in d or it > d[filt][0]:
-            d[filt] = (it, f)
+            d[filt] = (it, f, qual.rstrip("_"))
     return {o: v for o, v in sorted(have.items())
             if "f212n" in v and "f480m" in v}
 
 
+def lineage_of(pairs):
+    """{lineage: [obs, ...]} over the selected set.
+
+    A reduction variant is part of a catalogue's identity, not a detail of its
+    filename: pooling two chains makes any systematic between them look like a
+    property of the sky.
+    """
+    out = {}
+    for obs, v in sorted(pairs.items()):
+        tags = {(v[f][2] or "plain") for f in FILTERS_USED if f in v}
+        key = "/".join(sorted(tags)) if tags else "unknown"
+        out.setdefault(key, []).append(obs)
+    return out
+
+
+def report_lineage(pairs):
+    """Print the lineage breakdown; return True when the set is uniform."""
+    lin = lineage_of(pairs)
+    if len(lin) <= 1:
+        only = next(iter(lin), "none")
+        print(f"reduction lineage: all {len(pairs)} field(s) {only}")
+        return True
+    print(f"MIXED REDUCTIONS across {len(pairs)} field(s):")
+    for k in sorted(lin):
+        print(f"  {k:12s} {len(lin[k]):2d}: {', '.join(lin[k])}")
+    print("  a systematic between these groups would be PROCESSING, not sky;")
+    print("  pick one chain if that matters for the science")
+    return False
+
+
 def fingerprint(pairs):
-    """Identity of the input set: which files, and their size and mtime."""
+    """Identity of the input set: which files, and their size and mtime.
+
+    The basename is included, so a switch between catalogue variants (m4 ->
+    resbgsub_m5) invalidates the cache the same way a re-vet does.
+    """
     items = []
     for obs, v in sorted(pairs.items()):
         for filt in sorted(v):
@@ -473,6 +519,7 @@ def main():
         print(f"no vetted catalogue pairs under {CAT}")
         return 1
     print(f"{len(pairs)} observation(s) vetted in both filters: {', '.join(pairs)}")
+    report_lineage(pairs)
 
     fp = fingerprint(pairs)
     if a.auto and not a.force and os.path.exists(STAMP):
@@ -518,6 +565,7 @@ def main():
         elif os.path.exists(STAMP):
             with open(STAMP) as fh:
                 stamp["built"] = json.load(fh).get("built")
+        stamp["lineage"] = lineage_of(pairs)
         with open(STAMP, "w") as fh:
             json.dump(stamp, fh, indent=1)
         if not full:
