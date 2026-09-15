@@ -433,6 +433,33 @@ def miri_hips_for(obs, bgmatch=False):
     return f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W{miri_suffix(bgmatch)}_hips"
 
 
+# Block-averaging factor for background matching.  MEASURE AT 1.
+#
+# Binning looks like it should be free: a pairwise median over shared sky is a
+# large-scale quantity, and binning by 8 cuts the reprojected area by 64, which
+# turns a ten-hour NIRCam match into ten minutes.  It is not free.  Measured
+# against values the unbinned path had already produced:
+#
+#     pair          unbinned     bin=8      error
+#     o098-o105       0.1317   -0.6077    -0.7394
+#     o098-o107       1.2270    0.5990    -0.6280
+#     o102-o109       0.0447   -0.5624    -0.6071
+#
+# A roughly constant -0.6, which is the same size as the offsets being solved
+# for, so it would have corrupted every tile's correction while reading as a
+# clean speedup.  Strict NaN propagation (np.mean rather than np.nanmean, so a
+# partly-blank block goes blank instead of averaging its valid half) did not
+# help, which rules out the footprint-edge explanation.  Running the same
+# harness at factor 1 reproduced the unbinned values to -0.0000, so this is a
+# property of binning and not of the comparison.
+#
+# The mechanism is unconfirmed.  The plausible one is that binning collapses
+# the noise the full-resolution difference is dominated by, leaving asymmetric
+# real structure that sigma clipping then trims off-centre -- but that is a
+# hypothesis, and the number above is the measurement.  Do not re-enable this
+# without re-running that comparison.
+BG_MATCH_BIN = 1
+
 MIRI_MATCH_JSON = f"{OUTDIR}/miri_background_match.json"
 NIRCAM_MATCH_JSON = f"{OUTDIR}/nircam_background_match.json"
 
@@ -450,6 +477,28 @@ def miri_measure_pairs(paths):
     from reproject import reproject_interp
 
     keys = sorted(paths)
+
+    def binned(data, wcs, factor=BG_MATCH_BIN):
+        """Block-average, with the WCS moved to match.
+
+        Reversing a pixel axis is not involved here, so only the scale and the
+        reference pixel change: binning by f puts the new pixel centres at
+        (crpix - 0.5)/f + 0.5 and multiplies the linear transform by f.
+        """
+        if factor <= 1:
+            return data, wcs
+        from astropy.nddata import block_reduce
+        ny_, nx_ = data.shape
+        cy_, cx_ = (ny_ // factor) * factor, (nx_ // factor) * factor
+        out = block_reduce(data[:cy_, :cx_], factor, func=np.nanmean)
+        w = wcs.deepcopy()
+        w.wcs.crpix = [(wcs.wcs.crpix[0] - 0.5) / factor + 0.5,
+                       (wcs.wcs.crpix[1] - 0.5) / factor + 0.5]
+        if w.wcs.has_cd():
+            w.wcs.cd = w.wcs.cd * factor
+        else:
+            w.wcs.cdelt = w.wcs.cdelt * factor
+        return out, w
 
     def load(k):
         """Read one mosaic.  Deliberately NOT cached across the whole run: at
@@ -495,20 +544,23 @@ def miri_measure_pairs(paths):
         skipped += len(keys[i + 1:]) - len(partners)
         if not partners:
             continue
-        dataA, wcsA = load(a)                        # one frame held per outer
+        dataA, wcsA = binned(*load(a))               # one frame held per outer
         for b in partners:
-            dataB, wcsB = load(b)
+            dataB, wcsB = binned(*load(b))
             reB, _ = reproject_interp((dataB, wcsB), wcsA,
                                       shape_out=dataA.shape)
             del dataB
             m = np.isfinite(dataA) & np.isfinite(reB)
-            if m.sum() < 5000:                      # too little shared sky
+            # same area of sky as the original 5000 full-resolution pixels
+            if m.sum() < max(64, 5000 // (BG_MATCH_BIN ** 2)):
                 del reB
                 continue
             _, med, _ = sigma_clipped_stats((dataA - reB)[m], sigma=3.0,
                                             maxiters=5)
             del reB
-            pairs.append((a, b, float(med), int(m.sum())))
+            # report in full-resolution pixels so the solve's area weighting
+            # keeps the meaning it had before binning
+            pairs.append((a, b, float(med), int(m.sum()) * BG_MATCH_BIN ** 2))
             print(f"  {a}-{b}: {m.sum():7d} shared px, median diff "
                   f"{med:+.4f}", flush=True)
     if skipped:
