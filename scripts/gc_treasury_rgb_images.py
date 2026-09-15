@@ -692,8 +692,15 @@ def cmd_auto(publish=False):
             # nothing pending is routine; a held lock with work queued behind
             # it is worth seeing in the log.
             print(f"another run holds the lock ({age / 60:.0f} min old); exiting")
+            # Two independent things can fail here, so they get separate
+            # handlers: an unreadable lock file must not also cost us the
+            # pending list, which is the half that actually says what is stuck.
             try:
                 print(f"  {lock} says: {open(lock).read().strip()}")
+            except OSError as exc:
+                print(f"  (could not read the lock file: "
+                      f"{type(exc).__name__}: {exc})")
+            try:
                 pending = _pending_summary()
             except (OSError, KeyError, ValueError, TypeError) as exc:
                 print(f"  (could not summarise pending work: "
