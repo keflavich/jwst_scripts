@@ -41,6 +41,7 @@ no matter what.
 import json
 import os
 import shutil
+import time
 
 from PIL import Image
 
@@ -86,6 +87,11 @@ def plan_coadd(coadd_dir, layers, tile_format="png"):
     Returns (action, new_layers, reason) where action is "none", "append" or
     "rebuild".  Anything other than a pure addition to the end of the existing
     set is a rebuild, because a flattened coadd cannot give a layer back.
+
+    Deciding is O(all tiles): fingerprinting every known layer stats each of
+    its tiles.  That is far cheaper than the open/composite/save a full rebuild
+    does on the same tiles -- which is where the saving comes from -- but the
+    decision itself does not scale better than the rebuild it avoids.
     """
     if not os.path.isdir(coadd_dir):
         return "rebuild", layers, "no existing coadd"
@@ -154,6 +160,34 @@ def merge_layer(layer_dir, out_dir, tile_format="png"):
                 shutil.copyfile(src, tgt)
                 copied += 1
     return copied, composited
+
+
+def stamp_release_date(coadd_dir, when=None):
+    """Set hips_release_date on a coadd to now.
+
+    Neither coadd path does this on its own: coadd_hips writes
+    ``reference_properties = all_properties[0]`` verbatim, so the coadd
+    inherits the FIRST layer's date.  New observations sort last, so adding one
+    left the date untouched.  publish_hips_layers.py decides with
+    ``release_date(src) > release_date(dst)``, so a coadd carrying new sky
+    reported "up to date" and was never published -- which would make this
+    module's cheap append invisible to the viewers.
+    """
+    fn = os.path.join(coadd_dir, "properties")
+    if not os.path.exists(fn):
+        return None
+    stamp = when or time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
+    lines, seen = [], False
+    for ln in open(fn).read().rstrip("\n").split("\n"):
+        if "=" in ln and ln.split("=", 1)[0].strip() == "hips_release_date":
+            lines.append(f"{'hips_release_date':20s} = {stamp}")
+            seen = True
+        else:
+            lines.append(ln)
+    if not seen:
+        lines.append(f"{'hips_release_date':20s} = {stamp}")
+    open(fn, "w").write("\n".join(lines) + "\n")
+    return stamp
 
 
 def hardlink_tree(src, dst):

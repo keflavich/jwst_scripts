@@ -70,7 +70,12 @@ def layers(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     # A and B overlap on (3, 10); C overlaps A on (3, 11) and adds (3, 99)
-    a = make_layer(str(src), "layerA", [(3, 10), (3, 11)], (255, 0, 0))
+    # alpha=128 matters: with every layer opaque, alpha_composite(new,
+    # accumulated) returns the accumulated tile unchanged, so writing it back
+    # through a hardlink produces identical bytes and the corruption this
+    # fixture exists to catch is invisible.  A footprint edge is exactly this
+    # partially transparent case, which is why coadd_hips composites at all.
+    a = make_layer(str(src), "layerA", [(3, 10), (3, 11)], (255, 0, 0), alpha=128)
     b = make_layer(str(src), "layerB", [(3, 10), (3, 12)], (0, 255, 0))
     c = make_layer(str(src), "layerC", [(3, 11), (3, 99)], (0, 0, 255))
     return str(src), [a, b, c]
@@ -109,14 +114,27 @@ def test_append_of_two_layers_matches_full_rebuild(tmp_path, layers):
 
 def test_hardlink_clone_is_not_mutated_by_merge(tmp_path, layers):
     """The clone shares inodes with the previous coadd; compositing must not
-    write through the link."""
+    write through the link.
+
+    The previous coadd is the LIVE one until os.replace swaps the stage in, so
+    a write-through corrupts what is being served.
+    """
     _, (a, b, c) = layers
     part = str(tmp_path / "part3")
     coadd_hips([a, b], part)
     before = tiles_of(part)
     inc = str(tmp_path / "inc3")
     hardlink_tree(part, inc)
-    merge_layer(c, inc)
+    copied, composited = merge_layer(c, inc)
+
+    # the test is worthless unless the composite branch ran AND changed bytes;
+    # with opaque layers it runs and is a no-op, which hid an in-place write
+    assert composited > 0, "fixture no longer exercises the composite branch"
+    shared = set(tiles_of(inc)) & set(before)
+    changed = [r for r in shared if not np.array_equal(tiles_of(inc)[r], before[r])]
+    assert changed, ("compositing produced byte-identical tiles, so this test "
+                     "cannot detect a write-through")
+
     after = tiles_of(part)
     assert set(after) == set(before)
     for rel in before:
@@ -185,3 +203,45 @@ def test_manifest_round_trips(tmp_path, layers):
     written = save_manifest(out, [a, b])
     assert load_manifest(out) == written
     assert written["order"] == ["layerA", "layerB"]
+
+
+def test_release_date_is_stamped_and_moves_forward(tmp_path, layers):
+    """publish_hips_layers.py ships a coadd only when its release date is newer
+    than the published one, so an append that does not move the date is an
+    append no viewer ever sees."""
+    from jwst_rgb.incremental_coadd import stamp_release_date
+    _, (a, b, c) = layers
+    out = str(tmp_path / "rd")
+    coadd_hips([a, b], out)
+
+    def date_of(d):
+        for ln in open(os.path.join(d, "properties")):
+            if ln.split("=", 1)[0].strip() == "hips_release_date":
+                return ln.split("=", 1)[1].strip()
+        return None
+
+    # coadd_hips copies the FIRST layer's properties verbatim
+    assert date_of(out) == "2026-01-01T00:00Z"
+    stamped = stamp_release_date(out, when="2026-09-15T12:00Z")
+    assert stamped == "2026-09-15T12:00Z"
+    assert date_of(out) == "2026-09-15T12:00Z"
+    assert date_of(out) > "2026-01-01T00:00Z"
+
+
+def test_stamp_release_date_adds_the_key_when_absent(tmp_path):
+    from jwst_rgb.incremental_coadd import stamp_release_date
+    d = tmp_path / "bare"
+    d.mkdir()
+    (d / "properties").write_text("hips_frame           = galactic\n")
+    stamp_release_date(str(d), when="2026-09-15T12:00Z")
+    text = (d / "properties").read_text()
+    assert "hips_release_date" in text and "2026-09-15T12:00Z" in text
+    assert "hips_frame" in text
+
+
+def test_stamp_release_date_tolerates_a_coadd_with_no_properties(tmp_path):
+    """The live NIRCam coadd directory has Norder* and no properties."""
+    from jwst_rgb.incremental_coadd import stamp_release_date
+    d = tmp_path / "noprops"
+    d.mkdir()
+    assert stamp_release_date(str(d)) is None
