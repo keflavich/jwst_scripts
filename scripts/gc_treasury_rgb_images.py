@@ -254,41 +254,43 @@ def build_obs(obs, avm_mode="raw", hips=True):
         short_ = np.where(bad, np.nan, short_)
     mid = np.nanmean(np.stack([long_, short_]), axis=0)
 
-    chans = [long_, mid, short_]
-    scaled = np.stack([np.nan_to_num(
-        simple_norm(c, stretch="asinh", min_percent=1, max_percent=99.5)(c))
-        for c in chans], axis=2)
+    for stretchtype, lo, hi in (('pct', (1, 99.5)), ('vminmax', -0.5, 100)):
+        chans = [long_, mid, short_]
+        scaled = np.stack([np.nan_to_num(
+            (simple_norm(c, stretch="asinh", min_percent=lo, max_percent=hi)(c)) if stretchtype == 'pct'
+             else simple_norm(c, stretch="asinh", vmin=lo, vmax=hi)(c)))
+            for c in chans], axis=2)
 
-    name = f"GCTreasury_{obs}_RGB_480-mean-212"  # obs may carry a _nrca/_nrcb module tag
-    png = f"{OUTDIR}/{name}.png"
-    # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
-    # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
-    # rotated by 180 degrees, so CRPIX has to be reflected on both axes.
-    # AVM.from_header(thdu.header) left CRPIX at its FITS value and put every
-    # tile |N+1-2*crpix| pixels off (1.26" for o112).
-    avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
-    if avm_mode == "rot180":
-        from apply_cdmatrix_flip import cdmatrix_avm
-        avm = cdmatrix_avm(twcs, ny, nx, "rot180")
-    _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
-              alpha_only_edges=True, original_data=np.stack(chans, axis=2),
-              hips=False)
-    print(f"  wrote {png}", flush=True)
+        name = f"GCTreasury_{obs}_RGB_480-mean-212_{stretchtype}"  # obs may carry a _nrca/_nrcb module tag
+        png = f"{OUTDIR}/{name}.png"
+        # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
+        # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
+        # rotated by 180 degrees, so CRPIX has to be reflected on both axes.
+        # AVM.from_header(thdu.header) left CRPIX at its FITS value and put every
+        # tile |N+1-2*crpix| pixels off (1.26" for o112).
+        avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
+        if avm_mode == "rot180":
+            from apply_cdmatrix_flip import cdmatrix_avm
+            avm = cdmatrix_avm(twcs, ny, nx, "rot180")
+        _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
+                  alpha_only_edges=True, original_data=np.stack(chans, axis=2),
+                  hips=False)
+        print(f"  wrote {png}", flush=True)
 
-    hips_dir = None
-    if hips:
-        from tqdm import tqdm
-        from reproject.hips import reproject_to_hips
-        hips_dir = f"{OUTDIR}/{name}_hips"
-        if os.path.exists(hips_dir):
-            shutil.rmtree(hips_dir)
-        reproject_to_hips(png, coord_system_out="galactic", level=None,
-                          reproject_function=reproject_interp,
-                          output_directory=hips_dir, threads=16,
-                          progress_bar=tqdm)
-        if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
-            raise RuntimeError(f"{obs}: build produced no Norder3")
-        print(f"  wrote {hips_dir}", flush=True)
+        hips_dir = None
+        if hips:
+            from tqdm import tqdm
+            from reproject.hips import reproject_to_hips
+            hips_dir = f"{OUTDIR}/{name}_hips"
+            if os.path.exists(hips_dir):
+                shutil.rmtree(hips_dir)
+            reproject_to_hips(png, coord_system_out="galactic", level=None,
+                              reproject_function=reproject_interp,
+                              output_directory=hips_dir, threads=16,
+                              progress_bar=tqdm)
+            if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
+                raise RuntimeError(f"{obs}: build produced no Norder3")
+            print(f"  wrote {hips_dir}", flush=True)
     return png, hips_dir
 
 
