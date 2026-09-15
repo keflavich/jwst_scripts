@@ -65,6 +65,11 @@ MIRI_COADD_NAME = "jwst_gc_treasury_miri_hips"
 # the matching can be judged on the sky rather than argued about.
 MIRI_BGMATCH_COADD_NAME = "jwst_gc_treasury_miri_bgmatch_hips"
 
+# Background-matched NIRCam, published alongside the plain layer rather than
+# replacing it, the same way the MIRI pair is.  Same sky, so with both enabled
+# the plain one is hidden; the point is to be able to toggle between them.
+BGMATCH_COADD_NAME = "jwst_gc_treasury_bgmatch_hips"
+
 # How far the served tiles may sit from the source FITS before check_orientation
 # calls it a failure.  The HiPS grid is ~0.02"/px at order 14 and reprojection
 # adds well under a tenth of an arcsec, so anything past this is a WCS error,
@@ -205,8 +210,14 @@ def cmd_list():
     return 0
 
 
-def build_obs(obs, avm_mode="raw", hips=True):
-    """One observation -> RGB png + HiPS, returned as (png, hips_dir)."""
+def build_obs(obs, avm_mode="raw", hips=True, bgmatch=False):
+    """One observation -> RGB png + HiPS, returned as (png, hips_dir).
+
+    With bgmatch, each filter's overlap-derived offset is removed and every
+    tile is stretched on one shared pair of cuts per channel, so equal sky
+    brightness becomes equal colour across the mosaic.  Without it, each tile
+    is stretched on its OWN percentiles, which is what makes the seams.
+    """
     from astropy.io import fits
     from astropy.wcs import WCS
     from astropy.visualization import simple_norm
@@ -242,6 +253,22 @@ def build_obs(obs, avm_mode="raw", hips=True):
             (shdu.data.astype(float), WCS(shdu.header).celestial),
             twcs, shape_out=(ny, nx))
 
+    match = None
+    if bgmatch:
+        match = load_nircam_match()
+        if not match:
+            raise RuntimeError(f"{obs}: no background match on disk; "
+                               f"run --nircam-match first")
+        missing = [f for f in FILTERS
+                   if obs not in match["filters"].get(f, {}).get("offsets", {})]
+        if missing:
+            raise RuntimeError(f"{obs}: no background offset for {missing}; "
+                               f"re-run --nircam-match")
+        for f in FILTERS:
+            o = match["filters"][f]["offsets"][obs]
+            data[f] = data[f] - o
+            print(f"  {f.upper()} background offset {o:+.6f} removed", flush=True)
+
     long_, short_ = data["f480m"], data["f212n"]
     # A pixel that is NaN in one channel but real in the others would otherwise
     # render as a flat false-coloured island; forbid the mixed state outright.
@@ -255,11 +282,26 @@ def build_obs(obs, avm_mode="raw", hips=True):
     mid = np.nanmean(np.stack([long_, short_]), axis=0)
 
     chans = [long_, mid, short_]
-    scaled = np.stack([np.nan_to_num(
-        simple_norm(c, stretch="asinh", min_percent=1, max_percent=99.5)(c))
-        for c in chans], axis=2)
+    if bgmatch:
+        # one pair of cuts per channel for the whole mosaic; green is the
+        # pixelwise mean of the two filters, so its limits are the mean of
+        # theirs (see cmd_nircam_match)
+        cuts = [(match["filters"]["f480m"]["vmin"], match["filters"]["f480m"]["vmax"]),
+                (match["green"]["vmin"], match["green"]["vmax"]),
+                (match["filters"]["f212n"]["vmin"], match["filters"]["f212n"]["vmax"])]
+        scaled = np.stack([np.nan_to_num(
+            simple_norm(c, stretch="asinh", vmin=lo, vmax=hi, clip=True)(c))
+            for c, (lo, hi) in zip(chans, cuts)], axis=2)
+        print(f"  shared cuts R {cuts[0][0]:.4f}..{cuts[0][1]:.4f}  "
+              f"G {cuts[1][0]:.4f}..{cuts[1][1]:.4f}  "
+              f"B {cuts[2][0]:.4f}..{cuts[2][1]:.4f}", flush=True)
+    else:
+        scaled = np.stack([np.nan_to_num(
+            simple_norm(c, stretch="asinh", min_percent=1, max_percent=99.5)(c))
+            for c in chans], axis=2)
 
-    name = f"GCTreasury_{obs}_RGB_480-mean-212"  # obs may carry a _nrca/_nrcb module tag
+    name = (f"GCTreasury_{obs}_RGB_480-mean-212"
+            f"{miri_suffix(bgmatch)}")  # obs may carry a _nrca/_nrcb module tag
     png = f"{OUTDIR}/{name}.png"
     # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
     # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
@@ -370,8 +412,13 @@ def check_orientation(hips_dir, src_fits):
     return ok and off <= ASTROMETRY_TOL_ARCSEC
 
 
-def png_for(obs):
-    return f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212.png"
+def png_for(obs, bgmatch=False):
+    return (f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212"
+            f"{miri_suffix(bgmatch)}.png")
+
+
+def hips_for(obs, bgmatch=False):
+    return png_for(obs, bgmatch).replace(".png", "_hips")
 
 
 def miri_suffix(bgmatch):
@@ -387,6 +434,7 @@ def miri_hips_for(obs, bgmatch=False):
 
 
 MIRI_MATCH_JSON = f"{OUTDIR}/miri_background_match.json"
+NIRCAM_MATCH_JSON = f"{OUTDIR}/nircam_background_match.json"
 
 
 def miri_measure_pairs(paths):
@@ -402,25 +450,70 @@ def miri_measure_pairs(paths):
     from reproject import reproject_interp
 
     keys = sorted(paths)
-    data, wcs_ = {}, {}
-    for k in keys:
+
+    def load(k):
+        """Read one mosaic.  Deliberately NOT cached across the whole run: at
+        11440x4736 a NIRCam frame is ~433 MB as float64, so holding twenty at
+        once is ~8.7 GB before any reprojection buffer -- which OOM-killed this
+        function on the login node with no traceback and no output."""
         hdu = next(h for h in fits.open(paths[k])
                    if h.data is not None and h.data.ndim == 2)
-        data[k] = hdu.data.astype(float)
-        wcs_[k] = WCS(hdu.header).celestial
+        return hdu.data.astype(float), WCS(hdu.header).celestial
+
+    wcs_, shape_, box = {}, {}, {}
+    for k in keys:
+        with fits.open(paths[k]) as hl:
+            hdu = next(h for h in hl if h.data is not None and h.data.ndim == 2)
+            wcs_[k] = WCS(hdu.header).celestial
+            shape_[k] = hdu.shape                    # header only, no read
+        ny_, nx_ = shape_[k]
+        c = wcs_[k].pixel_to_world([0, nx_ - 1, 0, nx_ - 1],
+                                   [0, 0, ny_ - 1, ny_ - 1])
+        box[k] = (c.ra.deg.min(), c.ra.deg.max(),
+                  c.dec.deg.min(), c.dec.deg.max())
+
+    def may_overlap(a, b):
+        """Corner bounding boxes, as a cheap veto before reprojecting.
+
+        N pointings give N(N-1)/2 pairs -- 190 for 20 NIRCam fields, and twice
+        that across two filters -- while a full-frame reproject_interp of an
+        11440x4736 mosaic costs seconds.  Only neighbours actually overlap, so
+        the great majority of that work produces "too little shared sky" and is
+        discarded.  The box test is approximate, but it only ever VETOES; the
+        real intersection count below still decides which pairs count.
+        """
+        ra0a, ra1a, d0a, d1a = box[a]
+        ra0b, ra1b, d0b, d1b = box[b]
+        pad = 0.01                                   # deg, forgiving at edges
+        return not (ra1a < ra0b - pad or ra1b < ra0a - pad or
+                    d1a < d0b - pad or d1b < d0a - pad)
+
     pairs = []
+    skipped = 0
     for i, a in enumerate(keys):
-        for b in keys[i + 1:]:
-            reB, _ = reproject_interp((data[b], wcs_[b]), wcs_[a],
-                                      shape_out=data[a].shape)
-            m = np.isfinite(data[a]) & np.isfinite(reB)
+        partners = [b for b in keys[i + 1:] if may_overlap(a, b)]
+        skipped += len(keys[i + 1:]) - len(partners)
+        if not partners:
+            continue
+        dataA, wcsA = load(a)                        # one frame held per outer
+        for b in partners:
+            dataB, wcsB = load(b)
+            reB, _ = reproject_interp((dataB, wcsB), wcsA,
+                                      shape_out=dataA.shape)
+            del dataB
+            m = np.isfinite(dataA) & np.isfinite(reB)
             if m.sum() < 5000:                      # too little shared sky
+                del reB
                 continue
-            _, med, _ = sigma_clipped_stats((data[a] - reB)[m], sigma=3.0,
+            _, med, _ = sigma_clipped_stats((dataA - reB)[m], sigma=3.0,
                                             maxiters=5)
+            del reB
             pairs.append((a, b, float(med), int(m.sum())))
             print(f"  {a}-{b}: {m.sum():7d} shared px, median diff "
                   f"{med:+.4f}", flush=True)
+    if skipped:
+        print(f"  ({skipped} pair(s) vetoed by footprint before reprojecting)",
+              flush=True)
     return keys, pairs
 
 
@@ -498,6 +591,88 @@ def cmd_miri_match():
                "pairs": [[a, b, d, n] for a, b, d, n in pairs]},
               open(MIRI_MATCH_JSON, "w"), indent=1)
     print(f"wrote {MIRI_MATCH_JSON}")
+    return 0
+
+
+def load_nircam_match():
+    import json
+    if not os.path.exists(NIRCAM_MATCH_JSON):
+        return None
+    with open(NIRCAM_MATCH_JSON) as fh:
+        return json.load(fh)
+
+
+def cmd_nircam_match():
+    """Measure NIRCam background offsets and shared stretch, per filter.
+
+    The NIRCam layers have the same two seam causes the MIRI ones did -- tiles
+    sitting on different sky levels, and each stretched on its OWN percentiles
+    so equal sky renders as unequal colour -- but two differences matter.
+
+    It is a colour image, so an offset has to be solved SEPARATELY for each
+    filter.  A single offset applied to both would shift brightness without
+    fixing colour, and a wrong relative offset between F480M and F212N tints a
+    whole tile, which is more obvious than a brightness seam, not less.
+
+    The pair measurement and the least-squares solve are the MIRI ones
+    (miri_measure_pairs / miri_solve_offsets).  They take a dict of paths and
+    know nothing about the filter, so calling them once per filter is the whole
+    of the difference -- worth reusing rather than reimplementing, since the
+    mean-zero constraint and the shared-area weighting are the subtle parts.
+
+    The green channel is the pixelwise mean of the two, so its shared limits
+    are the mean of theirs: a pixel sitting at both filters' vmin lands exactly
+    at the green vmin.
+    """
+    import json
+    import time
+    from astropy.io import fits
+
+    inv, _ = inventory()
+    out = {"filters": {}}
+    for filt in FILTERS:
+        paths = dict(inv.get(filt, {}))
+        fresh = {k: v for k, v in paths.items()
+                 if time.time() - os.path.getmtime(v) < SETTLE_SECONDS}
+        for k in fresh:
+            print(f"  skipping {k} ({filt}): written in the last "
+                  f"{SETTLE_SECONDS // 60} min")
+            paths.pop(k)
+        if len(paths) < 2:
+            print(f"{filt}: need at least two settled mosaics to match")
+            return 1
+        print(f"\nmatching backgrounds across {len(paths)} {filt.upper()} mosaics",
+              flush=True)
+        keys, pairs = miri_measure_pairs(paths)
+        if not pairs:
+            print(f"{filt}: no overlapping pairs; nothing to tie together")
+            return 1
+        off = miri_solve_offsets(keys, pairs)
+        print(f"\n{filt.upper()} offsets (subtracted from each tile):")
+        for k in keys:
+            print(f"  {k}: {off[k]:+.6f}")
+        pooled = []
+        for k in keys:
+            with fits.open(paths[k]) as hl:
+                hdu = next(h for h in hl
+                           if h.data is not None and h.data.ndim == 2)
+                d = hdu.data.astype(float) - off[k]
+            v = d[np.isfinite(d)]
+            pooled.append(v[:: max(1, v.size // 200000)].copy())
+            del d, v                                 # one frame at a time
+        pooled = np.concatenate(pooled)
+        lo, hi = np.percentile(pooled, [1.0, 99.5])
+        print(f"{filt.upper()} shared stretch: {lo:.6f} .. {hi:.6f}")
+        out["filters"][filt] = {
+            "offsets": off, "vmin": float(lo), "vmax": float(hi),
+            "pairs": [[a, b, d, n] for a, b, d, n in pairs]}
+
+    lo_g = np.mean([out["filters"][f]["vmin"] for f in FILTERS])
+    hi_g = np.mean([out["filters"][f]["vmax"] for f in FILTERS])
+    out["green"] = {"vmin": float(lo_g), "vmax": float(hi_g)}
+    print(f"\ngreen (pixelwise mean) shared stretch: {lo_g:.6f} .. {hi_g:.6f}")
+    json.dump(out, open(NIRCAM_MATCH_JSON, "w"), indent=1)
+    print(f"wrote {NIRCAM_MATCH_JSON}")
     return 0
 
 
@@ -608,7 +783,7 @@ def miri_needs_build(obs, src, bgmatch=False):
     return None
 
 
-def needs_build(obs, inv):
+def needs_build(obs, inv, bgmatch=False):
     """Is this observation missing an RGB, or is its RGB older than its data?
 
     The mtime comparison matters more than usual here: 10678 has no astrometric
@@ -624,14 +799,21 @@ def needs_build(obs, inv):
         src = inv[f].get(obs)
         if src and time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
             return "SETTLING"
-    png = png_for(obs)
+    if bgmatch:
+        # Same rule as MIRI: the table's mere existence is not enough, since
+        # build_obs raises on a field missing from it.
+        match = load_nircam_match()
+        if not match or any(obs not in match["filters"].get(f, {}).get("offsets", {})
+                            for f in FILTERS):
+            return "NOMATCH"
+    png = png_for(obs, bgmatch)
     if not os.path.exists(png):
         return "no RGB yet"
     # The HiPS has to be checked separately.  A run killed between writing the
     # png and finishing the pyramid leaves a png NEWER than its sources, which
     # every later tick then reads as up to date -- so the observation silently
     # never reaches the coadd.  That happened to o135_nrcb.
-    hips = f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212_hips"
+    hips = hips_for(obs, bgmatch)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "RGB exists but its HiPS is missing or incomplete"
     t_png = os.path.getmtime(png)
@@ -639,6 +821,11 @@ def needs_build(obs, inv):
         src = inv[f].get(obs)
         if src and os.path.getmtime(src) > t_png:
             return f"{f.upper()} i2d is newer than the RGB (re-reduced?)"
+    if bgmatch and os.path.exists(NIRCAM_MATCH_JSON) and \
+            os.path.getmtime(NIRCAM_MATCH_JSON) > t_png:
+        # A new solution changes the offset and the shared cuts for EVERY tile,
+        # not only the ones whose data moved, so the whole set is stale.
+        return "background match is newer than the RGB"
     return None
 
 
@@ -662,31 +849,38 @@ def cmd_auto(publish=False):
         ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
               f"{len(ready)} observation(s) complete in all filters")
-        built, failed = [], []
-        for o in ready:
-            why = needs_build(o, inv)
+        built, failed = {False: [], True: []}, []
+        for bgmatch in (False, True):
+          tag = "NIRCam+bg" if bgmatch else "NIRCam"
+          for o in ready:
+            why = needs_build(o, inv, bgmatch=bgmatch)
             if why == "SETTLING":
-                print(f"  {o}: source written in the last "
+                print(f"  {o} {tag}: source written in the last "
                       f"{SETTLE_SECONDS // 60} min; leaving it to settle")
                 continue
-            if not why:
-                print(f"  {o}: up to date")
+            if why == "NOMATCH":
+                print(f"  {o} {tag}: no background match on disk; "
+                      f"run --nircam-match")
                 continue
-            print(f"  {o}: building -- {why}", flush=True)
+            if not why:
+                print(f"  {o} {tag}: up to date")
+                continue
+            print(f"  {o} {tag}: building -- {why}", flush=True)
             try:
-                _, hd = build_obs(o)
+                _, hd = build_obs(o, bgmatch=bgmatch)
             except Exception as exc:                       # keep going on the rest
-                print(f"  {o}: FAILED {type(exc).__name__}: {exc}", flush=True)
-                failed.append(o)
+                print(f"  {o} {tag}: FAILED {type(exc).__name__}: {exc}",
+                      flush=True)
+                failed.append(f"{o}:{tag}")
                 continue
             if hd:
                 try:
                     check_orientation(hd, inv[TARGET_FILTER][o])
                 except (RuntimeError, OSError, ValueError, TypeError,
                         KeyError) as exc:
-                    print(f"  {o}: orientation check unavailable "
+                    print(f"  {o} {tag}: orientation check unavailable "
                           f"({type(exc).__name__}: {exc})", flush=True)
-            built.append(o)
+            built[bgmatch].append(o)
         # MIRI parallel: its own field, its own monochrome layers, its own
         # coadds.  Two flavours of every tile -- plain and background-matched --
         # so the two mosaics can be compared directly on the same sky.
@@ -726,13 +920,16 @@ def cmd_auto(publish=False):
                               f"({type(exc).__name__}: {exc})", flush=True)
                 miri_built[bgmatch].append(o)
 
-        if built:
-            print(f"built {len(built)}: {', '.join(built)} -- recoadding NIRCam")
-            cmd_coadd()
-            if publish:
-                cmd_publish()
-        else:
-            print("nothing new to build; NIRCam coadd left alone")
+        for bgmatch in (False, True):
+            name = BGMATCH_COADD_NAME if bgmatch else COADD_NAME
+            if built[bgmatch]:
+                print(f"built {len(built[bgmatch])} for {name}: "
+                      f"{', '.join(built[bgmatch])} -- recoadding")
+                cmd_coadd(bgmatch=bgmatch)
+            else:
+                print(f"nothing new for {name}; left alone")
+        if built[False] and publish:
+            cmd_publish()
         for bgmatch in (False, True):
             name = MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME
             if miri_built[bgmatch]:
@@ -878,9 +1075,9 @@ def cmd_coadd(miri=False, bgmatch=False):
     if miri:
         pat = f"GCTreasury_*_MIRI_F770W{miri_suffix(bgmatch)}_hips"
     else:
-        pat = "GCTreasury_*_RGB_480-mean-212_hips"
+        pat = f"GCTreasury_*_RGB_480-mean-212{miri_suffix(bgmatch)}_hips"
     layers = sorted(glob.glob(f"{OUTDIR}/{pat}"))
-    if miri and not bgmatch:
+    if not bgmatch:
         # the plain glob also matches the _bgmatch layers; keep them apart
         layers = [L for L in layers if "_bgmatch_hips" not in L]
     # Retire layers whose source is no longer current -- chiefly the per-module
@@ -890,7 +1087,7 @@ def cmd_coadd(miri=False, bgmatch=False):
     for L in layers:
         b = os.path.basename(L)
         tail = (f"_MIRI_F770W{miri_suffix(bgmatch)}_hips" if miri
-                else "_RGB_480-mean-212_hips")
+                else f"_RGB_480-mean-212{miri_suffix(bgmatch)}_hips")
         key = b[len("GCTreasury_"):-len(tail)]
         if key in active:
             keep.append(L)
@@ -906,7 +1103,7 @@ def cmd_coadd(miri=False, bgmatch=False):
     if miri:
         out = f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME}"
     else:
-        out = f"{OUTDIR}/{COADD_NAME}"
+        out = f"{OUTDIR}/{BGMATCH_COADD_NAME if bgmatch else COADD_NAME}"
     if os.path.exists(out):
         shutil.rmtree(out)
     print(f"coadding {len(layers)} observation HiPS -> {out}")
@@ -931,10 +1128,14 @@ def main():
     ap.add_argument("--miri", action="store_true",
                     help="with --coadd, rebuild the MIRI mosaic instead")
     ap.add_argument("--bgmatch", action="store_true",
-                    help="with --coadd --miri, rebuild the background-matched "
-                         "MIRI mosaic instead of the plain one")
+                    help="build or coadd the background-matched flavour "
+                         "instead of the plain one (NIRCam or, with --miri, "
+                         "MIRI)")
     ap.add_argument("--miri-match", action="store_true",
                     help="measure MIRI background offsets + shared stretch")
+    ap.add_argument("--nircam-match", action="store_true",
+                    help="measure NIRCam background offsets + shared stretch, "
+                         "per filter")
     ap.add_argument("--auto", action="store_true",
                     help="build anything new or stale, then recoadd (for cron)")
     ap.add_argument("--publish", action="store_true",
@@ -948,6 +1149,8 @@ def main():
         return cmd_list()
     if a.miri_match:
         return cmd_miri_match()
+    if a.nircam_match:
+        return cmd_nircam_match()
     if a.auto:
         return cmd_auto(publish=a.publish)
     if a.coadd:
@@ -960,7 +1163,8 @@ def main():
         print("nothing to build: no observation has i2d in every filter yet")
         return 1
     for o in targets:
-        png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips)
+        png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips,
+                            bgmatch=a.bgmatch)
         if hd:
             check_orientation(hd, inv[TARGET_FILTER][o])
     return 0
