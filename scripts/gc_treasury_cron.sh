@@ -20,6 +20,16 @@
 #   0 * * * * /orange/adamginsburg/jwst/jwst_scripts/scripts/gc_treasury_cron.sh
 set -euo pipefail
 
+# cron's PATH is minimal and this is not a login shell, so SLURM's bin has to
+# be named.  Without it every tick since this was installed reported
+# "sbatch: command not found" and submitted nothing, while the overlay rsync
+# above kept succeeding and made the log look healthy.
+export PATH=/opt/slurm/bin:$PATH
+if ! command -v sbatch >/dev/null; then
+    echo "[$(date +%Y%m%dT%H%M%S)] sbatch not on PATH ($PATH); nothing submitted" >&2
+    exit 127
+fi
+
 PY=/blue/adamginsburg/adamginsburg/miniconda3/envs/python312/bin/python
 SCRIPT=/orange/adamginsburg/jwst/jwst_scripts/scripts/gc_treasury_rgb_images.py
 OVERLAYS=/orange/adamginsburg/jwst/jwst_scripts/scripts/gc_treasury_overlays.py

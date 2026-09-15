@@ -94,3 +94,31 @@ def test_a_mixed_set_is_reported_as_mixed(tmp_path, monkeypatch):
     lineage = O.lineage_of(pairs)
     assert lineage == {"plain": ["o131"], "resbgsub": ["o132"]}
     assert O.report_lineage(pairs) is False
+
+
+CRON = os.path.join(SCRIPTS, "gc_treasury_cron.sh")
+
+
+def test_the_cron_script_can_find_sbatch():
+    """cron's PATH is minimal and this script is not a login shell.
+
+    Every tick since installation reported "sbatch: command not found" and
+    submitted nothing -- 63 failures, 0 submissions -- while the overlay rsync
+    that runs before them kept succeeding, so the log read as healthy.  Fields
+    that landed in that window never reached a coadd.
+    """
+    s = open(CRON).read()
+    assert "/opt/slurm/bin" in s, "the cron script does not name SLURM's bin"
+    assert "command -v sbatch" in s, "no preflight check for sbatch"
+
+
+def test_the_cron_script_stops_when_sbatch_is_missing():
+    """A missing binary must stop the tick rather than log and continue.
+
+    set -euo pipefail does not cover it: the sbatch calls are followed by ||
+    or end a pipeline, so exit 127 becomes a message rather than a stop.
+    """
+    s = open(CRON).read()
+    i = s.index("command -v sbatch")
+    assert "exit 127" in s[i:i + 400]
+    assert s.index("export PATH=/opt/slurm/bin") < s.index("sbatch --job-name")
