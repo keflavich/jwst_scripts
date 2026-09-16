@@ -270,16 +270,26 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
     """R = F770W, G = F480M, B = F212N, all on F770W's native grid.
 
     Unlike build_rgb, all three channels are real, independent filters -- no
-    synthesised mean -- and unlike build_rgb, the channels are NOT required
-    to overlap. 10678's MIRI parallel points several arcmin off the NIRCam
-    prime for a given observation (gc_treasury_rgb_images's module
-    docstring), so large parts of the full-survey F770W footprint have no
-    NIRCam coverage at all. _mask_mixed_nan's all-or-nothing rule is for
-    build_rgb's two co-designed NIRCam channels, where a pixel real in one
-    and NaN in the other is a bug (a mixed-coverage edge). Here a NIRCam-less
-    pixel is not a bug, it is this survey's real footprint overlap, so a
-    G/B-less pixel is deliberately left to render red-only rather than
-    forced transparent.
+    synthesised mean. R is NOT required to overlap G/B: 10678's MIRI
+    parallel points several arcmin off the NIRCam prime for a given
+    observation (gc_treasury_rgb_images's module docstring), so large parts
+    of the full-survey F770W footprint have no NIRCam coverage at all, and a
+    G/B-less pixel there is real footprint, not a bug -- it is deliberately
+    left to render red-only rather than forced transparent.
+
+    G and B, however, ARE the same co-designed NIRCam pair build_rgb combines
+    (F480M/F212N observe the same field at the same time), so the SAME
+    all-or-nothing rule build_rgb applies to them still holds: a pixel real
+    in one and NaN in the other there is a mixed-coverage edge artifact, not
+    real sky, and is masked with _mask_mixed_nan exactly as in build_rgb. R
+    is never a party to that masking.
+
+    Peak memory: F770W's native grid is much smaller than F480M's (measured
+    2026-09-16: 20363x28821 = 587 Mpx at ~0.111"/px, roughly a third of
+    F480M's 1.93 Gpx -- see the module docstring's "Target grid" section for
+    why the two are unrelated grids). The module docstring's ">128 GiB"
+    guidance is sized for build_rgb; running --grids 770 alone needs
+    proportionally less.
     """
     from PIL import Image
     from jwst_rgb.save_rgb import save_rgb as _save_rgb
@@ -298,6 +308,7 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
 
     g = _reproject_onto(LONG_FILTER, which, twcs, ny, nx)
     b = _reproject_onto(SHORT_FILTER, which, twcs, ny, nx)
+    g, b = _mask_mixed_nan(g, b)   # NIRCam pair only -- R is never masked
     chans = [r, g, b]
 
     print(f"[{which}] stretch '{stretch}': {STRETCHES[stretch]}", flush=True)
