@@ -172,22 +172,34 @@ def test_build_rgb_trio_targets_f770w_grid_not_f480m(mosaics, monkeypatch):
     assert set(seen_targets) == {G.LONG_FILTER, G.SHORT_FILTER}
 
 
-def test_build_rgb_trio_does_not_apply_the_mixed_nan_mask(mosaics, monkeypatch):
-    """build_rgb's _mask_mixed_nan rule -- a pixel real in one NIRCam channel
-    and NaN in the other is a bug -- does not hold here: 10678's MIRI
-    parallel points several arcmin off the NIRCam prime, so most of the
-    full-survey F770W footprint legitimately has no NIRCam coverage at all.
-    Applying that mask would blank those real F770W pixels."""
-    def boom(*a, **k):
-        raise AssertionError(
-            "build_rgb_trio must not call _mask_mixed_nan: a NIRCam-less "
-            "pixel here is real footprint, not a mixed-coverage bug")
+def test_build_rgb_trio_masks_g_b_mismatch_but_never_touches_r(mosaics, monkeypatch):
+    """G (F480M) and B (F212N) are the same co-designed NIRCam pair build_rgb
+    combines, so a pixel real in one and NaN in the other there is the same
+    mixed-coverage edge artifact _mask_mixed_nan exists to catch -- that
+    invariant does not go away just because a third, independently-pointed
+    channel (R = F770W) was added. What DOES change: R must never be a party
+    to that masking, since most of the full-survey F770W footprint
+    legitimately has no NIRCam coverage at all (MIRI parallel, several
+    arcmin off the NIRCam prime), and masking against R would blank real
+    F770W-only sky instead of a coverage-edge artifact."""
+    calls = []
+    real = G._mask_mixed_nan
 
-    monkeypatch.setattr(G, "_mask_mixed_nan", boom)
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(G, "_mask_mixed_nan", spy)
     _patch_save_rgb(monkeypatch)
     monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
 
-    G.build_rgb_trio("main", stretch="pct", hips=True)  # must not raise
+    r_before, _ = G._load_primary(G.mosaic_path(G.MIRI_FILTER, "main"))
+    G.build_rgb_trio("main", stretch="pct", hips=True)
+
+    assert len(calls) == 1, "G/B must be masked exactly once, not per-pair-with-R"
+    a, b = calls[0]
+    assert not np.array_equal(a, r_before) and not np.array_equal(b, r_before), (
+        "R (F770W) must never be passed into the G/B mixed-NaN mask")
 
 
 def test_build_hips_patches_after_reprojecting(tmp_path, monkeypatch):
