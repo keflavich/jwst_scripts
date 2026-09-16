@@ -80,10 +80,10 @@ def test_patch_tree_walks_every_hips(tmp_path):
         d.mkdir()
         (d / "index.html").write_text(AS_WRITTEN)
     (tmp_path / "notes.html").write_text(AS_WRITTEN)   # not an index.html
-    changed, seen = patch_tree(str(tmp_path))
-    assert (changed, seen) == (3, 3)
-    changed, seen = patch_tree(str(tmp_path))
-    assert (changed, seen) == (0, 3)
+    changed, seen, unhandled = patch_tree(str(tmp_path))
+    assert (changed, seen, unhandled) == (3, 3, [])
+    changed, seen, unhandled = patch_tree(str(tmp_path))
+    assert (changed, seen, unhandled) == (0, 3, [])
 
 
 def test_a_custom_option_set_is_honoured(tmp_path):
@@ -152,3 +152,68 @@ def test_the_toggle_itself_is_never_hidden():
     """
     assert "label.hamburger" in PANEL_CSS
     assert "display: none" not in PANEL_CSS
+
+
+# --- the call shape the docroot actually uses ------------------------------
+
+BARE = """\
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://aladin.cds.unistra.fr/hips-templates/hips-landing-page.js"></script>
+</head>
+<body></body>
+<script type="text/javascript">
+    buildLandingPage();
+</script>
+</html>
+"""
+
+
+def test_the_bare_call_form_is_patched(tmp_path):
+    """53 published pages call buildLandingPage() with no options object.
+
+    The regex matched only buildLandingPage({, so those pages were skipped --
+    and skipped via the same False that means "already patched", so a run over
+    the docroot reported a tidy number and said nothing about them.
+    """
+    p = tmp_path / "index.html"
+    p.write_text(BARE)
+    assert patch_landing_page(str(p)) is True
+    s = p.read_text()
+    assert "buildLandingPage({aladinParams: {showSettingsControl: true}})" in s
+    assert CSS_MARK in s
+
+
+def test_the_bare_form_is_idempotent(tmp_path):
+    p = tmp_path / "index.html"
+    p.write_text(BARE)
+    assert patch_landing_page(str(p)) is True
+    first = p.read_text()
+    assert patch_landing_page(str(p)) is False
+    assert p.read_text() == first
+
+
+def test_an_unknown_call_shape_raises_rather_than_skipping(tmp_path):
+    """Silence is what made the 53 invisible.
+
+    A page that names buildLandingPage in a form this cannot edit has to say
+    so; returning False would file it alongside "nothing to do".
+    """
+    p = tmp_path / "index.html"
+    p.write_text(BARE.replace("buildLandingPage();",
+                              "buildLandingPage(options);"))
+    with pytest.raises(ValueError, match="call shape"):
+        patch_landing_page(str(p))
+
+
+def test_patch_tree_reports_what_it_could_not_do(tmp_path):
+    for name, body in (("a_hips", BARE),
+                       ("b_hips", BARE.replace("buildLandingPage();",
+                                               "buildLandingPage(options);"))):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "index.html").write_text(body)
+    changed, seen, unhandled = patch_tree(str(tmp_path))
+    assert (changed, seen) == (1, 2)
+    assert len(unhandled) == 1 and "b_hips" in unhandled[0]
