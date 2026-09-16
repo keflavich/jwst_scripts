@@ -5,7 +5,16 @@ This is a different product from gc_treasury_rgb_images.py, which builds one
 RGB+HiPS per OBSERVATION and coadds them incrementally.  This script instead
 starts from the single already-reprojected, already-coadded FITS mosaics in
 mosaics/ (built by make_mosaics.py / make_residual_mosaics.py from every
-observation's stage-3 i2d at once) and makes one RGB and one HiPS from each.
+observation's stage-3 i2d at once) and builds two RGB combinations from them,
+each with its own HiPS:
+
+  480 grid (build_rgb):      R=F480M, G=mean(F480M,F212N), B=F212N,
+                             on F480M's native grid.
+  770 grid (build_rgb_trio): R=F770W, G=F480M, B=F212N,
+                             on F770W's native grid.
+
+Plus a plain monochrome F770W layer (build_miri) with no colour synthesis at
+all, useful as a diagnostic independent of either RGB's stretch choices.
 
 Why this is a separate script rather than a mode of the per-observation one
 --------------------------------------------------------------------------
@@ -64,11 +73,15 @@ or collide with a running rebuild.
 
 Usage
 -----
-  gc_treasury_mosaic_rgb_hips.py --which main       # RGB + MIRI mono from the
-                                                      # main (i2d) mosaics
-  gc_treasury_mosaic_rgb_hips.py --which residual   # same, from the DAOPHOT
-                                                      # residual mosaics
+  gc_treasury_mosaic_rgb_hips.py --which main         # both RGB grids + MIRI
+                                                        # mono, main mosaics
+  gc_treasury_mosaic_rgb_hips.py --which residual     # same, DAOPHOT
+                                                        # residual mosaics
   gc_treasury_mosaic_rgb_hips.py --which both
+  gc_treasury_mosaic_rgb_hips.py --grids 480          # only the F480M-grid
+                                                        # two-filter RGB
+  gc_treasury_mosaic_rgb_hips.py --grids 770          # only the F770W-grid
+                                                        # three-filter RGB
   gc_treasury_mosaic_rgb_hips.py --which main --no-hips   # PNG/AVM only
 """
 import argparse
@@ -111,6 +124,16 @@ def rgb_png_for(which, stretch):
 
 def rgb_hips_for(which, stretch):
     return rgb_png_for(which, stretch).replace(".png", "_hips")
+
+
+def rgb_trio_png_for(which, stretch):
+    suffix = "_residual" if which == "residual" else ""
+    tag = "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
+    return f"{OUTDIR}/gctreasury_mosaic_RGB_770-480-212{suffix}{tag}.png"
+
+
+def rgb_trio_hips_for(which, stretch):
+    return rgb_trio_png_for(which, stretch).replace(".png", "_hips")
 
 
 def miri_png_for(which):
@@ -167,21 +190,49 @@ def _stretch_channels(chans, stretch):
                      for c in chans], axis=2)
 
 
-def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
+def _reproject_onto(filt, which, twcs, ny, nx):
+    """Load one band's mosaic and reproject it onto (twcs, ny, nx).
+
+    Always returns float32: reproject_interp itself always returns float64,
+    so this casts straight back down rather than let it double the resident
+    size of whichever input is being reprojected (see "Peak memory" in the
+    module docstring).
+    """
     from astropy.wcs import WCS
     from astropy.io import fits
-    from PIL import Image
     from reproject import reproject_interp
+
+    path = mosaic_path(filt, which)
+    if not os.path.exists(path):
+        raise RuntimeError(f"missing mosaic: {path}")
+    print(f"  reprojecting {filt.upper()} onto the target grid", flush=True)
+    with fits.open(path) as hdul:
+        data = hdul[0].data.astype(np.float32)
+        wcs = WCS(hdul[0].header).celestial
+    out, _ = reproject_interp((data, wcs), twcs, shape_out=(ny, nx))
+    del data
+    return out.astype(np.float32)
+
+
+def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
+    """R = F480M, G = mean(F480M, F212N), B = F212N, on F480M's native grid.
+
+    The two channels are the SAME two filters this survey actually has in
+    NIRCam (see gc_treasury_rgb_images's module docstring: "10678 observes
+    F212N (SW) and F480M (LW) only, so there is no third colour"), so the
+    green channel is synthesised as their mean rather than a real filter.
+    Compare build_rgb_trio, which has three independent real filters and no
+    synthesised channel.
+    """
+    from PIL import Image
     from jwst_rgb.save_rgb import save_rgb as _save_rgb
     from jwst_rgb.save_rgb import avm_for_saved_png
     Image.MAX_IMAGE_PIXELS = None  # full-survey mosaics legitimately exceed
                                     # PIL's decompression-bomb heuristic
 
     long_path = mosaic_path(LONG_FILTER, which)
-    short_path = mosaic_path(SHORT_FILTER, which)
-    for p in (long_path, short_path):
-        if not os.path.exists(p):
-            raise RuntimeError(f"missing mosaic: {p}")
+    if not os.path.exists(long_path):
+        raise RuntimeError(f"missing mosaic: {long_path}")
 
     print(f"[{which}] loading target grid from {long_path}", flush=True)
     long_, twcs = _load_primary(long_path)
@@ -189,15 +240,7 @@ def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
     print(f"[{which}] target grid {nx}x{ny} ({LONG_FILTER.upper()} native)",
           flush=True)
 
-    print(f"[{which}] reprojecting {SHORT_FILTER.upper()} onto it", flush=True)
-    with fits.open(short_path) as hdul:
-        short_data = hdul[0].data.astype(np.float32)
-        swcs = WCS(hdul[0].header).celestial
-    # reproject_interp always returns float64; cast straight back down
-    # rather than let it double the resident size of the finer input.
-    short_, _ = reproject_interp((short_data, swcs), twcs, shape_out=(ny, nx))
-    short_ = short_.astype(np.float32)
-    del short_data
+    short_ = _reproject_onto(SHORT_FILTER, which, twcs, ny, nx)
 
     long_, short_ = _mask_mixed_nan(long_, short_)
     # Plain mean, not np.nanmean(np.stack(...)): _mask_mixed_nan guarantees
@@ -220,6 +263,56 @@ def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
     hips_dir = None
     if hips:
         hips_dir = _build_hips(png, rgb_hips_for(which, stretch))
+    return png, hips_dir
+
+
+def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
+    """R = F770W, G = F480M, B = F212N, all on F770W's native grid.
+
+    Unlike build_rgb, all three channels are real, independent filters -- no
+    synthesised mean -- and unlike build_rgb, the channels are NOT required
+    to overlap. 10678's MIRI parallel points several arcmin off the NIRCam
+    prime for a given observation (gc_treasury_rgb_images's module
+    docstring), so large parts of the full-survey F770W footprint have no
+    NIRCam coverage at all. _mask_mixed_nan's all-or-nothing rule is for
+    build_rgb's two co-designed NIRCam channels, where a pixel real in one
+    and NaN in the other is a bug (a mixed-coverage edge). Here a NIRCam-less
+    pixel is not a bug, it is this survey's real footprint overlap, so a
+    G/B-less pixel is deliberately left to render red-only rather than
+    forced transparent.
+    """
+    from PIL import Image
+    from jwst_rgb.save_rgb import save_rgb as _save_rgb
+    from jwst_rgb.save_rgb import avm_for_saved_png
+    Image.MAX_IMAGE_PIXELS = None
+
+    r_path = mosaic_path(MIRI_FILTER, which)
+    if not os.path.exists(r_path):
+        raise RuntimeError(f"missing mosaic: {r_path}")
+
+    print(f"[{which}] loading target grid from {r_path}", flush=True)
+    r, twcs = _load_primary(r_path)
+    ny, nx = r.shape
+    print(f"[{which}] target grid {nx}x{ny} ({MIRI_FILTER.upper()} native)",
+          flush=True)
+
+    g = _reproject_onto(LONG_FILTER, which, twcs, ny, nx)
+    b = _reproject_onto(SHORT_FILTER, which, twcs, ny, nx)
+    chans = [r, g, b]
+
+    print(f"[{which}] stretch '{stretch}': {STRETCHES[stretch]}", flush=True)
+    scaled = _stretch_channels(chans, stretch)
+
+    png = rgb_trio_png_for(which, stretch)
+    avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
+    _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
+              alpha_only_edges=True, original_data=np.stack(chans, axis=2),
+              hips=False)
+    print(f"[{which}] wrote {png}", flush=True)
+
+    hips_dir = None
+    if hips:
+        hips_dir = _build_hips(png, rgb_trio_hips_for(which, stretch))
     return png, hips_dir
 
 
@@ -280,17 +373,26 @@ def main(argv=None):
     ap.add_argument("--which", choices=["main", "residual", "both"],
                     default="main")
     ap.add_argument("--stretch", choices=sorted(STRETCHES), default=DEFAULT_STRETCH)
+    ap.add_argument("--grids", choices=["480", "770", "both"], default="both",
+                    help="which RGB grid(s) to build: 480 = R/G/B "
+                         "F480M/mean/F212N on F480M's grid, 770 = "
+                         "R/G/B F770W/F480M/F212N on F770W's grid")
     ap.add_argument("--no-hips", action="store_true")
     group = ap.add_mutually_exclusive_group()
-    group.add_argument("--rgb-only", action="store_true")
-    group.add_argument("--miri-only", action="store_true")
+    group.add_argument("--rgb-only", action="store_true",
+                       help="skip the plain monochrome F770W layer")
+    group.add_argument("--miri-only", action="store_true",
+                       help="build only the plain monochrome F770W layer")
     args = ap.parse_args(argv)
 
     whichs = ["main", "residual"] if args.which == "both" else [args.which]
     hips = not args.no_hips
     for which in whichs:
         if not args.miri_only:
-            build_rgb(which, stretch=args.stretch, hips=hips)
+            if args.grids in ("480", "both"):
+                build_rgb(which, stretch=args.stretch, hips=hips)
+            if args.grids in ("770", "both"):
+                build_rgb_trio(which, stretch=args.stretch, hips=hips)
         if not args.rgb_only:
             build_miri(which, hips=hips)
     return 0
