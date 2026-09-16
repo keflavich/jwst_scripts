@@ -102,9 +102,11 @@ def patch_tree(root, params=None):
     """Patch every landing page under `root`.
 
     Returns (changed, seen, unhandled).  `unhandled` is the paths that contain
-    a buildLandingPage call this does not know how to edit -- counting those as
-    ordinary skips is how 53 pages went unpatched while the run reported a
-    tidy number and no problem.
+    a buildLandingPage call this does not know how to edit.  Counting those as
+    ordinary skips is how 142 pages went unpatched across the docroot and the
+    build tree while the run reported a tidy number and no problem -- most of
+    them the bare call form, the rest missed for other reasons and invisible
+    for the same one.
     """
     changed = seen = 0
     unhandled = []
