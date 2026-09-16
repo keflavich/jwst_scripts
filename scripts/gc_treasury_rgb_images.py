@@ -31,6 +31,7 @@ Usage
   gc_treasury_rgb_images.py --coadd              # rebuild the combined mosaic
 """
 import argparse
+import contextlib
 import glob
 import os
 import re
@@ -732,7 +733,13 @@ def cmd_miri_match():
     lo, hi = np.percentile(pooled, [1.0, 99.5])
     print(f"\nshared stretch limits from the pooled, offset-corrected data: "
           f"{lo:.4f} .. {hi:.4f}")
+    # "fields" is what the solve was RUN over, which is not the same as
+    # "offsets": a field with no overlapping neighbour is considered and comes
+    # back unmatched.  Recording both lets the scheduler tell "nothing new has
+    # arrived" from "this field can never be matched", and so re-solve on the
+    # first rather than on every tick.
     json.dump({"offsets": off, "vmin": float(lo), "vmax": float(hi),
+               "fields": sorted(paths),
                "pairs": [[a, b, d, n] for a, b, d, n in pairs]},
               open(MIRI_MATCH_JSON, "w"), indent=1)
     print(f"wrote {MIRI_MATCH_JSON}")
@@ -905,6 +912,32 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
     return png, hips_dir
 
 
+def miri_match_is_stale(miri):
+    """Has a MIRI field arrived since the background match was last solved?
+
+    `miri` is the current {obs: path}.  Returns the reason, or None when the
+    match already covers what is on disk.
+
+    Compares against the field set the solve was RUN over rather than the
+    offsets it produced.  A field with no overlapping neighbour is covered by
+    the run and absent from the offsets, so comparing offsets would re-solve
+    on every tick for as long as that field exists.
+    """
+    if not os.path.exists(MIRI_MATCH_JSON):
+        return "no background match on disk"
+    match = load_miri_match()
+    if not match:
+        return "background match unreadable"
+    covered = match.get("fields")
+    if covered is None:
+        # written before the field set was recorded; one refresh adds it
+        return "background match predates field-set tracking"
+    new = sorted(set(miri) - set(covered))
+    if new:
+        return f"{len(new)} field(s) not in the match: {', '.join(new)}"
+    return None
+
+
 def miri_needs_build(obs, src, bgmatch=False):
     import time
     if time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
@@ -1053,7 +1086,15 @@ def cmd_auto(publish=False):
                     print("  nothing pending behind it")
             return 0
         print(f"stale lock ({age / 3600:.1f} h old); taking it")
-    open(lock, "w").write(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+        try:
+            os.remove(lock)
+        except FileNotFoundError:
+            pass
+    try:
+        _claim_lock(lock, "--auto")
+    except FileExistsError:
+        print("another run took the lock as this one started; exiting")
+        return 0
     try:
         inv, obs_all = inventory()
         ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
@@ -1095,6 +1136,20 @@ def cmd_auto(publish=False):
         # so the two mosaics can be compared directly on the same sky.
         miri = find_i2d(MIRI_FILTER)
         print(f"  {len(miri)} MIRI {MIRI_FILTER.upper()} mosaic(s)")
+        # Without this the background-matched flavour silently stops tracking
+        # the survey: fields that land after the last hand-run solve report
+        # NOMATCH for ever.  Re-rendering follows on its own, since
+        # miri_needs_build treats a match newer than a png as stale.
+        why = miri_match_is_stale(miri)
+        if why:
+            print(f"  refreshing the MIRI background match -- {why}",
+                  flush=True)
+            try:
+                cmd_miri_match()
+            except (OSError, ValueError, TypeError, KeyError,
+                    RuntimeError) as exc:
+                print(f"  MIRI match FAILED {type(exc).__name__}: {exc}; "
+                      f"the bgmatch flavour will be left as it is", flush=True)
         miri_built = {False: [], True: []}
         for bgmatch in (False, True):
             tag = "MIRI+bg" if bgmatch else "MIRI"
@@ -1134,7 +1189,10 @@ def cmd_auto(publish=False):
             if built[stretch]:
                 print(f"built {len(built[stretch])} for {name}: "
                       f"{', '.join(built[stretch])} -- recoadding")
-                cmd_coadd(stretch=stretch)
+                if cmd_coadd(stretch=stretch):
+                    # the input guard refuses by returning non-zero; without
+                    # this the tick prints its reason and still reports success
+                    failed.append(f"coadd:{name}")
             else:
                 print(f"nothing new for {name}; left alone")
         if any(built.values()) and publish:
@@ -1144,9 +1202,12 @@ def cmd_auto(publish=False):
             if miri_built[bgmatch]:
                 print(f"built {len(miri_built[bgmatch])} for {name}: "
                       f"{', '.join(miri_built[bgmatch])} -- recoadding")
-                cmd_coadd(miri=True, bgmatch=bgmatch)
+                if cmd_coadd(miri=True, bgmatch=bgmatch):
+                    failed.append(f"coadd:{name}")
             else:
                 print(f"nothing new for {name}; left alone")
+        if any(miri_built.values()) and publish:
+            cmd_publish()
         if failed:
             print(f"FAILED: {', '.join(failed)}")
             return 1
@@ -1186,6 +1247,11 @@ def cmd_publish():
                 seen.add(d)
                 keep.append(d)
         src = keep
+    # The MIRI coadds were never in this list, so a rebuilt one stayed in the
+    # build tree.  The per-field MIRI layers stay out deliberately: the mosaic
+    # is the product, and 34 more trees is a lot of rsync for nothing.
+    src += [f"{OUTDIR}/{MIRI_COADD_NAME}",
+            f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME}"]
     for s in src:
         if not os.path.isdir(os.path.join(s, "Norder3")):
             print(f"  skipping {os.path.basename(s)}: no Norder3")
@@ -1295,6 +1361,94 @@ def set_union_view(coadd_dir, layers):
           f"{ctr.ra.deg:.5f} {ctr.dec.deg:+.5f} fov={fov:.5f} deg")
 
 
+def _claim_lock(lock, what):
+    """Create the lock file, or raise FileExistsError if someone beat us.
+
+    O_CREAT|O_EXCL rather than exists() then open(): the check-then-create
+    version lets two processes that arrive together both proceed, which is the
+    failure the lock exists to prevent.
+    """
+    import time
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, f"{os.getpid()} "
+                     f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {what}\n".encode())
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def coadd_lock(what, wait=True, poll=60, timeout=6 * 3600):
+    """Hold .auto.lock for the duration, or wait for whoever has it.
+
+    Every writer of a coadd has to take this: --auto has always taken it, and
+    a manual --coadd that ignored it raced the cron and produced a coadd with a
+    sixth of its tiles and a zero exit status.
+
+    Released in a finally, because the other half of this pipeline's lock
+    history is runs that left the file behind and starved the schedule.
+    """
+    import time
+    lock = f"{OUTDIR}/.auto.lock"
+    os.makedirs(OUTDIR, exist_ok=True)
+    waited = 0
+    while os.path.exists(lock):
+        age = time.time() - os.path.getmtime(lock)
+        if age > 6 * 3600:
+            print(f"stale lock ({age / 3600:.1f} h old); taking it")
+            # the claim below is O_EXCL, so the stale file has to go first
+            try:
+                os.remove(lock)
+            except FileNotFoundError:
+                pass                       # someone else cleared it; fine
+            break
+        if not wait:
+            raise RuntimeError(f"{lock} held ({age / 60:.0f} min); not starting {what}")
+        if waited == 0:
+            try:
+                holder = open(lock).read().strip()
+            except OSError:
+                holder = "unreadable"
+            print(f"waiting for {lock} ({age / 60:.0f} min old; {holder}) "
+                  f"before {what}", flush=True)
+        time.sleep(poll)
+        waited += poll
+        if waited > timeout:
+            raise RuntimeError(f"gave up waiting for {lock} after "
+                               f"{timeout // 3600} h; not starting {what}")
+    try:
+        _claim_lock(lock, what)
+    except FileExistsError:
+        # someone took it between our last look and now
+        raise RuntimeError(f"{lock} was taken while we waited; "
+                           f"not starting {what}")
+    try:
+        yield
+    finally:
+        if os.path.exists(lock):
+            os.remove(lock)
+
+
+def unreadable_layers(layers):
+    """Which of these HiPS directories coadd_hips would fail to read.
+
+    coadd_hips opens every layer's properties before it writes anything, so
+    this is the check that has to happen before the output is removed.
+
+    A layer mid-build looks exactly like one that failed halfway:
+    reproject_to_hips writes the tiles first and properties last.  Both are
+    reported the same way, because from here they are the same thing -- a
+    directory that is not yet a HiPS.
+    """
+    out = []
+    for L in layers:
+        if not os.path.exists(os.path.join(L, "properties")):
+            out.append(f"{os.path.basename(L)}: no properties")
+        elif not os.path.isdir(os.path.join(L, "Norder3")):
+            out.append(f"{os.path.basename(L)}: no Norder3")
+    return out
+
+
 def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
     """Coadd every per-observation HiPS into one growing mosaic.
 
@@ -1388,6 +1542,21 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
               f"{sum(_tile_count(L) for L in layers)})")
         return 0
 
+    # Read what the inputs must provide before destroying what we have.
+    # coadd_hips opens every layer's properties as its first act, so an
+    # unreadable input after the rmtree costs the existing coadd.
+    unreadable = unreadable_layers(layers)
+    if unreadable:
+        print(f"NOT rebuilding {os.path.basename(out)}: "
+              f"{len(unreadable)} input layer(s) are not readable")
+        for u in unreadable:
+            print(f"  {u}")
+        # A layer mid-build looks exactly like one that failed halfway:
+        # reproject_to_hips writes the tiles first and properties last.
+        print("  a layer being written looks like this too; "
+              "the next run picks it up")
+        return 1
+
     if os.path.exists(out):
         shutil.rmtree(out)
     print(f"coadding {len(layers)} observation HiPS -> {out}")
@@ -1455,8 +1624,31 @@ def main():
     if a.auto:
         return cmd_auto(publish=a.publish)
     if a.coadd:
-        return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
-                         stretch=a.stretch)
+        # cmd_auto holds the lock around its own recoadds, so this is taken
+        # here rather than inside cmd_coadd, which both paths call.
+        what = f"--coadd {'miri' if a.miri else a.stretch}"
+        with coadd_lock(what):
+            return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
+                             stretch=a.stretch)
+
+    if a.miri:
+        # MIRI is one filter and its own set of layers, so it has its own
+        # inventory and its own builder.  Selecting a single field matters for
+        # the background-matched flavour: a fresh solve invalidates all 34, and
+        # serially that is most of a day.
+        miri = find_i2d(MIRI_FILTER)
+        targets = [a.obs] if a.obs else sorted(miri)
+        missing = [o for o in targets if o not in miri]
+        if missing:
+            print(f"no MIRI {MIRI_FILTER.upper()} mosaic for: "
+                  f"{', '.join(missing)}")
+            return 1
+        for o in targets:
+            png, hd = build_miri_obs(o, bgmatch=a.bgmatch,
+                                     hips=not a.no_hips)
+            if hd:
+                check_orientation(hd, miri[o])
+        return 0
 
     inv, obs = inventory()
     targets = ([a.obs] if a.obs else
