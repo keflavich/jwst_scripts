@@ -19,17 +19,30 @@ compositing question to get wrong.
 Target grid: F480M, not F212N
 ------------------------------
 The per-observation script reprojects onto F212N (the finer 0.031"/px grid)
-because at single-pointing size (~11440x4736) that is cheap.  At full-survey
-size the two mosaics are NOT comparably sized: F480M's optimal WCS came out to
-22503x26635 (~599 Mpx) and F212N's to 45517x53756 (~2.45 Gpx) -- 4x more
-pixels, because find_optimal_celestial_wcs was run independently per band and
-each inherited its own input pixel scale over the same sky area. Reprojecting
-the long-wavelength channel onto the short-wavelength grid would make a ~9.8
-GB RGBA PNG (uint8) and cost 4x the memory and time for no resolution this
-mosaic's cameras actually deliver in F480M. F480M's native grid is used as the
-common target instead; F212N is reprojected down onto it. This is a deliberate
-resolution choice for the survey-overview product -- flag it if a
+because at single-pointing size (~11440x4736) that is cheap.  F212N's pixel
+scale is ~0.031"/px against F480M's ~0.063"/px -- 2x finer per axis, ~4x more
+pixels per unit sky covered -- and find_optimal_celestial_wcs is run
+independently per band, so the two full-survey mosaics are never comparably
+sized. (Measured 2026-09-16: F480M 35915x53695 = 1.93 Gpx, F212N
+45517x53756 = 2.45 Gpx; both grow release to release as more observations
+land and are not re-measured by this docstring -- read them as illustrating
+the ~4x-per-unit-area relationship, not a pinned ratio.) Reprojecting the
+long-wavelength channel onto the short-wavelength grid buys no real
+resolution -- F480M's own native pixels are already the coarser limit --
+while costing ~4x the memory and time. F480M's native grid is used as the
+common target instead; F212N is reprojected down onto it. This is a
+deliberate resolution choice for the survey-overview product -- flag it if a
 full-native-resolution combined mosaic is wanted instead.
+
+Peak memory
+-----------
+build_rgb loads both mosaics as float32 and holds, at the F480M grid size
+above (~1.93 Gpx): 3 channel planes (~21.6 GiB total), the stretched stack
+(~21.6 GiB), and the original_data stack save_rgb needs for its NaN-alpha
+mask (~21.6 GiB), on the order of 70-90 GiB simultaneous peak depending on
+garbage-collection timing of the reprojected F212N buffer. Not yet measured
+on a real run as of this writing -- request memory generously (>128 GiB)
+until it has been.
 
 AVM / orientation
 ------------------
@@ -119,7 +132,13 @@ def _load_primary(path):
     from astropy.io import fits
     from astropy.wcs import WCS
     with fits.open(path) as hdul:
-        data = hdul[0].data.astype(float)
+        # float32, not float64: at full-survey pixel counts (~2 Gpx) the
+        # doubled footprint of float64 is the difference between fitting in
+        # a generously-sized SLURM allocation and not (see "Peak memory"
+        # above; a reviewer measured ~172 GiB at float64 for this call).
+        # The i2d SCI data is BITPIX=-32 (float32) already, so this loses no
+        # precision the mosaic ever had.
+        data = hdul[0].data.astype(np.float32)
         wcs = WCS(hdul[0].header).celestial
     return data, wcs
 
@@ -141,8 +160,11 @@ def _mask_mixed_nan(long_, short_):
 def _stretch_channels(chans, stretch):
     from astropy.visualization import simple_norm
     kw = STRETCHES[stretch]
-    return np.stack([np.nan_to_num(simple_norm(c, **kw)(c)) for c in chans],
-                    axis=2)
+    # simple_norm returns float64 regardless of the input dtype; cast back
+    # down immediately rather than let the stack inherit it (see "Peak
+    # memory" in the module docstring).
+    return np.stack([np.nan_to_num(simple_norm(c, **kw)(c)).astype(np.float32)
+                     for c in chans], axis=2)
 
 
 def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
@@ -169,13 +191,20 @@ def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
 
     print(f"[{which}] reprojecting {SHORT_FILTER.upper()} onto it", flush=True)
     with fits.open(short_path) as hdul:
-        short_data = hdul[0].data.astype(float)
+        short_data = hdul[0].data.astype(np.float32)
         swcs = WCS(hdul[0].header).celestial
+    # reproject_interp always returns float64; cast straight back down
+    # rather than let it double the resident size of the finer input.
     short_, _ = reproject_interp((short_data, swcs), twcs, shape_out=(ny, nx))
+    short_ = short_.astype(np.float32)
     del short_data
 
     long_, short_ = _mask_mixed_nan(long_, short_)
-    mid = np.nanmean(np.stack([long_, short_]), axis=0)
+    # Plain mean, not np.nanmean(np.stack(...)): _mask_mixed_nan guarantees
+    # a NaN in one channel is a NaN in both at that pixel, so (a+b)/2 already
+    # gives NaN there and a correct average everywhere else, without the
+    # extra (ny, nx, 2) stack nanmean would allocate.
+    mid = (long_ + short_) / 2
     chans = [long_, mid, short_]  # R = long, G = mean, B = short
 
     print(f"[{which}] stretch '{stretch}': {STRETCHES[stretch]}", flush=True)
@@ -252,8 +281,9 @@ def main(argv=None):
                     default="main")
     ap.add_argument("--stretch", choices=sorted(STRETCHES), default=DEFAULT_STRETCH)
     ap.add_argument("--no-hips", action="store_true")
-    ap.add_argument("--rgb-only", action="store_true")
-    ap.add_argument("--miri-only", action="store_true")
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--rgb-only", action="store_true")
+    group.add_argument("--miri-only", action="store_true")
     args = ap.parse_args(argv)
 
     whichs = ["main", "residual"] if args.which == "both" else [args.which]

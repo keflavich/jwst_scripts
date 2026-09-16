@@ -155,3 +155,35 @@ def test_mask_mixed_nan_never_leaves_a_pixel_real_in_only_one_channel():
     mixed_before = np.isnan(long_) ^ np.isnan(short_)
     assert mixed_before.any(), "test input no longer exercises the mixed case"
     assert np.array_equal(np.isnan(long_out), np.isnan(short_out))
+
+
+def test_rgb_only_and_miri_only_together_is_a_usage_error():
+    """They read as filters, not switches -- taking both used to silently
+    build nothing and exit 0. A mutually exclusive group turns that into an
+    argparse error instead of a quiet no-op."""
+    with pytest.raises(SystemExit):
+        G.main(["--rgb-only", "--miri-only"])
+
+
+def test_build_rgb_holds_only_float32(mosaics, monkeypatch):
+    """Peak memory for this call is documented in the module docstring on the
+    assumption everything is float32; np.nanmean(np.stack(...)) or a missed
+    .astype would silently double it back to float64."""
+    seen = {}
+
+    def fake_save_rgb(img, filename, avm=None, original_data=None, **k):
+        seen["img_dtype"] = img.dtype
+        seen["original_data_dtype"] = original_data.dtype
+        open(filename, "w").close()
+
+    import sys
+    save_rgb_mod = sys.modules["jwst_rgb.save_rgb"]
+    monkeypatch.setattr(save_rgb_mod, "save_rgb", fake_save_rgb)
+    monkeypatch.setattr(save_rgb_mod, "avm_for_saved_png",
+                        lambda *a, **k: "AVM-SENTINEL")
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    G.build_rgb("main", stretch="pct", hips=True)
+
+    assert seen["img_dtype"] == np.float32
+    assert seen["original_data_dtype"] == np.float32
