@@ -135,6 +135,41 @@ def test_build_rgb_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch)
     assert calls["save_rgb"]["hips"] is False
 
 
+def test_build_rgb_targets_f480m_grid_not_f212n(mosaics, monkeypatch):
+    """Mirror of test_build_rgb_trio_targets_f770w_grid_not_f480m, for the
+    gap pr-reviewer (session_01MhYq2v5U5mwyzpX8xf4JPR) found in build_rgb
+    itself: spying on _reproject_onto alone cannot tell F480M's grid from
+    F212N's, because the fixture gives every filter's mock mosaic the same
+    (NY, NX) and the same fake WCS. Spying on _load_primary -- what actually
+    reads the target -- is what pins it. `== [SHORT_FILTER]` rather than a
+    set additionally pins that exactly one band gets reprojected, which is
+    the other half of "this is the two-filter build" (build_rgb_trio
+    reprojects two)."""
+    seen_targets = []
+    real_reproject = G._reproject_onto
+
+    def spy_reproject(filt, which, twcs, ny, nx):
+        seen_targets.append(filt)
+        return real_reproject(filt, which, twcs, ny, nx)
+
+    loaded = []
+    real_load = G._load_primary
+
+    def spy_load(path):
+        loaded.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(G, "_reproject_onto", spy_reproject)
+    monkeypatch.setattr(G, "_load_primary", spy_load)
+    _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    G.build_rgb("main", stretch="pct", hips=True)
+
+    assert loaded == [G.mosaic_path(G.LONG_FILTER, "main")], loaded
+    assert seen_targets == [G.SHORT_FILTER]
+
+
 def test_build_rgb_trio_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch):
     """Same bug, same fix, second call site: the F770W-grid trio needs its
     own AVM built from ITS OWN (F770W) grid, not reused from build_rgb."""
