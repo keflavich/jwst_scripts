@@ -187,15 +187,30 @@ def test_build_rgb_trio_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeyp
 
 def test_build_rgb_trio_targets_f770w_grid_not_f480m(mosaics, monkeypatch):
     """build_rgb targets F480M's grid; build_rgb_trio must target F770W's --
-    mixing them up would silently apply the wrong reprojection direction."""
+    mixing them up would silently apply the wrong reprojection direction.
+
+    Spying on _reproject_onto alone cannot catch that mistake: the fixture
+    gives every filter's mock mosaic the same (NY, NX) and the same fake
+    WCS, so which TWO filters get reprojected stays {LONG, SHORT} even if
+    the target itself were loaded from the wrong file. Spying on
+    _load_primary -- what actually reads the target -- is what pins it.
+    """
     seen_targets = []
-    real = G._reproject_onto
+    real_reproject = G._reproject_onto
 
-    def spy(filt, which, twcs, ny, nx):
+    def spy_reproject(filt, which, twcs, ny, nx):
         seen_targets.append(filt)
-        return real(filt, which, twcs, ny, nx)
+        return real_reproject(filt, which, twcs, ny, nx)
 
-    monkeypatch.setattr(G, "_reproject_onto", spy)
+    loaded = []
+    real_load = G._load_primary
+
+    def spy_load(path):
+        loaded.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(G, "_reproject_onto", spy_reproject)
+    monkeypatch.setattr(G, "_load_primary", spy_load)
     _patch_save_rgb(monkeypatch)
     monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
 
@@ -203,6 +218,7 @@ def test_build_rgb_trio_targets_f770w_grid_not_f480m(mosaics, monkeypatch):
 
     # F770W itself is the TARGET (loaded via _load_primary, not reprojected);
     # only the other two filters get reprojected onto its grid.
+    assert loaded == [G.mosaic_path(G.MIRI_FILTER, "main")], loaded
     assert G.MIRI_FILTER not in seen_targets
     assert set(seen_targets) == {G.LONG_FILTER, G.SHORT_FILTER}
 
