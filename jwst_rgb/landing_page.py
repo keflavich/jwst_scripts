@@ -23,7 +23,10 @@ import re
 #: Aladin Lite options added to every landing page we publish.
 ALADIN_PARAMS = {"showSettingsControl": "true"}
 
+#: `buildLandingPage({...})` -- insert our keys at the front of the object.
 _CALL = re.compile(r"buildLandingPage\(\s*\{")
+#: `buildLandingPage()` -- no object at all, so one has to be supplied.
+_CALL_BARE = re.compile(r"buildLandingPage\(\s*\)")
 
 #: Marker so the injected block is recognised on a later run and not repeated.
 CSS_MARK = "gc-treasury landing page overrides"
@@ -67,7 +70,14 @@ def patch_landing_page(path, params=None, css=True):
             "buildLandingPage({aladinParams: {%s}, " % params_snippet(params),
             s, count=1)
         if not n:
-            return False
+            # The bare form takes no options object, so give it one.
+            s, n = _CALL_BARE.subn(
+                "buildLandingPage({aladinParams: {%s}})" % params_snippet(params),
+                s, count=1)
+        if not n:
+            raise ValueError(
+                f"{path}: found buildLandingPage but not a call shape this "
+                f"knows how to edit; the page was left alone")
     if css and CSS_MARK not in s:
         if "</head>" in s:
             s = s.replace("</head>", PANEL_CSS + "</head>", 1)
@@ -89,10 +99,20 @@ def patch_hips_dir(hips_dir, params=None):
 
 
 def patch_tree(root, params=None):
-    """Patch every landing page under `root`.  Returns (changed, seen)."""
+    """Patch every landing page under `root`.
+
+    Returns (changed, seen, unhandled).  `unhandled` is the paths that contain
+    a buildLandingPage call this does not know how to edit -- counting those as
+    ordinary skips is how 53 pages went unpatched while the run reported a
+    tidy number and no problem.
+    """
     changed = seen = 0
+    unhandled = []
     for fn in sorted(glob.glob(os.path.join(root, "**", "index.html"),
                                recursive=True)):
         seen += 1
-        changed += bool(patch_landing_page(fn, params))
-    return changed, seen
+        try:
+            changed += bool(patch_landing_page(fn, params))
+        except ValueError as exc:
+            unhandled.append(str(exc))
+    return changed, seen, unhandled
