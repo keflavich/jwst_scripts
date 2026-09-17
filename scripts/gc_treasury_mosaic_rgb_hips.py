@@ -334,8 +334,21 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
 
     png = rgb_trio_png_for(which, stretch)
     avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
+    # save_rgb's alpha is the OR of each channel's OWN blank mask: a pixel is
+    # made transparent if ANY of the three is blank there, not only if ALL
+    # three are. That is correct for build_rgb, where _mask_mixed_nan already
+    # equalizes F480M/F212N's NaN pattern before this point, so every channel
+    # shares one blank mask. It is wrong here: G/B are blank almost
+    # everywhere R (the target grid) has data, because NIRCam barely overlaps
+    # the MIRI-parallel footprint (see this function's docstring) -- passing
+    # [r, g, b] made 96.7% of a real run's pixels transparent, r's own true
+    # gaps (~65%) plus nearly all of the remaining 35% where R had real data
+    # but G or B did not. Passing [r, r, r] instead makes save_rgb compute
+    # every channel's blank mask from R alone, so alpha reflects only R's
+    # real coverage -- exactly the "red-only where no NIRCam" rendering this
+    # function's docstring already promises but the original call broke.
     _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
-              alpha_only_edges=True, original_data=np.stack(chans, axis=2),
+              alpha_only_edges=True, original_data=np.stack([r, r, r], axis=2),
               hips=False)
     print(f"[{which}] wrote {png}", flush=True)
 
