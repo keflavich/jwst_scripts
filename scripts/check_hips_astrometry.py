@@ -193,7 +193,17 @@ def spread_out(sc, nstars, min_sep_arcsec=8.0):
             picked.append(c)
         if len(picked) >= nstars:
             break
-    return SkyCoord([p.ra for p in picked], [p.dec for p in picked])
+    if not picked:
+        raise SystemExit(
+            "no catalogue stars in the field: the reference catalogue covers "
+            "none of this footprint, so nothing can be measured")
+    # Rebuild from plain degrees.  SkyCoord([p.ra ...], [p.dec ...]) passes a
+    # list of Longitude/Latitude objects, which astropy reads as a unitless
+    # sequence and rejects with "Longitude instances require units equivalent
+    # to 'rad'".  That raised before any HiPS was touched, so every run of this
+    # script died at star selection regardless of the catalogue or the tiles.
+    return SkyCoord([p.ra.deg for p in picked] * u.deg,
+                    [p.dec.deg for p in picked] * u.deg)
 
 
 # ---------------------------------------------------------------- main check
