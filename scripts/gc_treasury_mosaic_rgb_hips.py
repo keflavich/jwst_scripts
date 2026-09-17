@@ -43,15 +43,21 @@ common target instead; F212N is reprojected down onto it. This is a
 deliberate resolution choice for the survey-overview product -- flag it if a
 full-native-resolution combined mosaic is wanted instead.
 
-Peak memory
------------
-build_rgb loads both mosaics as float32 and holds, at the F480M grid size
-above (~1.93 Gpx): 3 channel planes (~21.6 GiB total), the stretched stack
-(~21.6 GiB), and the original_data stack save_rgb needs for its NaN-alpha
-mask (~21.6 GiB), on the order of 70-90 GiB simultaneous peak depending on
-garbage-collection timing of the reprojected F212N buffer. Not yet measured
-on a real run as of this writing -- request memory generously (>128 GiB)
-until it has been.
+Peak memory and wall time (measured 2026-09-16)
+------------------------------------------------
+build_rgb_trio (F770W's 587 Mpx grid), --which both, one SLURM job: peak
+43.3 GiB RSS (.batch MaxRSS), wall time 53 min for main+residual PNG+HiPS
+combined, comfortably inside a 120 GiB / 8 h request.
+
+build_rgb (F480M's 1.93 Gpx grid): peak RSS did not exceed a 250 GiB
+request in 8 h (the earlier ~70-90 GiB estimate for the array work itself
+held), but reproject_to_hips did NOT finish the main flavour's HiPS in that
+window and the job hit SLURM's wall-time limit -- an extra HEALPix order is
+needed at this grid's finer pixel scale (Norder13 vs the trio's Norder12),
+and the deepest order dominates total tile count, so this is a wall-time
+problem, not a memory one. Request AT LEAST a day of wall time for
+build_rgb's HiPS step at this mosaic size; the array work itself (PNG+AVM)
+completes in well under an hour.
 
 AVM / orientation
 ------------------
