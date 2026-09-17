@@ -58,20 +58,41 @@ def test_names_stay_out_of_the_cron_namespace():
         for stretch in G.STRETCHES:
             assert "/pngs/" not in G.rgb_png_for(which, stretch)
             assert "jwst_gc_treasury" not in G.rgb_hips_for(which, stretch)
+            assert "/pngs/" not in G.rgb_trio_png_for(which, stretch)
+            assert "jwst_gc_treasury" not in G.rgb_trio_hips_for(which, stretch)
         assert "/pngs/" not in G.miri_png_for(which)
         assert "jwst_gc_treasury" not in G.miri_hips_for(which)
 
 
 def test_main_and_residual_names_do_not_collide():
     assert G.rgb_png_for("main", "pct") != G.rgb_png_for("residual", "pct")
+    assert G.rgb_trio_png_for("main", "pct") != G.rgb_trio_png_for("residual", "pct")
     assert G.miri_png_for("main") != G.miri_png_for("residual")
 
 
-def test_build_rgb_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch):
-    """The bug this pins: faithful_avm (or a raw AVM.from_header) describes the
-    FITS array, not the PNG save_rgb actually writes, and is off by
-    |N+1-2*crpix| pixels per axis. avm_for_saved_png is the only builder that
-    reflects CRPIX to match save_rgb's flip+ROTATE_180."""
+def test_the_two_rgb_grids_do_not_collide():
+    """480-grid and 770-grid RGBs are different products (different target
+    grid, different channel semantics -- one has a synthesised mean green,
+    the other three real filters) and must never share a filename."""
+    for which in ("main", "residual"):
+        for stretch in G.STRETCHES:
+            assert G.rgb_png_for(which, stretch) != G.rgb_trio_png_for(which, stretch)
+            assert G.rgb_hips_for(which, stretch) != G.rgb_trio_hips_for(which, stretch)
+
+
+def _patch_save_rgb(monkeypatch):
+    """Patch jwst_rgb.save_rgb's avm_for_saved_png/faithful_avm/save_rgb and
+    return the dict build_rgb/build_rgb_trio's calls get recorded into.
+
+    Shared by every AVM-correctness test below because getting the module
+    object right is fiddly: jwst_rgb/__init__.py does
+    `from .save_rgb import save_rgb`, which rebinds the ATTRIBUTE
+    jwst_rgb.save_rgb to the function on package import -- so
+    `import jwst_rgb.save_rgb as x` resolves `x` via that shadowed attribute,
+    not the actual submodule. sys.modules is unambiguous.
+    """
+    import sys
+    import jwst_rgb.save_rgb  # noqa: F401  (ensure it is in sys.modules)
     calls = {}
 
     def fake_avm_for_saved_png(wcs, ny, nx, flip=-1, transpose=None):
@@ -86,20 +107,23 @@ def test_build_rgb_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch)
                                  filename=filename)
         open(filename, "w").close()
 
-    import jwst_rgb.save_rgb  # noqa: F401  (ensure it is in sys.modules)
-    import sys
-    # jwst_rgb/__init__.py does `from .save_rgb import save_rgb`, which
-    # rebinds the ATTRIBUTE jwst_rgb.save_rgb to the function on package
-    # import -- `import jwst_rgb.save_rgb as x` then resolves `x` via that
-    # shadowed attribute, not the actual submodule. sys.modules is unambiguous.
     save_rgb_mod = sys.modules["jwst_rgb.save_rgb"]
     monkeypatch.setattr(save_rgb_mod, "avm_for_saved_png", fake_avm_for_saved_png)
     monkeypatch.setattr(save_rgb_mod, "faithful_avm", fake_faithful_avm)
-    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
-    # build_rgb does `from jwst_rgb.save_rgb import save_rgb as _save_rgb` and
-    # `import avm_for_saved_png` at call time, so patching the module's
-    # attributes (above) is what the fresh import picks up.
+    # build_rgb/build_rgb_trio do `from jwst_rgb.save_rgb import save_rgb as
+    # _save_rgb` and `import avm_for_saved_png` at call time, so patching the
+    # module's attributes (above) is what that fresh import picks up.
     monkeypatch.setattr(save_rgb_mod, "save_rgb", fake_save_rgb)
+    return calls
+
+
+def test_build_rgb_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch):
+    """The bug this pins: faithful_avm (or a raw AVM.from_header) describes the
+    FITS array, not the PNG save_rgb actually writes, and is off by
+    |N+1-2*crpix| pixels per axis. avm_for_saved_png is the only builder that
+    reflects CRPIX to match save_rgb's flip+ROTATE_180."""
+    calls = _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
 
     G.build_rgb("main", stretch="pct", hips=True)
 
@@ -109,6 +133,124 @@ def test_build_rgb_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch)
     # save_rgb must NOT build its own HiPS: G._build_hips is the one call site
     # that runs reproject_to_hips AND patch_hips_dir together (see next test).
     assert calls["save_rgb"]["hips"] is False
+
+
+def test_build_rgb_targets_f480m_grid_not_f212n(mosaics, monkeypatch):
+    """Mirror of test_build_rgb_trio_targets_f770w_grid_not_f480m, for the
+    gap pr-reviewer (session_01MhYq2v5U5mwyzpX8xf4JPR) found in build_rgb
+    itself: spying on _reproject_onto alone cannot tell F480M's grid from
+    F212N's, because the fixture gives every filter's mock mosaic the same
+    (NY, NX) and the same fake WCS. Spying on _load_primary -- what actually
+    reads the target -- is what pins it. `== [SHORT_FILTER]` rather than a
+    set additionally pins that exactly one band gets reprojected, which is
+    the other half of "this is the two-filter build" (build_rgb_trio
+    reprojects two)."""
+    seen_targets = []
+    real_reproject = G._reproject_onto
+
+    def spy_reproject(filt, which, twcs, ny, nx):
+        seen_targets.append(filt)
+        return real_reproject(filt, which, twcs, ny, nx)
+
+    loaded = []
+    real_load = G._load_primary
+
+    def spy_load(path):
+        loaded.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(G, "_reproject_onto", spy_reproject)
+    monkeypatch.setattr(G, "_load_primary", spy_load)
+    _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    G.build_rgb("main", stretch="pct", hips=True)
+
+    assert loaded == [G.mosaic_path(G.LONG_FILTER, "main")], loaded
+    assert seen_targets == [G.SHORT_FILTER]
+
+
+def test_build_rgb_trio_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeypatch):
+    """Same bug, same fix, second call site: the F770W-grid trio needs its
+    own AVM built from ITS OWN (F770W) grid, not reused from build_rgb."""
+    calls = _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    G.build_rgb_trio("main", stretch="pct", hips=True)
+
+    assert calls["avm"]["flip"] == -1
+    assert calls["avm"]["transpose"] == Image.ROTATE_180
+    assert calls["avm"]["ny"] == NY and calls["avm"]["nx"] == NX
+    assert calls["save_rgb"]["avm"] == "AVM-SENTINEL"
+    assert calls["save_rgb"]["hips"] is False
+
+
+def test_build_rgb_trio_targets_f770w_grid_not_f480m(mosaics, monkeypatch):
+    """build_rgb targets F480M's grid; build_rgb_trio must target F770W's --
+    mixing them up would silently apply the wrong reprojection direction.
+
+    Spying on _reproject_onto alone cannot catch that mistake: the fixture
+    gives every filter's mock mosaic the same (NY, NX) and the same fake
+    WCS, so which TWO filters get reprojected stays {LONG, SHORT} even if
+    the target itself were loaded from the wrong file. Spying on
+    _load_primary -- what actually reads the target -- is what pins it.
+    """
+    seen_targets = []
+    real_reproject = G._reproject_onto
+
+    def spy_reproject(filt, which, twcs, ny, nx):
+        seen_targets.append(filt)
+        return real_reproject(filt, which, twcs, ny, nx)
+
+    loaded = []
+    real_load = G._load_primary
+
+    def spy_load(path):
+        loaded.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(G, "_reproject_onto", spy_reproject)
+    monkeypatch.setattr(G, "_load_primary", spy_load)
+    _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    G.build_rgb_trio("main", stretch="pct", hips=True)
+
+    # F770W itself is the TARGET (loaded via _load_primary, not reprojected);
+    # only the other two filters get reprojected onto its grid.
+    assert loaded == [G.mosaic_path(G.MIRI_FILTER, "main")], loaded
+    assert G.MIRI_FILTER not in seen_targets
+    assert set(seen_targets) == {G.LONG_FILTER, G.SHORT_FILTER}
+
+
+def test_build_rgb_trio_masks_g_b_mismatch_but_never_touches_r(mosaics, monkeypatch):
+    """G (F480M) and B (F212N) are the same co-designed NIRCam pair build_rgb
+    combines, so a pixel real in one and NaN in the other there is the same
+    mixed-coverage edge artifact _mask_mixed_nan exists to catch -- that
+    invariant does not go away just because a third, independently-pointed
+    channel (R = F770W) was added. What DOES change: R must never be a party
+    to that masking, since most of the full-survey F770W footprint
+    legitimately has no NIRCam coverage at all (MIRI parallel, several
+    arcmin off the NIRCam prime), and masking against R would blank real
+    F770W-only sky instead of a coverage-edge artifact."""
+    calls = []
+    real = G._mask_mixed_nan
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(G, "_mask_mixed_nan", spy)
+    _patch_save_rgb(monkeypatch)
+    monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
+
+    r_before, _ = G._load_primary(G.mosaic_path(G.MIRI_FILTER, "main"))
+    G.build_rgb_trio("main", stretch="pct", hips=True)
+
+    assert len(calls) == 1, "G/B must be masked exactly once, not per-pair-with-R"
+    a, b = calls[0]
+    assert not np.array_equal(a, r_before) and not np.array_equal(b, r_before), (
+        "R (F770W) must never be passed into the G/B mixed-NaN mask")
 
 
 def test_build_hips_patches_after_reprojecting(tmp_path, monkeypatch):
