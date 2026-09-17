@@ -43,15 +43,30 @@ common target instead; F212N is reprojected down onto it. This is a
 deliberate resolution choice for the survey-overview product -- flag it if a
 full-native-resolution combined mosaic is wanted instead.
 
-Peak memory
------------
-build_rgb loads both mosaics as float32 and holds, at the F480M grid size
-above (~1.93 Gpx): 3 channel planes (~21.6 GiB total), the stretched stack
-(~21.6 GiB), and the original_data stack save_rgb needs for its NaN-alpha
-mask (~21.6 GiB), on the order of 70-90 GiB simultaneous peak depending on
-garbage-collection timing of the reprojected F212N buffer. Not yet measured
-on a real run as of this writing -- request memory generously (>128 GiB)
-until it has been.
+Peak memory and wall time (measured 2026-09-16, full SLURM runs)
+------------------------------------------------------------------
+build_rgb_trio (F770W's 587 Mpx grid), --which both, one job: peak 41.3 GiB
+RSS (sacct .batch MaxRSS 43297740 KiB; note that is KiB, not KB -- read the
+unit off sacct before quoting a number from it into anything that sizes an
+allocation), wall time 53 min for main+residual PNG+HiPS combined.
+Comfortably inside a 120 GiB / 8 h request.
+
+build_rgb (F480M's 1.93 Gpx grid): peak 152.2 GiB RSS (MaxRSS 159638068
+KiB), roughly double the ~70-90 GiB the channel-array arithmetic above
+predicts. The array work itself (load, reproject, stretch, save_rgb's PNG
+write) finishes in well under an hour and is not the gap; the discrepancy
+shows up somewhere in reproject_to_hips's own buffers while generating the
+deepest HEALPix order, which is also the part that ran out of TIME: this
+grid's finer pixel scale needs an extra order versus the trio's (Norder13
+vs Norder12), the deepest order dominates total tile count, and a 250 GiB /
+8 h job got through the array work and the PNG but hit the wall-time limit
+partway into that HiPS build, having written 11,442 Norder13 tiles with no
+coarser orders started yet (reproject_to_hips builds finest-to-coarsest, so
+a run killed there is not resumable through the API used here -- delete the
+partial output and rebuild). The mechanism inside reproject_to_hips that
+holds the other ~60-80 GiB has not been identified; request at least 160
+GiB and at least a day of wall time for build_rgb at this mosaic size until
+it has been.
 
 AVM / orientation
 ------------------
@@ -287,9 +302,12 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
     Peak memory: F770W's native grid is much smaller than F480M's (measured
     2026-09-16: 20363x28821 = 587 Mpx at ~0.111"/px, roughly a third of
     F480M's 1.93 Gpx -- see the module docstring's "Target grid" section for
-    why the two are unrelated grids). The module docstring's ">128 GiB"
-    guidance is sized for build_rgb; running --grids 770 alone needs
-    proportionally less.
+    why the two are unrelated grids), and it shows in the measurement: a
+    full --which both run peaked at 41.3 GiB RSS in 53 min (see the module
+    docstring's "Peak memory and wall time" section), against build_rgb's
+    152 GiB and wall-time-limited HiPS build. The module docstring's memory
+    and wall-time guidance is sized for build_rgb; running --grids 770 alone
+    needs much less of both.
     """
     from PIL import Image
     from jwst_rgb.save_rgb import save_rgb as _save_rgb
