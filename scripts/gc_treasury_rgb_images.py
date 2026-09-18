@@ -110,6 +110,57 @@ MAST_I2D = re.compile(
     r"_i2d\.fits$")
 
 
+def source_mtime(path):
+    """``os.path.getmtime(path)``, or ``None`` if the file is no longer there.
+
+    Every mosaic path this script stats came out of a glob -- `find_i2d` for
+    MIRI, `inventory()` for the per-filter NIRCam maps -- so by the time it is
+    stat'd the file has already been observed to exist.  What it has NOT been
+    observed to do is stay: the astrometry checkpoint renames a merged i2d to
+    ``*_im0_badastrom.fits`` when it corrects a tile, and a rename landing
+    between the glob and the stat leaves a live path in hand pointing at
+    nothing.  `os.path.getmtime` then raises `FileNotFoundError` out of a
+    predicate and the whole hourly tick dies on one regenerating tile:
+
+        File "gc_treasury_rgb_images.py", line 992, in needs_build
+          if src and time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
+        FileNotFoundError: [Errno 2] No such file or directory:
+          '.../jw10678-o111_t001_nircam_clear-f212n-merged_i2d.fits'
+
+    (2026-09-18 02:59:43, while o111 was being regenerated.)
+
+    An `os.path.exists` guard does not help, because the path is in the
+    inventory precisely by having existed when the inventory was taken; a tile
+    ALREADY stale-tagged at that moment does not appear in `inv` at all and is
+    skipped cleanly today.  The window is the one between the two, so the fix
+    is to stat once and handle the absence.
+
+    This matters more the denser the renames get.  One or two tiles a night
+    makes it an intermittent crash; applying a bulk astrometric correction
+    across ~28 tile-filter pairs at once (jwst-gc-pipeline#921) would stale-tag
+    that many mosaics in a burst and keep the rebuild down until the
+    regenerations finish.
+
+    Returning ``None`` rather than swallowing the condition is deliberate: the
+    callers turn it into a VANISHED verdict that the tick PRINTS, so a tile
+    that quietly stops being rebuilt stays visible in the log.  A bare ``pass``
+    here would trade a loud failure for a silent one, which is the worse
+    bargain for something whose job is to notice staleness.
+
+    WHAT THIS DOES NOT DO.  It does not close the race, and a path it has just
+    returned an mtime for is not thereby safe to use: the file can still go
+    away between this call and the build that reads it.  The guarantee is only
+    that the TICK SURVIVES -- that a rename cannot kill a predicate and take
+    the other thirty tiles down with it.  A vanish inside the build itself
+    fails that one observation, which `cmd_auto` already catches and reports as
+    a FAILED entry.  Do not read a non-None return as "this file exists now".
+    """
+    try:
+        return os.path.getmtime(path)
+    except FileNotFoundError:
+        return None
+
+
 def find_i2d(filt, exposure_level=False):
     """i2d products for one filter, keyed by observation token (o135, ...).
 
@@ -704,11 +755,17 @@ def cmd_miri_match():
     # pair that is really +2.67 -- a 24x error that then propagated through the
     # least-squares solve into +-33 offsets across four tiles.  Erosion did not
     # change those numbers at all, so it was never an edge effect.
-    fresh = {k: v for k, v in paths.items()
-             if time.time() - os.path.getmtime(v) < SETTLE_SECONDS}
-    for k in fresh:
-        print(f"  skipping {k}: written in the last {SETTLE_SECONDS // 60} min")
-        paths.pop(k)
+    # One stat per mosaic, so a rename landing mid-loop cannot turn a skip
+    # decision into a crash (see `source_mtime`).
+    mtimes = {k: source_mtime(v) for k, v in paths.items()}
+    for k, t in sorted(mtimes.items()):
+        if t is None:
+            print(f"  skipping {k}: its mosaic vanished (being regenerated?)")
+            paths.pop(k)
+        elif time.time() - t < SETTLE_SECONDS:
+            print(f"  skipping {k}: written in the last "
+                  f"{SETTLE_SECONDS // 60} min")
+            paths.pop(k)
     if len(paths) < 2:
         print("need at least two settled MIRI mosaics to match")
         return 1
@@ -784,12 +841,16 @@ def cmd_nircam_match():
     out = {"filters": {}}
     for filt in FILTERS:
         paths = dict(inv.get(filt, {}))
-        fresh = {k: v for k, v in paths.items()
-                 if time.time() - os.path.getmtime(v) < SETTLE_SECONDS}
-        for k in fresh:
-            print(f"  skipping {k} ({filt}): written in the last "
-                  f"{SETTLE_SECONDS // 60} min")
-            paths.pop(k)
+        mtimes = {k: source_mtime(v) for k, v in paths.items()}
+        for k, t in sorted(mtimes.items()):
+            if t is None:
+                print(f"  skipping {k} ({filt}): its mosaic vanished "
+                      f"(being regenerated?)")
+                paths.pop(k)
+            elif time.time() - t < SETTLE_SECONDS:
+                print(f"  skipping {k} ({filt}): written in the last "
+                      f"{SETTLE_SECONDS // 60} min")
+                paths.pop(k)
         if len(paths) < 2:
             print(f"{filt}: need at least two settled mosaics to match")
             return 1
@@ -940,7 +1001,10 @@ def miri_match_is_stale(miri):
 
 def miri_needs_build(obs, src, bgmatch=False):
     import time
-    if time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
+    t_src = source_mtime(src)
+    if t_src is None:
+        return "VANISHED"
+    if time.time() - t_src < SETTLE_SECONDS:
         return "SETTLING"
     if bgmatch:
         # Existence of the table is not enough: it carries offsets for the
@@ -960,7 +1024,7 @@ def miri_needs_build(obs, src, bgmatch=False):
     hips = miri_hips_for(obs, bgmatch)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "png exists but its HiPS is missing or incomplete"
-    if os.path.getmtime(src) > os.path.getmtime(png):
+    if t_src > os.path.getmtime(png):
         return "F770W i2d is newer than the png (re-reduced?)"
     if not bgmatch:
         return None
@@ -989,7 +1053,12 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     # building from it would produce a truncated RGB that then looks up to date.
     for f in FILTERS:
         src = inv[f].get(obs)
-        if src and time.time() - os.path.getmtime(src) < SETTLE_SECONDS:
+        if not src:
+            continue
+        mtime = source_mtime(src)
+        if mtime is None:
+            return "VANISHED"
+        if time.time() - mtime < SETTLE_SECONDS:
             return "SETTLING"
     if stretch_match(stretch):
         # Same rule as MIRI: the table existing is not enough, because
@@ -1018,7 +1087,12 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     t_png = os.path.getmtime(png)
     for f in FILTERS:
         src = inv[f].get(obs)
-        if src and os.path.getmtime(src) > t_png:
+        if not src:
+            continue
+        mtime = source_mtime(src)
+        if mtime is None:
+            return "VANISHED"
+        if mtime > t_png:
             return f"{f.upper()} i2d is newer than the RGB (re-reduced?)"
     return None
 
@@ -1033,14 +1107,19 @@ def _pending_summary():
     for stretch in sorted(STRETCHES):
         for o in [o for o in obs_all if all(o in inv[f] for f in FILTERS)]:
             why = needs_build(o, inv, stretch=stretch)
-            if why and why != "SETTLING":
+            # VANISHED joins SETTLING as a not-buildable-right-now verdict
+            # rather than pending work: nothing is waiting on it, the tile is
+            # mid-regeneration and comes back on a later tick.
+            if why and why not in ("SETTLING", "VANISHED"):
                 out.append(f"{o} NIRCam/{stretch} -- {why}")
     miri = find_i2d(MIRI_FILTER)
     for bgmatch in (False, True):
         tag = "MIRI+bg" if bgmatch else "MIRI"
         for o, src in sorted(miri.items()):
             why = miri_needs_build(o, src, bgmatch)
-            if why and why not in ("SETTLING", "NOMATCH"):
+            # One exclusion more than the NIRCam loop above, because only
+            # miri_needs_build can return NOMATCH.
+            if why and why not in ("SETTLING", "NOMATCH", "VANISHED"):
                 out.append(f"{o} {tag} -- {why}")
     return out
 
@@ -1104,6 +1183,11 @@ def cmd_auto(publish=False):
         for stretch in sorted(STRETCHES):
           for o in ready:
             why = needs_build(o, inv, stretch=stretch)
+            if why == "VANISHED":
+                print(f"  {o} {stretch}: a source mosaic went away while this "
+                      f"tick was running (stale-tagged for regeneration?); "
+                      f"skipping it this time")
+                continue
             if why == "SETTLING":
                 print(f"  {o} {stretch}: source written in the last "
                       f"{SETTLE_SECONDS // 60} min; leaving it to settle")
@@ -1155,6 +1239,11 @@ def cmd_auto(publish=False):
             tag = "MIRI+bg" if bgmatch else "MIRI"
             for o, src in sorted(miri.items()):
                 why = miri_needs_build(o, src, bgmatch)
+                if why == "VANISHED":
+                    print(f"  {o} {tag}: its mosaic went away while this tick "
+                          f"was running (stale-tagged for regeneration?); "
+                          f"skipping it this time")
+                    continue
                 if why == "SETTLING":
                     print(f"  {o} {tag}: source written in the last "
                           f"{SETTLE_SECONDS // 60} min; leaving it to settle")
