@@ -96,32 +96,67 @@ PIXEL_ARCSEC, SMOOTH_ARCSEC = 2.0, 6.0
 FILTERS_USED = ("f212n", "f480m")
 
 CAT_RE = re.compile(
-    r"(f\d+[a-z])_merged_(o\d+)_indivexp_merged_"
+    r"(f\d+[a-z])_(merged|nrca|nrcb)_(o\d+)_indivexp_merged_"
     r"((?:[a-z0-9]+_)*)"                      # optional qualifiers, e.g. resbgsub_
-    r"m(\d+)_dao_basic_vetted\.fits$")
+    r"m(\d+)_dao_basic(_vetted)?\.fits$")
+
+#: A whole-tile catalogue beats a single module's; `merged` covers both NIRCam
+#: modules, `nrca`/`nrcb` half the tile each.  Seven Treasury observations have
+#: been cataloged in module A only, so requiring `merged` excludes them
+#: entirely rather than showing half of each.
+MODULE_RANK = {"merged": 2, "nrca": 1, "nrcb": 1}
 
 
 # --------------------------------------------------------------------------
 # inputs
 
 
-def latest_pairs():
-    """{obs: {filter: (iteration, path)}} keeping the highest m<N> per filter,
-    restricted to observations vetted in BOTH filters."""
+def latest_pairs(allow_unvetted=False, allow_module=False):
+    """{obs: {filter: (iteration, path, qualifiers, vetted)}} keeping the
+    highest m<N> per filter, over observations with BOTH filters.
+
+    Vetting, not reduction stage, is what gates this list.  Measured
+    2026-09-18: 19 observations have a catalogue in both F212N and F480M at
+    some stage, and 12 have one VETTED in both -- the other seven are held out
+    by a missing F480M vetting pass, at m2, while their F212N side is vetted.
+    `allow_unvetted` takes the unvetted catalogue for a filter that has no
+    vetted one, and every source it contributes is marked `vetted = False` so
+    the distinction survives into the published file.
+
+    `allow_module` additionally takes a SINGLE-MODULE catalogue where the
+    whole-tile `merged` one does not exist.  Seven observations (o105, o109,
+    o112, o116, o118, o133, o138) have been cataloged in module A only, so
+    without this they contribute nothing at all rather than half a tile each;
+    with it their sources carry `module = 'nrca'`.
+
+    A vetted catalogue always wins over an unvetted one at the SAME iteration;
+    a higher iteration wins over a lower one either way, because the iteration
+    is the reduction and the vetting is a pass over it.
+    """
     have = {}
     # Glob broadly and let CAT_RE decide.  The old pattern required "merged_m"
     # to be adjacent, so ..._indivexp_merged_resbgsub_m5_... was filtered out
     # before the regex ever saw it -- fixing the regex alone changed nothing.
-    for f in glob.glob(f"{CAT}/f*_merged_o*_indivexp_merged_*dao_basic_vetted.fits"):
+    for f in glob.glob(f"{CAT}/f*_*_o*_indivexp_merged_*dao_basic*.fits"):
         m = CAT_RE.search(os.path.basename(f))
         if not m:
             continue
-        filt, obs, qual, it = m.group(1), m.group(2), m.group(3), int(m.group(4))
+        filt, module, obs = m.group(1), m.group(2), m.group(3)
+        qual, it, vetted = m.group(4), int(m.group(5)), bool(m.group(6))
+        if not (vetted or allow_unvetted):
+            continue
+        if module != "merged" and not allow_module:
+            continue
         d = have.setdefault(obs, {})
-        # rank on the iteration number alone; a qualifier is a variant of an
-        # iteration, not a competitor to it
-        if filt not in d or it > d[filt][0]:
-            d[filt] = (it, f, qual.rstrip("_"))
+        # Rank: whole tile over a single module first, then the iteration
+        # number, then vetting.  A qualifier is a variant of an iteration, not
+        # a competitor to it.  Vetting breaks a tie rather than outranking an
+        # iteration, so turning either fallback on never demotes a catalogue
+        # that a stricter run would have picked.
+        cur = d.get(filt)
+        key = (MODULE_RANK.get(module, 0), it, vetted)
+        if cur is None or key > cur[4]:
+            d[filt] = (it, f, qual.rstrip("_"), vetted, key, module)
     return {o: v for o, v in sorted(have.items())
             if "f212n" in v and "f480m" in v}
 
@@ -191,10 +226,17 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
     tolerance.  That slightly inflates the density maps.  The tolerance is
     ~3 short-wave pixels, comfortably inside the astrometric scatter between
     the two filters, so tightening it would cost real matches instead."""
-    col, m480, ra, dec, who = [], [], [], [], []
+    col, m480, ra, dec, who, vet, mod = [], [], [], [], [], [], []
     for obs, v in pairs.items():
         a = Table.read(v["f212n"][1])
         b = Table.read(v["f480m"][1])
+        # A source is "vetted" only when BOTH of its catalogues were: the
+        # colour is a difference of the two, so the weaker provenance governs.
+        both_vetted = bool(v["f212n"][3] and v["f480m"][3])
+        # 'merged' when both filters cover the whole tile, else the module
+        # they share -- and if they somehow differ, say so rather than pick.
+        mods = {v["f212n"][5], v["f480m"][5]}
+        module = mods.pop() if len(mods) == 1 else "+".join(sorted(mods))
         ma, mb = abmag(a), abmag(b)
         idx, d2d, _ = b["skycoord"].match_to_catalog_sky(a["skycoord"])
         ok = d2d.arcsec < tol
@@ -206,10 +248,15 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
         ra.append(b["skycoord"].ra.deg[ok][g])
         dec.append(b["skycoord"].dec.deg[ok][g])
         who.append(np.full(g.sum(), obs))
-        print(f"  {obs}: {len(b):,} LW, {ok.sum():,} matched, {g.sum():,} with colour",
-              flush=True)
+        vet.append(np.full(g.sum(), both_vetted))
+        mod.append(np.full(g.sum(), module))
+        tag = ("" if both_vetted else "  [unvetted]") + \
+              ("" if module == "merged" else f"  [{module} only]")
+        print(f"  {obs}: {len(b):,} LW, {ok.sum():,} matched, "
+              f"{g.sum():,} with colour{tag}", flush=True)
     return (np.concatenate(col), np.concatenate(m480), np.concatenate(ra),
-            np.concatenate(dec), np.concatenate(who))
+            np.concatenate(dec), np.concatenate(who), np.concatenate(vet),
+            np.concatenate(mod))
 
 
 def load_matched(pairs, force=False):
@@ -218,15 +265,23 @@ def load_matched(pairs, force=False):
     if not force and os.path.exists(CACHE) and os.path.exists(STAMP):
         with open(STAMP) as fh:
             old = json.load(fh)
-        if old.get("match") == fp:
-            d = np.load(CACHE, allow_pickle=True)
+        d = np.load(CACHE, allow_pickle=True) if old.get("match") == fp else None
+        # A cache written before the vetting flag existed has every other array
+        # right and cannot say which sources are vetted. Rebuilding is cheaper
+        # than guessing, and guessing here would label unvetted sources vetted.
+        if d is not None and ("vet" not in d or "mod" not in d):
+            print("match cache predates the vetting/module flags; rebuilding")
+            d = None
+        if d is not None:
             print(f"match cache hit: {len(d['col']):,} sources over {fp['n_obs']} fields")
-            return d["col"], d["m480"], d["ra"], d["dec"], d["who"], fp
+            return (d["col"], d["m480"], d["ra"], d["dec"], d["who"],
+                    d["vet"], d["mod"], fp)
     print(f"matching {fp['n_obs']} field(s) at {MATCH_ARCSEC}\"", flush=True)
-    col, m480, ra, dec, who = match_catalogs(pairs)
-    np.savez(CACHE, col=col, m480=m480, ra=ra, dec=dec, who=who)
+    col, m480, ra, dec, who, vet, mod = match_catalogs(pairs)
+    np.savez(CACHE, col=col, m480=m480, ra=ra, dec=dec, who=who, vet=vet,
+             mod=mod)
     print(f"{len(col):,} matched sources over {fp['n_obs']} fields")
-    return col, m480, ra, dec, who, fp
+    return col, m480, ra, dec, who, vet, mod, fp
 
 
 # --------------------------------------------------------------------------
@@ -331,33 +386,51 @@ def build_rc(col, m480, ra, dec, level=None, threads=8):
         build_hips(arr, w, layer, level, threads)
 
 
-def build_ultrared(col, m480, ra, dec, who):
+def build_ultrared(col, m480, ra, dec, who, vet=None, mod=None):
     """Catalogue rather than a density map: too few sources over too few fields
     for a meaningful surface density, and the positions are the useful product.
     NOT vetted by eye -- an extreme colour can be a genuinely embedded object or
     a mismatch between the two filters."""
     sel = col > ULTRARED_CUT
     fields = " ".join(sorted(set(np.asarray(who)[sel].tolist())))
+    if vet is None:
+        vet = np.ones(len(col), dtype=bool)
+    vet = np.asarray(vet, dtype=bool)
+    if mod is None:
+        mod = np.full(len(col), "merged")
+    mod = np.asarray(mod)
+    n_unvetted = int((~vet[sel]).sum())
+    n_module = int((mod[sel] != "merged").sum())
     print(f"ultra-red: {sel.sum()} sources with F212N-F480M > {ULTRARED_CUT} "
-          f"over {len(fields.split())} field(s)")
+          f"over {len(fields.split())} field(s)"
+          + (f"; {n_unvetted} from catalogues with no vetting pass"
+             if n_unvetted else "")
+          + (f"; {n_module} from a single NIRCam module"
+             if n_module else ""))
     order = np.argsort(-col[sel])
     t = Table({"ra": ra[sel][order], "dec": dec[sel][order],
                "color_f212n_f480m": col[sel][order],
                "mag_ab_f480m": m480[sel][order],
                "mag_ab_f212n": (col[sel] + m480[sel])[order],
-               "obs": np.asarray(who)[sel][order]})
+               "obs": np.asarray(who)[sel][order],
+               "vetted": vet[sel][order],
+               "module": mod[sel][order]})
     t.meta["SELECT"] = f"F212N-F480M > {ULTRARED_CUT} AB"
     t.meta["FIELDS"] = fields
     t.meta["MATCHTOL"] = f"{MATCH_ARCSEC} arcsec"
     t.write(f"{WEB}/jwst_ultrared_stars.ecsv", overwrite=True)
     t.write(f"{WEB}/jwst_ultrared_stars.fits", overwrite=True)
     rows = [{"ra": round(float(r), 6), "dec": round(float(d), 6),
-             "color": round(float(c), 2), "f480m": round(float(m), 2), "obs": str(o)}
-            for r, d, c, m, o in zip(t["ra"], t["dec"], t["color_f212n_f480m"],
-                                     t["mag_ab_f480m"], t["obs"])]
+             "color": round(float(c), 2), "f480m": round(float(m), 2),
+             "obs": str(o), "vetted": bool(w), "module": str(md)}
+            for r, d, c, m, o, w, md in zip(
+                t["ra"], t["dec"], t["color_f212n_f480m"], t["mag_ab_f480m"],
+                t["obs"], t["vetted"], t["module"])]
     doc = {"name": f"JWST ultra-red (F212N-F480M > {ULTRARED_CUT})",
            "select": f"F212N-F480M > {ULTRARED_CUT} AB, {MATCH_ARCSEC}\" match",
-           "fields": fields, "n": len(rows), "sources": rows}
+           "fields": fields, "n": len(rows),
+           "n_unvetted": n_unvetted, "n_single_module": n_module,
+           "sources": rows}
     with open(f"{WEB}/jwst_ultrared_stars.json", "w") as fh:
         json.dump(doc, fh)
     print(f"  wrote ecsv/fits/json ({len(rows)} sources, "
@@ -479,6 +552,14 @@ def main():
     ap.add_argument("--auto", action="store_true",
                     help="rebuild only when the input catalogues have changed")
     ap.add_argument("--force", action="store_true", help="rebuild regardless")
+    ap.add_argument("--allow-module", action="store_true",
+                    help="use a single-module catalogue where the whole-tile "
+                         "merged one does not exist; those sources are marked "
+                         "with the module they came from")
+    ap.add_argument("--allow-unvetted", action="store_true",
+                    help="use a filter's unvetted catalogue where it has no "
+                         "vetted one; every source from such a pair is marked "
+                         "vetted=False in the outputs")
     ap.add_argument("--publish", action="store_true",
                     help="copy the HiPS layers into the web root when done")
     ap.add_argument("--push-remote", action="store_true",
@@ -514,11 +595,22 @@ def main():
                 os.remove(LOCK)
         return 0
 
-    pairs = latest_pairs()
+    pairs = latest_pairs(allow_unvetted=a.allow_unvetted,
+                         allow_module=a.allow_module)
     if not pairs:
-        print(f"no vetted catalogue pairs under {CAT}")
+        print(f"no catalogue pairs under {CAT}")
         return 1
-    print(f"{len(pairs)} observation(s) vetted in both filters: {', '.join(pairs)}")
+    unvetted = sorted(o for o, v in pairs.items()
+                      if not (v["f212n"][3] and v["f480m"][3]))
+    partial = sorted(o for o, v in pairs.items()
+                     if "merged" not in (v["f212n"][5], v["f480m"][5]))
+    print(f"{len(pairs)} observation(s) with both filters: {', '.join(pairs)}")
+    if unvetted:
+        print(f"  {len(unvetted)} of them use a catalogue with no vetting pass "
+              f"in at least one filter: {', '.join(unvetted)}")
+    if partial:
+        print(f"  {len(partial)} of them are a single NIRCam module, so they "
+              f"cover half the tile: {', '.join(partial)}")
     report_lineage(pairs)
 
     fp = fingerprint(pairs)
@@ -536,7 +628,8 @@ def main():
     if not take_lock():
         return 0
     try:
-        col, m480, ra, dec, who, fp = load_matched(pairs, force=a.force)
+        col, m480, ra, dec, who, vet, mod, fp = load_matched(pairs,
+                                                            force=a.force)
         report_ridge(col, m480)
         if a.refit:
             return 0
@@ -546,7 +639,7 @@ def main():
         if "rc" in want:
             build_rc(col, m480, ra, dec, a.level, a.threads)
         if "ultrared" in want:
-            build_ultrared(col, m480, ra, dec, who)
+            build_ultrared(col, m480, ra, dec, who, vet, mod)
         if a.publish:
             print("publishing")
             publish()
