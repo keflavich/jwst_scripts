@@ -146,6 +146,14 @@ def source_mtime(path):
     that quietly stops being rebuilt stays visible in the log.  A bare ``pass``
     here would trade a loud failure for a silent one, which is the worse
     bargain for something whose job is to notice staleness.
+
+    WHAT THIS DOES NOT DO.  It does not close the race, and a path it has just
+    returned an mtime for is not thereby safe to use: the file can still go
+    away between this call and the build that reads it.  The guarantee is only
+    that the TICK SURVIVES -- that a rename cannot kill a predicate and take
+    the other thirty tiles down with it.  A vanish inside the build itself
+    fails that one observation, which `cmd_auto` already catches and reports as
+    a FAILED entry.  Do not read a non-None return as "this file exists now".
     """
     try:
         return os.path.getmtime(path)
@@ -1109,6 +1117,8 @@ def _pending_summary():
         tag = "MIRI+bg" if bgmatch else "MIRI"
         for o, src in sorted(miri.items()):
             why = miri_needs_build(o, src, bgmatch)
+            # One exclusion more than the NIRCam loop above, because only
+            # miri_needs_build can return NOMATCH.
             if why and why not in ("SETTLING", "NOMATCH", "VANISHED"):
                 out.append(f"{o} {tag} -- {why}")
     return out
