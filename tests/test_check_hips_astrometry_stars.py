@@ -1,11 +1,12 @@
 """Star selection in check_hips_astrometry, driven through its caller.
 
-spread_out() rebuilt its result as SkyCoord([p.ra ...], [p.dec ...]) -- a list
-of Longitude/Latitude objects, which astropy reads as a unitless sequence and
-rejects.  That raised at star selection, before any tile was read, so the
-script could not measure anything with any catalogue.  The helper test below
-would have caught it; the main() test is what says the failure was on the path
-users actually run.
+A field the reference catalogue does not cover selects no stars, and the empty
+list then reached SkyCoord([p.ra ...], [p.dec ...]) and failed there with
+"Longitude instances require units equivalent to 'rad'" -- astropy has no
+element to infer a unit from.  A non-empty selection was fine, so the defect
+was the missing coverage check rather than the rebuild.  The main() tests
+reproduce the o040 condition, where gaia_virac2_refcat covers none of the
+footprint, instead of hand-making an empty list.
 """
 import os
 
@@ -42,7 +43,8 @@ def test_spread_out_drops_stars_closer_than_the_minimum_separation():
 
 
 def test_spread_out_rejects_an_empty_selection():
-    with pytest.raises(SystemExit, match="no catalogue stars"):
+    # ValueError, not SystemExit: the helper stays usable from other code
+    with pytest.raises(ValueError, match="no catalogue stars"):
         C.spread_out(SkyCoord([] * u.deg, [] * u.deg), 4)
 
 
@@ -82,7 +84,8 @@ def test_main_says_so_when_the_catalog_misses_the_field(tmp_path, monkeypatch):
     """A catalogue covering none of the footprint is the o040 case.
 
     gaia_virac2_refcat covers the Brick and no Treasury field; before this the
-    run died on units and the coverage gap was never reported.
+    empty selection surfaced as a unit error and the coverage gap was never
+    named.  main() converts the helper's ValueError into an exit.
     """
     from astropy.io import fits
     from astropy.wcs import WCS

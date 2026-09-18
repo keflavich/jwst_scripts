@@ -194,14 +194,19 @@ def spread_out(sc, nstars, min_sep_arcsec=8.0):
         if len(picked) >= nstars:
             break
     if not picked:
-        raise SystemExit(
+        # An empty selection used to reach the rebuild below and fail there
+        # with "Longitude instances require units equivalent to 'rad'": with
+        # no elements astropy has nothing to infer a unit from.  That error
+        # named the symptom and hid the cause, which is a reference catalogue
+        # that does not cover the field -- gaia_virac2_refcat spans the Brick
+        # and holds no star within 3' of any GC Treasury field, so a run
+        # against o040 selected nothing and reported a unit problem.
+        raise ValueError(
             "no catalogue stars in the field: the reference catalogue covers "
             "none of this footprint, so nothing can be measured")
-    # Rebuild from plain degrees.  SkyCoord([p.ra ...], [p.dec ...]) passes a
-    # list of Longitude/Latitude objects, which astropy reads as a unitless
-    # sequence and rejects with "Longitude instances require units equivalent
-    # to 'rad'".  That raised before any HiPS was touched, so every run of this
-    # script died at star selection regardless of the catalogue or the tiles.
+    # Rebuild from plain degrees.  A non-empty list of Longitude/Latitude is
+    # accepted (astropy 7.2.0), so this is defensive rather than a fix: it
+    # states the unit instead of relying on one being inferred.
     return SkyCoord([p.ra.deg for p in picked] * u.deg,
                     [p.dec.deg for p in picked] * u.deg)
 
@@ -266,7 +271,10 @@ def main():
     if not args.catalog:
         raise SystemExit("--catalog required")
     sc = stars_from_catalog(args.catalog, args.nstars, center, radius)
-    stars = spread_out(sc, args.nstars)
+    try:
+        stars = spread_out(sc, args.nstars)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
     print(f"# using {len(stars)} catalog stars"
           f"{' within %.1f arcmin of field centre' % radius if radius else ''}")
 
