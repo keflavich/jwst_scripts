@@ -188,18 +188,23 @@ def test_build_rgb_trio_uses_avm_for_saved_png_not_faithful_avm(mosaics, monkeyp
 
 def test_build_rgb_trio_alpha_is_driven_by_r_alone(mosaics, monkeypatch):
     """Real-run bug: a full --which both run on the actual survey mosaics
-    came out 96.7% transparent (residual: 100%). save_rgb's alpha is the OR
+    came out 92.4% transparent (residual: 64.7%). save_rgb's alpha is the OR
     of each channel's OWN blank mask -- correct for build_rgb, where
     _mask_mixed_nan already equalizes F480M/F212N's NaN pattern before the
     call so every channel shares one mask, but wrong here: G/B (reprojected
     NIRCam) are blank almost everywhere R (the target grid) has data, since
     NIRCam barely overlaps the MIRI-parallel footprint. Passing [r, g, b] as
     original_data let G/B's blanks veto R's real coverage nearly everywhere.
-    The fix passes [r, r, r], so save_rgb computes every channel's blank
-    mask from R alone and alpha reflects only R's real coverage -- this
-    function's docstring already promises "red-only", the call now delivers
-    it. Pinned on the array identity/content actually reaching save_rgb, not
-    on rendering a PNG and inspecting pixels.
+
+    The fix passes R alone, shape (ny, nx, 1): save_rgb's per-channel loop is
+    `if i < original_data.shape[2]`, so channels 1 and 2 are skipped and
+    every channel's blank mask comes from R -- a zero-copy view and one
+    scipy.ndimage.label() pass, rather than materializing three copies of R
+    and labelling the identical mask three times (pr-reviewer,
+    session_01MhYq2v5U5mwyzpX8xf4JPR). Alpha now reflects only R's real
+    coverage -- this function's docstring already promises "red-only", the
+    call now delivers it. Pinned on the array identity/content actually
+    reaching save_rgb, not on rendering a PNG and inspecting pixels.
     """
     calls = _patch_save_rgb(monkeypatch)
     monkeypatch.setattr(G, "_build_hips", lambda png, hips_dir: hips_dir)
@@ -208,8 +213,11 @@ def test_build_rgb_trio_alpha_is_driven_by_r_alone(mosaics, monkeypatch):
     G.build_rgb_trio("main", stretch="pct", hips=True)
 
     od = calls["save_rgb"]["original_data"]
-    assert od.shape[2] == 3
-    for i in (0, 1, 2):
+    assert od.shape[2] in (1, 3), (
+        "save_rgb only reads channels < original_data.shape[2]: shape 1 "
+        "(R alone drives every channel's mask) or 3 with every slot equal "
+        "to R both give the same alpha; anything else does not")
+    for i in range(od.shape[2]):
         assert np.array_equal(od[:, :, i], r_before, equal_nan=True), (
             f"channel {i} of original_data must be R itself, not G or B, "
             "or save_rgb's alpha will be vetoed by G/B's largely-disjoint "
