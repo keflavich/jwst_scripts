@@ -183,6 +183,11 @@ SPECIAL = {
         "meerkat-galactic-centre-colour-transparent",
         "MeerKAT 1.28 GHz Galactic Centre colour composite "
         "(transparent background)"),
+    # coadd_hips paints the first input on top, so the two orderings differ
+    # only in which of the two radio maps dominates.
+    "AshFigureWithACES": (
+        "meerkat-mustang2-galactic-centre-composite",
+        "Galactic Centre composite: MeerKAT 1.28 GHz over MUSTANG-2 90 GHz"),
     "AshFigureWithACES_MUSTANGfirst": (
         "mustang2-meerkat-galactic-centre-composite",
         "Galactic Centre composite: MUSTANG-2 90 GHz over MeerKAT 1.28 GHz"),
