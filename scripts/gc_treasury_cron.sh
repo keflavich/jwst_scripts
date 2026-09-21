@@ -36,6 +36,13 @@ OVERLAYS=/orange/adamginsburg/jwst/jwst_scripts/scripts/gc_treasury_overlays.py
 LOGDIR=/blue/adamginsburg/adamginsburg/logs
 STAMP=$(date +%Y%m%dT%H%M%S)
 
+# The HiPS publisher lives in jwst-gc-pipeline and runs under that repo's
+# environment, which is not the one the builder uses.
+PY313=/blue/adamginsburg/adamginsburg/miniconda3/envs/python313/bin/python
+PUBLISH=/blue/adamginsburg/adamginsburg/repos/jwst-gc-pipeline-schedule/scripts/monitoring/publish_hips_layers.py
+PUBLISH_LOCK=$LOGDIR/.hips_publish.lock
+PUBLISH_LOG=$LOGDIR/hips_publish_cron.log
+
 # Mirror the published overlays to the starformation viewer host.  This runs
 # HERE, on the login node, rather than inside the sbatch: the compute nodes are
 # not guaranteed working non-interactive ssh, and cron is.  It pushes whatever
@@ -49,6 +56,29 @@ STAMP=$(date +%Y%m%dT%H%M%S)
 # the order reversed a slow first mirror could make the build skip a tick.
 "$PY" "$OVERLAYS" --push-only \
   || echo "[$STAMP] overlay push to starformation failed"
+
+# Push the coadds the PREVIOUS tick built to the docroot and to
+# starformation, BEFORE the build below is submitted.
+#
+# The publisher shares .auto.lock with the build, and --auto holds that lock
+# for its whole run -- 4 h 45 m on 2026-09-21.  Run on its own hourly schedule
+# the publisher simply loses: 80 "skipping publishing, the build lock is held"
+# against 5 publishes in one log, with the treasury MIRI coadd sitting two days
+# stale on starformation while a fresh one waited in the build tree.  The gap
+# between one build releasing the lock and the next claiming it was 14 minutes,
+# and no publish fire landed in it.
+#
+# Doing it here makes the order explicit rather than a race: the build queued
+# below cannot start until this has finished and released the lock.  The cost
+# is that a tick whose publish is still running when the job starts loses that
+# build, because --auto exits rather than waits when the lock is held.  That is
+# the trade this is here to make -- an already-good mosaic reaching the viewers
+# is worth more than starting the next one a tick earlier.
+#
+# flock -n against the same file the :50 cron uses, so the two cannot overlap.
+/usr/bin/flock -n "$PUBLISH_LOCK" \
+  env HIPS_PUBLISH_LOCK_WAIT_S=300 "$PY313" "$PUBLISH" >> "$PUBLISH_LOG" 2>&1 \
+  || echo "[$STAMP] HiPS publish returned non-zero (or was already running)"
 
 # Catalogue-derived overlays (red-star and red-clump density HiPS, the
 # ultra-red source catalogue).  Submitted first and unconditionally: these
