@@ -438,7 +438,7 @@ def _render(stem, instrument):
 import os
 
 
-def properties_for(output_directory, **extra):
+def properties_for(output_directory, name=None, **extra):
     """`properties=` for reproject_to_hips, or {} for an unrecognised name.
 
     Pass straight through::
@@ -446,11 +446,16 @@ def properties_for(output_directory, **extra):
         reproject_to_hips(png, output_directory=out, ...,
                           properties=properties_for(out))
 
+    `name` overrides the directory's own name, for builds that stage into
+    ``<name>_hips.new`` and rename afterwards: the identity has to be the
+    one the layer is published under, and ``.new`` names are declined.
+
     Returning {} rather than raising keeps a build working when a new layer
     name has not been taught to `describe` yet; the name lands in the tree
     unchanged, and `make_hipslist.py --check` reports it.
     """
-    described = describe(os.path.basename(os.path.normpath(output_directory)))
+    described = describe(name or
+                         os.path.basename(os.path.normpath(output_directory)))
     if described is None:
         return dict(extra)
     did, title = described
@@ -458,14 +463,16 @@ def properties_for(output_directory, **extra):
             "hips_creator": CREATOR, **extra}
 
 
-def stamp_properties(directory, **extra):
+def stamp_properties(directory, name=None, **extra):
     """Rewrite an existing tree's identity keys in place.
 
-    For coadds, and for any tree rebuilt by a tool that cannot pass
-    `properties` through.  Returns True if the file was changed.
+    For coadds, whose properties `coadd_hips` copies from the first input
+    layer, and for any tree rebuilt by a tool that cannot pass `properties`
+    through.  `name` is as in `properties_for`.  Returns True if the file
+    was changed.
     """
     path = os.path.join(directory, "properties")
-    wanted = properties_for(directory, **extra)
+    wanted = properties_for(directory, name=name, **extra)
     if not wanted or not os.path.exists(path):
         return False
 

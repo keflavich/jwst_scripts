@@ -106,3 +106,17 @@ def test_stamp_properties_leaves_a_declined_tree_alone(tmp_path):
     (d / "properties").write_text(before)
     assert stamp_properties(str(d)) is False
     assert (d / "properties").read_text() == before
+
+
+def test_a_staged_build_is_identified_by_its_published_name(tmp_path):
+    """`<name>_hips.new` is a declined name; the published one is what counts."""
+    assert properties_for("jwst_miri_hips.new") == {}
+    p = properties_for("jwst_miri_hips.new", name="jwst_miri_hips")
+    assert p["creator_did"].startswith(f"{AUTHORITY}/")
+    assert ".new" not in p["creator_did"] + p["obs_title"]
+
+    d = tmp_path / "jwst_miri_hips.new"
+    d.mkdir()
+    (d / "properties").write_text("creator_did = ivo://reproject/P/x\n")
+    assert stamp_properties(str(d), name="jwst_miri_hips") is True
+    assert ".new" not in (d / "properties").read_text()
