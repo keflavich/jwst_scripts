@@ -36,9 +36,19 @@ def test_the_target_is_spelled_out():
     assert "G0.253+0.016" in describe("Brick_RGB_444-356-200_hips")[1]
 
 
-def test_a_wide_filter_keeps_its_own_suffix():
-    """F322W2 is not F322W: the width cannot be derived from the number."""
-    assert "F322W2" in describe("Brick_RGB_444-323-200_hips")[1]
+@pytest.mark.parametrize("token, expect", [("140", "F140M"), ("150", "F150W"),
+                                           ("182", "F182M"), ("187", "F187N")])
+def test_the_width_letter_comes_from_the_lookup(token, expect):
+    """The suffix cannot be derived from the number: F150W but F140M."""
+    assert expect in describe(f"Brick_RGB_444-{token}-090_hips")[1]
+
+
+def test_323_is_the_narrowband():
+    """Every published 323 channel is F323N -- arches/, quintuplet/ and the
+    sgra NIRCam list (scripts/sgra_rgb_images.py) all observe it, and no
+    published directory carries F322W2 data."""
+    assert "F323N" in describe("ArchesQuintuplet_RGB_323-average-212_log_hips")[1]
+    assert "F323N" in describe("SgrA_RGB_NIRCam_444-323-212_hips")[1]
 
 
 @pytest.mark.parametrize("name", [

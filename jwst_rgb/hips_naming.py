@@ -30,7 +30,12 @@ NIRCAM = {
     "070": "F070W", "090": "F090W", "115": "F115W", "140": "F140M",
     "150": "F150W", "162": "F162M", "164": "F164N", "182": "F182M",
     "187": "F187N", "200": "F200W", "210": "F210M", "212": "F212N",
-    "250": "F250M", "277": "F277W", "300": "F300M", "323": "F322W2",
+    # 323 is F323N: arches, quintuplet and sgra all observe it, and no
+    # published directory carries an F322W2 channel.  The two fields that do
+    # hold F322W2 data (ngc6397, m4) have no HiPS, and if one is ever built
+    # the directory convention will have to spell the filter -- 323 cannot
+    # stand for both.
+    "250": "F250M", "277": "F277W", "300": "F300M", "323": "F323N",
     "335": "F335M", "356": "F356W", "360": "F360M", "405": "F405N",
     "410": "F410M", "430": "F430M", "444": "F444W", "460": "F460M",
     "466": "F466N", "470": "F470N", "480": "F480M",
