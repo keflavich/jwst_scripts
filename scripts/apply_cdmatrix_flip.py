@@ -23,6 +23,7 @@ from PIL import Image
 from tqdm import tqdm
 from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
+from jwst_rgb.hips_naming import properties_for
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -96,6 +97,7 @@ def main():
                 reproject_to_hips(png, coord_system_out='galactic', level=None,
                                   reproject_function=reproject_interp,
                                   output_directory=hd, threads=8,
+                                  properties=properties_for(hd),
                                   progress_bar=tqdm)
             n += 1
         except (ValueError, OSError) as e:

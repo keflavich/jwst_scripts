@@ -46,6 +46,8 @@ import uuid
 
 from PIL import Image
 
+from jwst_rgb.hips_naming import CREATOR, describe
+
 MANIFEST = "coadd_manifest.json"
 
 
@@ -197,7 +199,14 @@ COADD_DID_NAMESPACE = uuid.UUID("6f0b6f0e-2f6a-5c8a-9c1e-0b2a7d4e5f31")
 
 
 def coadd_did(name):
-    """Stable ivo:// identifier for a coadd, derived from its directory name."""
+    """Stable ivo:// identifier for a coadd, derived from its directory name.
+
+    The uuid5 fallback for names `describe` does not recognise: unique and
+    reproducible, but carrying no provenance, so it is the second choice.
+    """
+    described = describe(name)
+    if described is not None:
+        return described[0]
     return f"ivo://reproject/P/{uuid.uuid5(COADD_DID_NAMESPACE, name)}"
 
 
@@ -210,6 +219,11 @@ def stamp_identity(coadd_dir, name=None):
     staging name would belong to a directory that never exists.  Both fields
     come from this one name, so the title and the id cannot drift apart.
 
+    The title is a description rather than the directory name: the HiPS
+    network lists datasets by obs_title, and "jwst_gc_treasury_vminmax_hips"
+    tells a user nothing about what they would be looking at.  CDS asked for
+    both of these when we submitted the HiPS list (T. Boch, Sept 2026).
+
     Returns the (obs_title, creator_did) written.  Call after coadd_hips and
     before publishing: a coadd sharing its first layer's creator_did is, to a
     HiPS client, the same dataset as that single field.
@@ -218,8 +232,11 @@ def stamp_identity(coadd_dir, name=None):
     if not os.path.exists(fn):
         return None
     name = name or os.path.basename(os.path.normpath(coadd_dir))
-    did = coadd_did(name)
-    want = {"obs_title": name, "creator_did": did}
+    described = describe(name)
+    did = described[0] if described else coadd_did(name)
+    title = described[1] if described else name
+    want = {"obs_title": title, "creator_did": did,
+            "hips_creator": CREATOR}
     lines, seen = [], set()
     for ln in open(fn).read().rstrip("\n").split("\n"):
         key = ln.split("=", 1)[0].strip() if "=" in ln else None
@@ -232,7 +249,7 @@ def stamp_identity(coadd_dir, name=None):
         if key not in seen:
             lines.append(f"{key:20s} = {want[key]}")
     open(fn, "w").write("\n".join(lines) + "\n")
-    return name, did
+    return title, did
 
 
 def hardlink_tree(src, dst):

@@ -39,6 +39,7 @@ import shutil
 import sys
 
 import numpy as np
+from jwst_rgb.hips_naming import properties_for
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -387,6 +388,7 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct"):   # DEFAULT_STRETC
         reproject_to_hips(png, coord_system_out="galactic", level=None,
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
+                          properties=properties_for(hips_dir),
                           progress_bar=tqdm)
         # the CDS landing page reproject writes leaves Aladin Lite's settings
         # control off, and the reticle toggle lives inside it
@@ -963,6 +965,7 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
         reproject_to_hips(png, coord_system_out="galactic", level=None,
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
+                          properties=properties_for(hips_dir),
                           progress_bar=tqdm)
         # the CDS landing page reproject writes leaves Aladin Lite's settings
         # control off, and the reticle toggle lives inside it

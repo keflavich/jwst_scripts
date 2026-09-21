@@ -32,6 +32,7 @@ from reproject.hips import reproject_to_hips
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from jwst_rgb.save_rgb import _avm_matching_pixels  # noqa: E402
+from jwst_rgb.hips_naming import properties_for
 
 
 def load_tgt_avm(tgt_header_path):
@@ -56,7 +57,9 @@ def reembed_one(png, raw_avm, transpose, make_hips):
             shutil.rmtree(hips_dir)
         reproject_to_hips(png, level=None, reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=8,
-                          coord_system_out='galactic', progress_bar=tqdm)
+                          coord_system_out='galactic',
+                          properties=properties_for(hips_dir),
+                          progress_bar=tqdm)
 
 
 def main():
