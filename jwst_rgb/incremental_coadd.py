@@ -82,6 +82,33 @@ def save_manifest(coadd_dir, layers, tile_format="png"):
     return data
 
 
+def order_layers(coadd_dir, layers):
+    """Put `layers` in the order this coadd already paints them, new ones last.
+
+    Paint order used to be whatever `sorted()` gave, which for the treasury is
+    obsid order.  A mosaic fills in by tile number, so a newly built obsid
+    usually sorts into the MIDDLE of the existing set -- and `plan_coadd`
+    requires the known layers to be a prefix of the list, because `merge_layer`
+    can only add a layer at the bottom of the stack.  Every tick therefore read
+    "existing layers reordered or inserted before the end" and did a full
+    rebuild: four 53-layer NIRCam coadds, ~4 h, once an hour.
+
+    Taking the order from the manifest instead makes arrival order the paint
+    order, so a new layer is always an append.  It also keeps the two paths
+    agreeing: a later `--full` rebuild now paints in the same order the
+    appended coadd did, which `sorted()` could not promise once anything had
+    been appended.
+
+    A coadd with no manifest (or a layer the manifest has never seen) falls
+    back to the name sort, so the first run after this lands is unchanged.
+    """
+    known = (load_manifest(coadd_dir) or {}).get("order", [])
+    rank = {name: i for i, name in enumerate(known)}
+    return sorted(layers, key=lambda d: (rank.get(os.path.basename(d),
+                                                  len(known)),
+                                         os.path.basename(d)))
+
+
 def plan_coadd(coadd_dir, layers, tile_format="png"):
     """Decide between appending and rebuilding.
 
