@@ -1590,9 +1590,15 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
         out = f"{OUTDIR}/{coadd_name_for(stretch)}"
 
     from jwst_rgb.incremental_coadd import (
-        hardlink_tree, merge_layer, plan_coadd, save_manifest,
+        hardlink_tree, merge_layer, order_layers, plan_coadd, save_manifest,
         stamp_identity, stamp_release_date)
     from jwst_rgb.landing_page import patch_hips_dir
+
+    # Paint in the order the existing coadd already used, with layers it has
+    # never seen at the end.  The glob above is obsid-sorted, and a new tile
+    # almost always sorts into the middle of that, which plan_coadd has to call
+    # an insertion and rebuild from scratch.  See order_layers.
+    layers = order_layers(out, layers)
 
     action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
         else plan_coadd(out, layers)

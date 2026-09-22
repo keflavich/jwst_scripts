@@ -14,7 +14,7 @@ from reproject.hips import coadd_hips                        # noqa: E402
 
 from jwst_rgb.incremental_coadd import (                     # noqa: E402
     hardlink_tree, layer_fingerprint, load_manifest, merge_layer,
-    plan_coadd, save_manifest,
+    order_layers, plan_coadd, save_manifest,
 )
 
 PROPS = """\
@@ -297,3 +297,92 @@ def test_every_bad_layer_is_named_not_just_the_first(tmp_path):
               _layer(tmp_path, "b_hips", properties=False),
               _layer(tmp_path, "c_hips", norder3=False)]
     assert len(G.unreadable_layers(layers)) == 2
+
+
+def test_a_new_layer_that_sorts_first_is_still_an_append(tmp_path, layers):
+    """The defect this fixes: a new obsid lands in the middle of the name sort.
+
+    The treasury mosaic fills in by tile number, so the name sort puts a newly
+    built layer before ones already in the coadd.  Without order_layers that
+    reads as an insertion and costs a full rebuild of every layer.
+    """
+    _, (a, b, c) = layers
+    out = str(tmp_path / "out_new_first")
+    coadd_hips([b, c], out)
+    save_manifest(out, [b, c])
+
+    assert plan_coadd(out, sorted([a, b, c]))[0] == "rebuild"
+
+    ordered = order_layers(out, sorted([a, b, c]))
+    action, new, _ = plan_coadd(out, ordered)
+    assert action == "append"
+    assert [os.path.basename(d) for d in new] == ["layerA"]
+
+
+def test_ordered_append_matches_a_rebuild_in_the_same_order(tmp_path, layers):
+    """Ordering only helps if the cheap path still equals the expensive one.
+
+    The rebuild it is compared against paints in the SAME manifest order, which
+    is what cmd_coadd feeds to coadd_hips once order_layers is in front of it.
+    """
+    _, (a, b, c) = layers
+    out = str(tmp_path / "out_equiv")
+    coadd_hips([b, c], out)
+    save_manifest(out, [b, c])
+
+    ordered = order_layers(out, sorted([a, b, c]))
+    assert [os.path.basename(d) for d in ordered] == ["layerB", "layerC", "layerA"]
+
+    inc = str(tmp_path / "inc_equiv")
+    hardlink_tree(out, inc)
+    merge_layer(a, inc)
+
+    full = str(tmp_path / "full_equiv")
+    coadd_hips(ordered, full)
+    assert_same_tiles(full, inc)
+
+
+def test_order_is_stable_once_a_layer_is_known(tmp_path, layers):
+    """A rebuild after an append must not re-sort what the append laid down."""
+    _, (a, b, c) = layers
+    out = str(tmp_path / "out_stable")
+    coadd_hips([b, c], out)
+    save_manifest(out, [b, c, a])          # a was appended last
+    assert [os.path.basename(d)
+            for d in order_layers(out, sorted([a, b, c]))] == \
+        ["layerB", "layerC", "layerA"]
+
+
+def test_without_a_manifest_the_order_is_the_name_sort(tmp_path, layers):
+    """First run after this lands, and any hand-built coadd, are unchanged."""
+    _, (a, b, c) = layers
+    out = str(tmp_path / "out_nomanifest")
+    assert [os.path.basename(d)
+            for d in order_layers(out, [c, a, b])] == \
+        ["layerA", "layerB", "layerC"]
+
+
+def test_a_layer_the_manifest_never_saw_goes_last(tmp_path, layers):
+    """Unknown layers sort among themselves but always after the known ones."""
+    _, (a, b, c) = layers
+    out = str(tmp_path / "out_unknown")
+    os.makedirs(out)
+    save_manifest(out, [c])                # only C is known
+    assert [os.path.basename(d)
+            for d in order_layers(out, [a, b, c])] == \
+        ["layerC", "layerA", "layerB"]
+
+
+def test_the_builder_orders_its_layers_before_planning():
+    """order_layers only helps if cmd_coadd actually calls it.
+
+    The function and its unit tests can be perfect while the builder still
+    hands plan_coadd an obsid-sorted list, which is the state this whole change
+    exists to leave.  gc_treasury_rgb_images.py is a script with import-time
+    cost, so this reads the source rather than importing it.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = open(os.path.join(here, "scripts",
+                            "gc_treasury_rgb_images.py")).read()
+    assert "order_layers(out, layers)" in src
+    assert src.index("order_layers(out, layers)") < src.index("plan_coadd(out, layers)")

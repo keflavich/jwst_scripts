@@ -124,6 +124,37 @@ def test_the_cron_script_stops_when_sbatch_is_missing():
     assert s.index("export PATH=/opt/slurm/bin") < s.index("sbatch --job-name")
 
 
+def test_the_cron_script_publishes_before_it_submits_a_build():
+    """The publisher shares .auto.lock with --auto, which holds it for hours.
+
+    On its own hourly schedule the publisher loses that race: one log held 80
+    "the build lock is held, skipping" against 5 publishes, and the treasury
+    MIRI coadd sat two days stale on starformation while a fresh one waited in
+    the build tree.  The window between one build releasing the lock and the
+    next claiming it was 14 minutes, and no publish fire landed in it.
+
+    Running the publish here, before the sbatch, makes the order a fact rather
+    than a race.  Moving it after the submit restores the race silently.
+    """
+    s = open(CRON).read()
+    assert "publish_hips_layers.py" in s, "the cron script does not publish"
+    assert s.index('"$PY313" "$PUBLISH"') < s.index("sbatch --job-name=gctreasury_auto")
+
+
+def test_the_cron_publish_cannot_overlap_the_standalone_one():
+    """The :50 crontab entry stays as a backstop, so both can fire at once.
+
+    Two publishers running together would walk each other's staged trees.
+    They take the same flock, so whichever is second exits immediately.
+    """
+    s = open(CRON).read()
+    i = s.index('/usr/bin/flock -n "$PUBLISH_LOCK"')
+    assert '"$PY313" "$PUBLISH"' in s[i:i + 300], \
+        "the publish does not run under the flock"
+    assert "PUBLISH_LOCK=$LOGDIR/.hips_publish.lock" in s, \
+        "not the same lock file the :50 crontab entry takes"
+
+
 # --- the call sites, not just the helpers ----------------------------------
 #
 # Each of the three fixes in this branch could be deleted with the suite green,
