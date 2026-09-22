@@ -7,6 +7,7 @@ import os
 import shutil
 from PIL import Image
 from tqdm import tqdm
+from jwst_rgb.hips_naming import properties_for
 
 
 def faithful_avm(header_or_wcs, shape=None):
@@ -352,12 +353,14 @@ def save_rgb(img, filename, avm=None, flip=-1, alma_data=None, alma_level=None,
         if overwrite and os.path.exists(filename.replace('.png', '_hips')):
             shutil.rmtree(filename.replace('.png', '_hips'))
         print("Reprojecting to HiPS...")
+        hips_dir = filename.replace('.png', '_hips')
         reproject_to_hips(filename,
             level=None,
             reproject_function=reproject_interp,
-            output_directory=filename.replace('.png', '_hips'),
+            output_directory=hips_dir,
             threads=8,
             coord_system_out='galactic',
+            properties=properties_for(hips_dir),
             progress_bar=tqdm)
 
     if verbose:

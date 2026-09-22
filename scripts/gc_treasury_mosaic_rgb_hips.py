@@ -105,6 +105,7 @@ import shutil
 import sys
 
 import numpy as np
+from jwst_rgb.hips_naming import properties_for
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -402,6 +403,7 @@ def _build_hips(png, hips_dir):
     reproject_to_hips(png, coord_system_out="galactic", level=None,
                       reproject_function=reproject_interp,
                       output_directory=hips_dir, threads=16,
+                      properties=properties_for(hips_dir),
                       progress_bar=tqdm)
     patch_hips_dir(hips_dir)
     if not os.path.isdir(os.path.join(hips_dir, "Norder3")):

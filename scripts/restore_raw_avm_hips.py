@@ -40,6 +40,7 @@ from PIL import Image
 from tqdm import tqdm
 from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
+from jwst_rgb.hips_naming import properties_for
 
 
 def load_tgt_avm(tgt_header_path):
@@ -71,7 +72,9 @@ def restore_one(png, raw_avm, make_hips, rot180=False):
             shutil.rmtree(hips_dir)
         reproject_to_hips(png, level=None, reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=8,
-                          coord_system_out='galactic', progress_bar=tqdm)
+                          coord_system_out='galactic',
+                          properties=properties_for(hips_dir),
+                          progress_bar=tqdm)
 
 
 def main():

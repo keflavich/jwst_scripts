@@ -63,6 +63,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
 from scipy.ndimage import gaussian_filter
+from jwst_rgb.hips_naming import properties_for
 
 CAT = "/orange/adamginsburg/jwst/gc-treasury/catalogs"
 OUT = "/orange/adamginsburg/jwst/gc-treasury/pngs"
@@ -349,15 +350,15 @@ def build_hips(arr, w, name, level=None, threads=8):
     dest = f"{OUT}/{name}"
     stage = dest + ".new"
     shutil.rmtree(stage, ignore_errors=True)
+    # The identity is built from `name`, not from the staging directory: the
+    # default obs_title is the output directory's basename, which here would
+    # be "<name>.new" -- a directory that stops existing at the rename below.
     reproject_to_hips((arr, w), coord_system_out="galactic", level=level,
                       reproject_function=reproject_interp,
-                      output_directory=stage, threads=threads, generate_moc=True)
+                      output_directory=stage, threads=threads,
+                      properties=properties_for(name), generate_moc=True)
     if not os.path.isdir(f"{stage}/Norder3"):
         raise RuntimeError(f"{name}: no Norder3; refusing to publish")
-    p = f"{stage}/properties"
-    txt = open(p).read().replace(f"obs_title            = {name}.new",
-                                 f"obs_title            = {name}")
-    open(p, "w").write(txt)
     old = dest + ".old"
     shutil.rmtree(old, ignore_errors=True)
     if os.path.isdir(dest):

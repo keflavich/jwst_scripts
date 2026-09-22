@@ -25,6 +25,7 @@ from PIL import Image
 from tqdm import tqdm
 from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
+from jwst_rgb.hips_naming import properties_for
 
 Image.MAX_IMAGE_PIXELS = None
 WEB = "/orange/adamginsburg/web/public/avm_images"
@@ -37,9 +38,12 @@ def publish(png, web=WEB, name=None, threads=8):
     if os.path.isdir(stage):
         shutil.rmtree(stage)
     print(f"building {name} -> {stage}", flush=True)
+    # The identity comes from the published name, not the staging directory:
+    # `<name>_hips.new` exists only for the length of the build.
     reproject_to_hips(png, coord_system_out="galactic", level=None,
                       reproject_function=reproject_interp,
                       output_directory=stage, threads=threads,
+                      properties=properties_for(f"{name}_hips"),
                       progress_bar=tqdm)
     if not os.path.isdir(os.path.join(stage, "Norder3")):
         raise RuntimeError(f"{name}: build produced no Norder3, refusing to publish")

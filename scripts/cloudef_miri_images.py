@@ -60,6 +60,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gc_treasury_rgb_images import _is_exposure_level  # noqa: E402
+from jwst_rgb.hips_naming import properties_for, stamp_properties
 
 BASE = {
     "cloudef": "/orange/adamginsburg/jwst/cloudef",
@@ -233,6 +234,7 @@ def build_obs(field, filt, obs, src, hips=True):
         reproject_to_hips(png, coord_system_out="galactic", level=None,
                           reproject_function=reproject_interp,
                           output_directory=hips_dir, threads=16,
+                          properties=properties_for(hips_dir),
                           progress_bar=tqdm)
         patch_hips_dir(hips_dir)
         if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
@@ -256,6 +258,9 @@ def build_field_coadd(field, filt, obs_list):
         shutil.rmtree(out)
     print(f"coadding {len(layers)} layer(s) -> {out}", flush=True)
     coadd_hips(layers, out)
+    # coadd_hips copies the first layer's properties verbatim, so without this
+    # the coadd claims to be that single field.
+    stamp_properties(out)
     patch_hips_dir(out)
     print(f"  wrote {out}", flush=True)
     return out
