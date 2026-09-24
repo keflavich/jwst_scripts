@@ -43,6 +43,30 @@ PUBLISH=/blue/adamginsburg/adamginsburg/repos/jwst-gc-pipeline-schedule/scripts/
 PUBLISH_LOCK=$LOGDIR/.hips_publish.lock
 PUBLISH_LOG=$LOGDIR/hips_publish_cron.log
 
+# One PENDING copy of each job is enough.  Both jobs are idempotent and lock
+# themselves, so a second queued copy can only start, find the lock held or
+# nothing new, and exit.  When the queue stalls, though, a submission every
+# hour piles them up: 22 gctreasury_auto and 20 gctreasury_overlays were
+# pending at once on 2026-09-24, while the burst QOS ran nothing for ~12 h.
+# A RUNNING copy does not count -- the next one still has to be queued behind
+# it to pick up whatever that run did not see.
+#
+# If squeue itself fails, submit anyway: a spare queued job is harmless, and a
+# tick that silently submits nothing is the failure the --list check below
+# exists to prevent.
+already_pending() {
+    local name=$1 ids
+    if ! ids=$(squeue -h -u "$(id -un)" -t PENDING -n "$name" -o %i 2>&1); then
+        echo "[$STAMP] squeue failed ($ids); submitting $name anyway" >&2
+        return 1
+    fi
+    if [ -n "$ids" ]; then
+        echo "[$STAMP] $name already pending ($(echo $ids | tr ' ' ',')); not submitting another"
+        return 0
+    fi
+    return 1
+}
+
 # Mirror the published overlays to the starformation viewer host.  This runs
 # HERE, on the login node, rather than inside the sbatch: the compute nodes are
 # not guaranteed working non-interactive ssh, and cron is.  It pushes whatever
@@ -81,17 +105,24 @@ PUBLISH_LOG=$LOGDIR/hips_publish_cron.log
   || echo "[$STAMP] HiPS publish returned non-zero (or was already running)"
 
 # Catalogue-derived overlays (red-star and red-clump density HiPS, the
-# ultra-red source catalogue).  Submitted first and unconditionally: these
-# track the vetted daophot catalogues, not the i2d mosaics, so the imaging
-# gate below says nothing about whether they are stale.  --auto fingerprints
+# ultra-red source catalogue).  Submitted first, whenever no copy is already
+# pending, and without the imaging gate below: these track the vetted daophot
+# catalogues, not the i2d mosaics, so that gate says nothing about whether
+# they are stale.  --auto fingerprints
 # the input catalogues and exits without a rebuild when nothing changed, and
 # it takes its own lock, so an extra tick is cheap.
+already_pending gctreasury_overlays || \
 sbatch --job-name=gctreasury_overlays \
   --account=astronomy-dept --qos=astronomy-dept-b \
   --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=64gb --time=4:00:00 \
   --output="$LOGDIR/gctreasury_overlays_%j.log" \
   --wrap "$PY $OVERLAYS --auto --publish --threads 8"
 
+
+# Checked before --list, which is the slow part of a tick.
+if already_pending gctreasury_auto; then
+  exit 0
+fi
 
 # Skip the sbatch entirely when there is nothing to do, so the queue does not
 # collect no-op jobs once the survey is fully built.
