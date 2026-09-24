@@ -143,6 +143,11 @@ def test_abmag_without_pixscale_fails_by_name():
 # `full = True` passes the whole suite, which is how the bug shipped.
 
 
+BUILDERS = ("build_red_stars", "build_rc", "build_ultrared",
+            "build_star_density", "build_colour", "build_star_image",
+            "build_star_catalog")
+
+
 def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
     """Drive main() with the builders stubbed out, so only the bookkeeping runs."""
     import numpy as np
@@ -151,18 +156,21 @@ def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
     monkeypatch.setattr(overlays, "LOCK", str(tmp_path / "lock"))
     monkeypatch.setattr(overlays, "OUT", str(tmp_path))
     called = []
-    for name in ("build_red_stars", "build_rc", "build_ultrared"):
+    for name in BUILDERS:
         monkeypatch.setattr(overlays, name,
                             lambda *a, _n=name, **k: called.append(_n))
     monkeypatch.setattr(overlays, "publish", lambda *a, **k: None)
     monkeypatch.setattr(overlays, "push_remote", lambda *a, **k: None)
     monkeypatch.setattr(overlays, "report_ridge", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "report_limits", lambda *a, **k: None)
     fake = np.zeros(3)
+    M = {k: fake for k in ("col", "m480", "m212", "ra", "dec")}
+    M["who"] = np.array(["o127"] * 3)
+    M["sat"] = np.zeros(3, bool)
+    F = {k: M[k] for k in ("m212", "ra", "dec", "who", "sat")}
     monkeypatch.setattr(overlays, "load_matched",
                         lambda pairs, force=False: (
-                            fake, fake, fake, fake,
-                            np.array(["o127"] * 3),
-                            overlays.fingerprint(pairs)))
+                            M, F, overlays.fingerprint(pairs)))
     monkeypatch.setattr(sys, "argv", ["gc_treasury_overlays.py"] + argv)
     rc = overlays.main()
     return rc, stamp, called
@@ -187,7 +195,7 @@ def test_full_build_does_claim_the_input_set_as_built(catdir, tmp_path, monkeypa
     touch(catdir, cat("o127", "f480m", 1))
     rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, [])
     assert rc == 0
-    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"]
+    assert sorted(called) == sorted(BUILDERS)
     written = json.loads(stamp.read_text())
     assert written["built"] == overlays.fingerprint(overlays.latest_pairs())
 
@@ -212,5 +220,5 @@ def test_auto_rebuilds_after_a_partial_build(catdir, tmp_path, monkeypatch):
     _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
     rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--auto"])
     assert rc == 0
-    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"], (
+    assert sorted(called) == sorted(BUILDERS), (
         "--auto treated a partial build as complete")
