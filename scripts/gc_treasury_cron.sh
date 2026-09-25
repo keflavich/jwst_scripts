@@ -129,7 +129,24 @@ overlays_running() {
     fi
     return 1
 }
-if ! already_pending gctreasury_overlays && ! overlays_running; then
+# A build that fails every time writes no stamp, so --check keeps saying
+# "due" and each tick would queue another 128 GB job behind the failure.
+# Two failed runs (FAILED/OOM/TIMEOUT/NODE_FAIL) in the last 24 h stop
+# submission until someone looks; the log line says why.
+overlays_failing() {
+    local n
+    n=$(sacct -n -X -u "$(id -un)" --name=gctreasury_overlays \
+          -S "$(date -d '24 hours ago' +%Y-%m-%dT%H:%M)" \
+          -s FAILED,OUT_OF_MEMORY,TIMEOUT,NODE_FAIL -o JobID 2>/dev/null \
+          | grep -c . || true)
+    if [ "${n:-0}" -ge 2 ]; then
+        echo "[$STAMP] gctreasury_overlays failed $n times in 24 h; not submitting (see $LOGDIR/gctreasury_overlays_*.log)"
+        return 0
+    fi
+    return 1
+}
+if ! already_pending gctreasury_overlays && ! overlays_running \
+   && ! overlays_failing; then
   OVERLAY_RC=0
   OVERLAY_CHECK=$("$PY" "$OVERLAYS" --check 2>&1) || OVERLAY_RC=$?
   case $OVERLAY_RC in

@@ -264,3 +264,14 @@ def test_check_is_distinct_from_a_broken_run(catdir, tmp_path, monkeypatch):
     either "up to date" (0) or "due" (3)."""
     rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
     assert rc not in (0, overlays.REBUILD_DUE) and called == []
+
+
+def test_check_is_due_after_a_partial_build(catdir, tmp_path, monkeypatch):
+    """--check's twin of test_auto_rebuilds_after_a_partial_build: a partial
+    build writes the `match` key but not `built`, and --check must read
+    `built`, or the cron never submits the full rebuild."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE and called == []
