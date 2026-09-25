@@ -55,7 +55,7 @@ def test_the_identity_is_the_described_one(coadd):
     assert (did, title) == describe("jwst_gc_treasury_hips")
     assert did.startswith("ivo://UFL/P/")
     assert title != "jwst_gc_treasury_hips"
-    assert "Galactic Centre" in title
+    assert "Galactic Center" in title
     assert props(coadd)["hips_creator"] == CREATOR
 
 

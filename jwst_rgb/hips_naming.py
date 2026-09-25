@@ -89,52 +89,52 @@ SPECIAL = {
     "jwst_gc_treasury_hips": (
         "jwst-gc-treasury-nircam-mosaic",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
-        "Galactic Centre"),
+        "Galactic Center"),
     "jwst_gc_treasury_log_hips": (
         "jwst-gc-treasury-nircam-mosaic-log",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
-        "Galactic Centre (log stretch)"),
+        "Galactic Center (log stretch)"),
     "jwst_gc_treasury_vminmax_hips": (
         "jwst-gc-treasury-nircam-mosaic-minmax",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
-        "Galactic Centre (min-max stretch)"),
+        "Galactic Center (min-max stretch)"),
     "jwst_gc_treasury_miri_hips": (
         "jwst-gc-treasury-miri-mosaic",
-        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Centre"),
+        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Center"),
     "jwst_gc_treasury_miri_bgmatch_hips": (
         "jwst-gc-treasury-miri-mosaic-bgmatched",
-        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Centre "
+        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Center "
         "(background-matched)"),
     "gctreasury_mosaic_RGB_770-480-212_hips": (
         "jwst-gc-treasury-rgb-f770w-f480m-f212n",
-        "JWST GC Treasury: Galactic Centre RGB, MIRI F770W / NIRCam F480M / "
+        "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
         "NIRCam F212N"),
     # Star-subtracted flavours: built from the DAOPHOT residual mosaics.
     "jwst_gc_treasury_residual_vminmax_hips": (
         "jwst-gc-treasury-nircam-mosaic-residual-minmax",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
-        "Galactic Centre, stars subtracted (min-max stretch)"),
+        "Galactic Center, stars subtracted (min-max stretch)"),
     "jwst_gc_treasury_residual_log_hips": (
         "jwst-gc-treasury-nircam-mosaic-residual-log",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
-        "Galactic Centre, stars subtracted (log stretch)"),
+        "Galactic Center, stars subtracted (log stretch)"),
     "jwst_gc_treasury_miri_residual_hips": (
         "jwst-gc-treasury-miri-mosaic-residual",
-        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Centre, "
+        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Center, "
         "stars subtracted"),
     "gctreasury_mosaic_RGB_770-480-212_residual_hips": (
         "jwst-gc-treasury-rgb-f770w-f480m-f212n-residual",
-        "JWST GC Treasury: Galactic Centre RGB, MIRI F770W / NIRCam F480M / "
+        "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
         "NIRCam F212N, stars subtracted (F770W covers part of the field)"),
     "jwst_nir_hips": (
         "jwst-cmz-nircam-niriss-coadd",
-        "JWST Central Molecular Zone: NIRCam and NIRISS colour coadd"),
+        "JWST Central Molecular Zone: NIRCam and NIRISS color coadd"),
     "jwst_cmz_hips": (
         "jwst-cmz-nircam-niriss-coadd",
-        "JWST Central Molecular Zone: NIRCam and NIRISS colour coadd"),
+        "JWST Central Molecular Zone: NIRCam and NIRISS color coadd"),
     "jwst_miri_hips": (
         "jwst-cmz-miri-coadd",
-        "JWST Central Molecular Zone: MIRI colour coadd"),
+        "JWST Central Molecular Zone: MIRI color coadd"),
     "jwst-red-stars-hips": (
         "jwst-gc-ultrared-star-overlay",
         "JWST Galactic Centre: ultra-red star catalogue overlay"),
@@ -161,19 +161,19 @@ SPECIAL = {
         "ALMA W51 North: self-calibrated continuum (transparent background)"),
     "SgrB2_DS_jwst_rgb_hips": (
         "sgrb2-ds-jwst-colour",
-        "Sgr B2 Deep South: JWST NIRCam colour composite"),
+        "Sgr B2 Deep South: JWST NIRCam color composite"),
     "SgrB2_DS_alma_inferno_hips": (
         "sgrb2-ds-alma-continuum",
         "Sgr B2 Deep South: ALMA 3 mm continuum"),
     "NGC6334_JWST_colorcomposite_transparent_hips": (
         "ngc6334-jwst-colour-composite-transparent",
-        "JWST/NIRCam NGC 6334: colour composite (transparent background)"),
+        "JWST/NIRCam NGC 6334: color composite (transparent background)"),
     "SgrB2_MIRI_pressrelease_hips": (
         "sgrb2-miri-press-release",
-        "JWST/MIRI Sgr B2: press-release colour rendering"),
+        "JWST/MIRI Sgr B2: press-release color rendering"),
     "SgrB2_NIRCam_pressrelease_hips": (
         "sgrb2-nircam-press-release",
-        "JWST/NIRCam Sgr B2: press-release colour rendering"),
+        "JWST/NIRCam Sgr B2: press-release color rendering"),
     "jwst-rc-blue-hips": (
         "jwst-gc-blue-cluster-overlay",
         "JWST Galactic Centre: blue-cluster candidate catalogue overlay"),
@@ -219,22 +219,22 @@ SPECIAL = {
         "continuum (transparent background)"),
     "rgb_final_uncropped_hips": (
         "meerkat-galactic-centre-colour",
-        "MeerKAT 1.28 GHz Galactic Centre colour composite"),
+        "MeerKAT 1.28 GHz Galactic Center color composite"),
     "rgb_final_uncropped_noalpha_hips": (
         "meerkat-galactic-centre-colour-opaque",
-        "MeerKAT 1.28 GHz Galactic Centre colour composite (opaque)"),
+        "MeerKAT 1.28 GHz Galactic Center color composite (opaque)"),
     "rgb_final_uncropped_transparent_hips": (
         "meerkat-galactic-centre-colour-transparent",
-        "MeerKAT 1.28 GHz Galactic Centre colour composite "
+        "MeerKAT 1.28 GHz Galactic Center color composite "
         "(transparent background)"),
     # coadd_hips paints the first input on top, so the two orderings differ
     # only in which of the two radio maps dominates.
     "AshFigureWithACES": (
         "meerkat-mustang2-galactic-centre-composite",
-        "Galactic Centre composite: MeerKAT 1.28 GHz over MUSTANG-2 90 GHz"),
+        "Galactic Center composite: MeerKAT 1.28 GHz over MUSTANG-2 90 GHz"),
     "AshFigureWithACES_MUSTANGfirst": (
         "mustang2-meerkat-galactic-centre-composite",
-        "Galactic Centre composite: MUSTANG-2 90 GHz over MeerKAT 1.28 GHz"),
+        "Galactic Center composite: MUSTANG-2 90 GHz over MeerKAT 1.28 GHz"),
     "Trapezium_GEMS_mosaic_redblueorange_normed_large_contrast_bright_photoshop_hips": (
         "gemini-gems-orion-trapezium",
         "Orion Trapezium: Gemini South GeMS/GSAOI near-infrared mosaic"),
@@ -388,7 +388,7 @@ def describe(name):
     m = re.match(r"(GCTreasury|GC2211)_o(\d+)_(.*)", stem)
     if m:
         prog = ("JWST GC Treasury" if m.group(1) == "GCTreasury"
-                else "JWST GC programme 2211")
+                else "JWST GC program 2211")
         rest, _, extra, _ = _render(m.group(3), None)
         suffix = f" ({', '.join(extra)})" if extra else ""
         return (f"{AUTHORITY}/{slugify(name)}",
