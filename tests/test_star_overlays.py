@@ -374,3 +374,33 @@ def test_match_catalogs_guards_the_f480m_side_too(tmp_path, monkeypatch):
         SkyCoord(X[0] * u.deg, X[1] * u.deg)).arcsec
     assert not (sep < 0.05).any()
     assert len(M["ra"]) == 5 and not M["sat"].any()
+
+
+def test_every_layer_carries_a_one_line_description():
+    for name in overlays.LAYERS:
+        desc = overlays.LAYER_DESCRIPTIONS[name]
+        assert "\n" not in desc and desc.strip() == desc
+        assert overlays.layer_properties(name)["obs_description"] == desc
+    assert set(overlays.LAYER_DESCRIPTIONS) == set(overlays.LAYERS)
+    for name in overlays.LAYERS:
+        if "density" in name or name.startswith(("jwst-red-", "jwst-rc-")):
+            assert "stars/arcmin^2" in overlays.LAYER_DESCRIPTIONS[name]
+
+
+def test_density_layer_titles_match_their_selection():
+    from jwst_rgb.hips_naming import properties_for
+    title = {n: properties_for(n)["obs_title"] for n in
+             ("jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips")}
+    assert f"> {overlays.RED_COLOUR:g}" in title["jwst-red-stars-hips"]
+    assert f"< {overlays.RED_MAGLIMIT:g}" in title["jwst-red-stars-hips"]
+    for n in ("jwst-rc-blue-hips", "jwst-rc-red-hips"):
+        assert "red-clump" in title[n] and f"{overlays.SPLIT:g}" in title[n]
+        assert "cluster" not in title[n]
+
+
+def test_red_clump_descriptions_state_every_rc_masks_cut():
+    for n in ("jwst-rc-blue-hips", "jwst-rc-red-hips"):
+        d = overlays.LAYER_DESCRIPTIONS[n]
+        for v in (*overlays.RC_M480_RANGE, *overlays.RC_COLOUR_RANGE,
+                  overlays.SLOPE, overlays.WRC, overlays.HW, overlays.SPLIT):
+            assert f"{v:g}" in d, (n, v)

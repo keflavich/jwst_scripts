@@ -137,10 +137,12 @@ SPECIAL = {
         "JWST Central Molecular Zone: MIRI colour coadd"),
     "jwst-red-stars-hips": (
         "jwst-gc-ultrared-star-overlay",
-        "JWST Galactic Centre: ultra-red star catalogue overlay"),
+        "JWST GC Treasury: surface density of reddened stars "
+        "(F212N-F480M > 0, F480M < 18)"),
     "jwst-rc-red-hips": (
         "jwst-gc-red-cluster-overlay",
-        "JWST Galactic Centre: red-cluster candidate catalogue overlay"),
+        "JWST GC Treasury: red-clump surface density, redder half "
+        "(F212N-F480M >= -0.325)"),
     "cloudcJWST_merged_R-F466N_B-F405N_rotated_hips": (
         "cloudc-nircam-f466n-f405n",
         "JWST/NIRCam Cloud C (G0.380+0.050): F466N (red) / F405N (blue)"),
@@ -176,7 +178,8 @@ SPECIAL = {
         "JWST/NIRCam Sgr B2: press-release colour rendering"),
     "jwst-rc-blue-hips": (
         "jwst-gc-blue-cluster-overlay",
-        "JWST Galactic Centre: blue-cluster candidate catalogue overlay"),
+        "JWST GC Treasury: red-clump surface density, bluer half "
+        "(F212N-F480M < -0.325)"),
     "jwst-star-density-hips": (
         "jwst-gc-treasury-star-density",
         "JWST GC Treasury: F212N stellar surface density (saturated stars "
@@ -187,18 +190,18 @@ SPECIAL = {
         "(cube)"),
     "jwst-star-density-colour-cube-hips": (
         "jwst-gc-treasury-star-density-colour-cube",
-        "JWST GC Treasury: stellar surface density in F212N-F480M colour "
+        "JWST GC Treasury: stellar surface density in F212N-F480M color "
         "bins, a pseudo-extinction map (cube)"),
     "jwst-median-colour-hips": (
         "jwst-gc-treasury-median-colour",
-        "JWST GC Treasury: median F212N-F480M stellar colour, a "
+        "JWST GC Treasury: median F212N-F480M stellar color, a "
         "pseudo-extinction map"),
     "jwst-stars-colour-hips": (
         "jwst-gc-treasury-stars-by-colour",
-        "JWST GC Treasury: stars coloured by F212N-F480M and sized by F212N"),
+        "JWST GC Treasury: stars colored by F212N-F480M and sized by F212N"),
     "jwst-stars-catalog-hips": (
         "jwst-gc-treasury-star-catalogue",
-        "JWST GC Treasury: F212N/F480M star catalogue"),
+        "JWST GC Treasury: F212N/F480M star catalog"),
     "MUSTANG_TENS_noaxes_noalpha_hips": (
         "mustang2-cmz-90ghz",
         "MUSTANG-2 90 GHz continuum map of the Central Molecular Zone"),
