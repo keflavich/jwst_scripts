@@ -396,3 +396,11 @@ def test_density_layer_titles_match_their_selection():
     for n in ("jwst-rc-blue-hips", "jwst-rc-red-hips"):
         assert "red-clump" in title[n] and f"{overlays.SPLIT:g}" in title[n]
         assert "cluster" not in title[n]
+
+
+def test_red_clump_descriptions_state_every_rc_masks_cut():
+    for n in ("jwst-rc-blue-hips", "jwst-rc-red-hips"):
+        d = overlays.LAYER_DESCRIPTIONS[n]
+        for v in (*overlays.RC_M480_RANGE, *overlays.RC_COLOUR_RANGE,
+                  overlays.SLOPE, overlays.WRC, overlays.HW, overlays.SPLIT):
+            assert f"{v:g}" in d, (n, v)

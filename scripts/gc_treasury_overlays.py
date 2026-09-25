@@ -114,6 +114,7 @@ MATCH_ARCSEC = 0.1
 RED_COLOUR, RED_MAGLIMIT = 0.0, 18.0
 # red-clump band and split (see module docstring -- empirical, held fixed)
 SLOPE, WRC, HW, SPLIT = 0.890, 17.50, 0.9, -0.325
+RC_M480_RANGE, RC_COLOUR_RANGE = (14.0, 19.0), (-2.5, 3.5)
 # ultra-red catalogue
 ULTRARED_CUT = 4.0
 # density grid
@@ -158,6 +159,9 @@ _GRID = (f"on a {PIXEL_ARCSEC:g}\" grid smoothed by a Gaussian of sigma "
 _CATALOGUES = ("From the per-field vetted DAOPHOT catalogues of JWST GO "
                f"10678, F212N and F480M matched within {MATCH_ARCSEC:g}\"")
 _SOURCE = f"{_CATALOGUES}; saturated stars included, each counted once."
+_RC_BAND = (f"|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}, "
+            f"{RC_M480_RANGE[0]:g} < F480M < {RC_M480_RANGE[1]:g}, "
+            f"{RC_COLOUR_RANGE[0]:g} < F212N-F480M < {RC_COLOUR_RANGE[1]:g}")
 #: `obs_description` for each layer.  HiPS 1.0 has no pixel-unit keyword, so
 #: the unit is stated here, where viewers and hipslist readers show it.
 LAYER_DESCRIPTIONS = {
@@ -167,11 +171,11 @@ LAYER_DESCRIPTIONS = {
         f"{_GRID}. {_SOURCE}",
     "jwst-rc-blue-hips":
         "Pixel value: surface density in stars/arcmin^2 of red-clump stars "
-        f"(|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}) bluer than "
+        f"({_RC_BAND}) bluer than "
         f"F212N-F480M = {SPLIT:g}, {_GRID}. {_SOURCE}",
     "jwst-rc-red-hips":
         "Pixel value: surface density in stars/arcmin^2 of red-clump stars "
-        f"(|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}) at or redder "
+        f"({_RC_BAND}) at or redder "
         f"than F212N-F480M = {SPLIT:g}, {_GRID}. {_SOURCE}",
     "jwst-star-density-hips":
         "Pixel value: surface density in stars/arcmin^2 of all F212N "
@@ -664,7 +668,8 @@ def build_red_stars(col, m480, ra, dec, level=None, threads=8):
 
 def rc_masks(col, m480):
     W = m480 - SLOPE * col
-    rc = ((m480 > 14) & (m480 < 19) & (col > -2.5) & (col < 3.5)
+    (mlo, mhi), (clo, chi) = RC_M480_RANGE, RC_COLOUR_RANGE
+    rc = ((m480 > mlo) & (m480 < mhi) & (col > clo) & (col < chi)
           & (np.abs(W - WRC) < HW))
     return rc, rc & (col < SPLIT), rc & (col >= SPLIT)
 
