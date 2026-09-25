@@ -922,7 +922,7 @@ def build_star_catalog(M):
     columns = {
         "ra": M["ra"][ok], "dec": M["dec"][ok],
         "f212n": m, "f480m": M["m480"][ok], "color": col,
-        "saturated": M["sat"][ok].astype(np.int8),
+        "saturated": M["sat"][ok].astype(np.int16),  # VOTable has no int8
         "obs": M["who"][ok].astype(str),
         "rgb": hexes[inv.ravel()],
     }

@@ -161,6 +161,30 @@ def test_distribute_caps_tiles_and_keeps_every_row():
     assert order[np.argmin(mag)] == 1
 
 
+def test_build_star_catalog_writes_every_column_type(tmp_path, monkeypatch):
+    """The builder's own columns (bool -> int flag, obs strings, hex colours)
+    go through to metadata.xml; the writer test alone used floats and
+    strings, and an int8 flag once failed only on the full-data run."""
+    from astropy.io.votable import parse_single_table
+    rng = np.random.default_rng(3)
+    n = 300
+    M = {"ra": 266.4 + rng.uniform(-0.01, 0.01, n),
+         "dec": -29.0 + rng.uniform(-0.01, 0.01, n),
+         "m212": rng.uniform(14, 23, n), "m480": rng.uniform(12, 20, n),
+         "col": rng.uniform(-1, 4, n), "sat": rng.random(n) < 0.1,
+         "who": np.array(["o040", "o127"])[rng.integers(0, 2, n)]}
+    monkeypatch.setattr(overlays, "OUT", str(tmp_path))
+    overlays.build_star_catalog(M)
+    out = tmp_path / "jwst-stars-catalog-hips"
+    fields = {f.name: f for f in
+              parse_single_table(str(out / "metadata.xml")).fields}
+    assert set(fields) == {"ra", "dec", "f212n", "f480m", "color",
+                           "saturated", "obs", "rgb"}
+    assert fields["f212n"].unit == "mag"
+    props = hips_formats._read_properties(str(out / "properties"))
+    assert props["hips_cat_nrows"] == str(n)
+
+
 def test_write_hips_catalogue_layout(tmp_path):
     rng = np.random.default_rng(2)
     n = 800
