@@ -70,7 +70,8 @@ def test_needs_build_still_settles_and_builds_when_the_file_is_there(settled,
                                                                     monkeypatch):
     """The guard must not swallow the verdicts that were already correct."""
     monkeypatch.setattr(G, "png_for",
-                        lambda obs, stretch=None: str(tmp_path / "none.png"))
+                        lambda obs, stretch=None, residual=False:
+                        str(tmp_path / "none.png"))
     monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
     assert G.needs_build(OBS, settled) == "no RGB yet"
     now = time.time()
@@ -87,9 +88,10 @@ def test_a_source_newer_than_the_rgb_still_rebuilds(settled, tmp_path,
     os.utime(png, (old, old))
     hips = tmp_path / "hips" / "Norder3"
     hips.mkdir(parents=True)
-    monkeypatch.setattr(G, "png_for", lambda obs, stretch=None: str(png))
+    monkeypatch.setattr(G, "png_for", lambda obs, stretch=None, residual=False: str(png))
     monkeypatch.setattr(G, "hips_for",
-                        lambda obs, stretch=None: str(tmp_path / "hips"))
+                        lambda obs, stretch=None, residual=False:
+                        str(tmp_path / "hips"))
     monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
     why = G.needs_build(OBS, settled)
     assert why and "newer than the RGB" in why
@@ -102,9 +104,10 @@ def test_the_second_stat_site_also_reports_vanished(settled, tmp_path,
     png.write_bytes(b"0")
     hips = tmp_path / "hips" / "Norder3"
     hips.mkdir(parents=True)
-    monkeypatch.setattr(G, "png_for", lambda obs, stretch=None: str(png))
+    monkeypatch.setattr(G, "png_for", lambda obs, stretch=None, residual=False: str(png))
     monkeypatch.setattr(G, "hips_for",
-                        lambda obs, stretch=None: str(tmp_path / "hips"))
+                        lambda obs, stretch=None, residual=False:
+                        str(tmp_path / "hips"))
     monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
 
     real = G.source_mtime
@@ -135,7 +138,8 @@ def test_pending_summary_does_not_list_a_vanished_tile_as_work(monkeypatch):
     queued when the tile is mid-regeneration and will return on a later tick.
     """
     monkeypatch.setattr(G, "inventory",
-                        lambda: ({f: {OBS: "/nonexistent_i2d.fits"}
-                                  for f in G.FILTERS}, [OBS]))
+                        lambda **k: ({f: {OBS: "/nonexistent_i2d.fits"}
+                                      for f in G.FILTERS}, [OBS]))
     monkeypatch.setattr(G, "find_i2d", lambda filt, **kw: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **kw: {})
     assert G._pending_summary() == []

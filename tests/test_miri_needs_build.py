@@ -32,9 +32,11 @@ def env(tmp_path, monkeypatch):
     os.utime(src, (old, old))
     # no pngs anywhere, so the only thing that can differ is the match check
     monkeypatch.setattr(G, "miri_png_for",
-                        lambda obs, bg=False: str(tmp_path / f"{obs}_{bg}.png"))
+                        lambda obs, bg=False, residual=False:
+                        str(tmp_path / f"{obs}_{bg}_{residual}.png"))
     monkeypatch.setattr(G, "miri_hips_for",
-                        lambda obs, bg=False: str(tmp_path / f"{obs}_{bg}_hips"))
+                        lambda obs, bg=False, residual=False:
+                        str(tmp_path / f"{obs}_{bg}_{residual}_hips"))
     return str(src), match
 
 
@@ -63,8 +65,9 @@ def test_plain_miri_does_not_consult_the_table(env):
 def test_pending_summary_excludes_unbuildable_bgmatch(env, monkeypatch):
     """The held-lock report must not list work that would fail if it ran."""
     src, _ = env
-    monkeypatch.setattr(G, "inventory", lambda: ({f: {} for f in G.FILTERS}, []))
+    monkeypatch.setattr(G, "inventory", lambda **k: ({f: {} for f in G.FILTERS}, []))
     monkeypatch.setattr(G, "find_i2d", lambda filt: {UNCOVERED: src, COVERED: src})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {})
     lines = G._pending_summary()
     assert not any(f"{UNCOVERED} MIRI+bg" in ln for ln in lines), lines
     assert any(f"{COVERED} MIRI+bg" in ln for ln in lines), lines

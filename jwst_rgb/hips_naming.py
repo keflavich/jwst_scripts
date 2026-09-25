@@ -109,6 +109,23 @@ SPECIAL = {
         "jwst-gc-treasury-rgb-f770w-f480m-f212n",
         "JWST GC Treasury: Galactic Centre RGB, MIRI F770W / NIRCam F480M / "
         "NIRCam F212N"),
+    # Star-subtracted flavours: built from the DAOPHOT residual mosaics.
+    "jwst_gc_treasury_residual_vminmax_hips": (
+        "jwst-gc-treasury-nircam-mosaic-residual-minmax",
+        "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
+        "Galactic Centre, stars subtracted (min-max stretch)"),
+    "jwst_gc_treasury_residual_log_hips": (
+        "jwst-gc-treasury-nircam-mosaic-residual-log",
+        "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
+        "Galactic Centre, stars subtracted (log stretch)"),
+    "jwst_gc_treasury_miri_residual_hips": (
+        "jwst-gc-treasury-miri-mosaic-residual",
+        "JWST GC Treasury: MIRI F770W mosaic of the Galactic Centre, "
+        "stars subtracted"),
+    "gctreasury_mosaic_RGB_770-480-212_residual_hips": (
+        "jwst-gc-treasury-rgb-f770w-f480m-f212n-residual",
+        "JWST GC Treasury: Galactic Centre RGB, MIRI F770W / NIRCam F480M / "
+        "NIRCam F212N, stars subtracted (F770W covers part of the field)"),
     "jwst_nir_hips": (
         "jwst-cmz-nircam-niriss-coadd",
         "JWST Central Molecular Zone: NIRCam and NIRISS colour coadd"),
@@ -249,6 +266,7 @@ FLAGS = {
     "inpainted": "inpainted",
     "lama": None,
     "withstars": "stars retained",
+    "residual": "stars subtracted",
     "sub": "continuum-subtracted",
     "raw": "unsubtracted",
     "alma": "with ALMA continuum",

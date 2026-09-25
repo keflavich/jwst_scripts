@@ -61,7 +61,7 @@ def test_does_not_build_while_the_lock_is_held(held_lock, monkeypatch, capsys):
     called = []
     monkeypatch.setattr(G, "_pending_summary", lambda: ["o105 NIRCam -- no RGB yet"])
     monkeypatch.setattr(G, "inventory",
-                        lambda: called.append("inventory") or ({}, []))
+                        lambda **k: called.append("inventory") or ({}, []))
     monkeypatch.setattr(G, "build_obs",
                         lambda *a, **k: called.append("build") or (None, None))
     assert G.cmd_auto() == 0
@@ -101,8 +101,9 @@ def test_a_stale_lock_is_taken_rather_than_reported(tmp_path, monkeypatch, capsy
     lock.write_text("1 old\n")
     old = time.time() - 7 * 3600
     os.utime(lock, (old, old))
-    monkeypatch.setattr(G, "inventory", lambda: ({f: {} for f in G.FILTERS}, []))
+    monkeypatch.setattr(G, "inventory", lambda **k: ({f: {} for f in G.FILTERS}, []))
     monkeypatch.setattr(G, "find_i2d", lambda filt: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {})
     monkeypatch.setattr(G, "cmd_coadd", lambda **k: 0)
     G.cmd_auto()
     out = capsys.readouterr().out
