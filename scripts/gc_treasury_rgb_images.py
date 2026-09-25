@@ -1123,13 +1123,15 @@ def miri_match_is_stale(miri):
     return None
 
 
-def miri_needs_build(obs, src, bgmatch=False, residual=False):
+def miri_needs_build(obs, src, bgmatch=False, residual=False, image_src=None):
     import time
     t_src = source_mtime(src)
     if t_src is None:
         return "VANISHED"
     if time.time() - t_src < SETTLE_SECONDS:
         return "SETTLING"
+    if residual and residual_predates_image(src, image_src):
+        return "CHAIN"
     if bgmatch:
         # Existence of the table is not enough: it carries offsets for the
         # fields --miri-match was last run over, and build_miri_obs raises on
@@ -1163,7 +1165,24 @@ def miri_needs_build(obs, src, bgmatch=False, residual=False):
     return None
 
 
-def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False):
+def residual_predates_image(residual_src, image_src):
+    """True when a residual mosaic is older than the image mosaic beside it.
+
+    The cataloguing chain keeps every stage it writes, so after a re-reduction
+    the previous run's final-stage residual stays on disk next to the new
+    image until the chain reaches that stage again, which takes days.  A
+    residual built in that window would be a residual of the old reduction
+    shown beside the new image layer.  A missing path on either side is not
+    this case (the VANISHED verdicts cover a mosaic going away).
+    """
+    if not residual_src or not image_src:
+        return False
+    t_res, t_img = source_mtime(residual_src), source_mtime(image_src)
+    return t_res is not None and t_img is not None and t_res < t_img
+
+
+def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
+                image_inv=None):
     """Is this observation missing an RGB, or is its RGB older than its data?
 
     The mtime comparison matters more than usual here: 10678 has no astrometric
@@ -1171,6 +1190,10 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False):
     and are expected to be re-reduced once the tie is measured.  When that
     happens the i2d files are rewritten and every product built from them must
     be rebuilt -- silently serving the pre-tie version is the failure mode.
+
+    For a residual flavour, `image_inv` is the image inventory; a residual
+    older than its image returns CHAIN (see residual_predates_image) and is
+    left for the chain to rewrite.
     """
     import time
     # A mosaic that changed in the last few minutes may still be being written;
@@ -1184,6 +1207,11 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False):
             return "VANISHED"
         if time.time() - mtime < SETTLE_SECONDS:
             return "SETTLING"
+    if residual and image_inv is not None and any(
+            residual_predates_image(inv[f].get(obs),
+                                    (image_inv.get(f) or {}).get(obs))
+            for f in FILTERS):
+        return "CHAIN"
     if stretch_match(stretch):
         # Same rule as MIRI: the table existing is not enough, because
         # build_obs raises on a field the table does not cover.  Reporting it
@@ -1250,28 +1278,35 @@ def _pending_summary():
     Read-only: used to report work stuck behind a held lock.
     """
     out = []
+    image_inv = None
     for residual in (False, True):
         inv, obs_all = inventory(residual=residual)
+        if not residual:
+            image_inv = inv
         ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
         for r, stretch in nircam_flavours():
             if r != residual:
                 continue
             tag = f"residual/{stretch}" if residual else stretch
             for o in ready:
-                why = needs_build(o, inv, stretch=stretch, residual=residual)
+                why = needs_build(o, inv, stretch=stretch, residual=residual,
+                                  image_inv=image_inv if residual else None)
                 # VANISHED joins SETTLING as a not-buildable-right-now verdict
                 # rather than pending work: nothing is waiting on it, the tile
-                # is mid-regeneration and comes back on a later tick.
-                if why and why not in ("SETTLING", "VANISHED"):
+                # is mid-regeneration and comes back on a later tick.  CHAIN
+                # waits on the cataloguing chain, not on this lock.
+                if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
                     out.append(f"{o} NIRCam/{tag} -- {why}")
+    miri_images = find_i2d(MIRI_FILTER)
     for residual, bgmatch in MIRI_FLAVOURS:
-        miri = (find_residual_i2d if residual else find_i2d)(MIRI_FILTER)
+        miri = find_residual_i2d(MIRI_FILTER) if residual else miri_images
         tag = "MIRI+res" if residual else "MIRI+bg" if bgmatch else "MIRI"
         for o, src in sorted(miri.items()):
-            why = miri_needs_build(o, src, bgmatch, residual)
+            why = miri_needs_build(o, src, bgmatch, residual,
+                                   image_src=miri_images.get(o))
             # One exclusion more than the NIRCam loop above, because only
             # miri_needs_build can return NOMATCH.
-            if why and why not in ("SETTLING", "NOMATCH", "VANISHED"):
+            if why and why not in ("SETTLING", "NOMATCH", "VANISHED", "CHAIN"):
                 out.append(f"{o} {tag} -- {why}")
     return out
 
@@ -1282,7 +1317,10 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
     overlapping the next tick, and nothing is rebuilt unless its source moved.
 
     Builds stop being started once `budget_hours` have passed; whatever is
-    left waits for the next tick, and what was built is coadded now.
+    left waits for the next tick, and what was built is coadded now.  Every
+    image flavour is tried before any residual one, so the residual layers
+    wait behind an image backlog: a survey-wide re-reduction (~57 tiles x 4
+    image flavours) holds them back for several ticks.
     """
     import time
     lock = f"{OUTDIR}/.auto.lock"
@@ -1344,9 +1382,14 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
         built = {fl: [] for fl in nircam_flavours()}
         miri_built = {fl: [] for fl in MIRI_FLAVOURS}
         failed = []
+        # Taken by the image passes and read by the residual ones, which run
+        # after them, for the residual-older-than-image check.
+        image_inv, miri_images = {}, {}
 
         def nircam_pass(residual):
             inv, obs_all = inventory(residual=residual)
+            if not residual:
+                image_inv.update(inv)
             ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                   f"{len(ready)} observation(s) complete in all filters"
@@ -1356,11 +1399,16 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                 tag = f"residual/{stretch}" if residual else stretch
                 for o in ready:
                     why = needs_build(o, inv, stretch=stretch,
-                                      residual=residual)
+                                      residual=residual,
+                                      image_inv=image_inv if residual else None)
                     if why == "VANISHED":
                         print(f"  {o} {tag}: a source mosaic went away while "
                               f"this tick was running (stale-tagged for "
                               f"regeneration?); skipping it this time")
+                        continue
+                    if why == "CHAIN":
+                        print(f"  {o} {tag}: residual predates the image "
+                              f"mosaic; waiting for the chain to rewrite it")
                         continue
                     if why == "SETTLING":
                         print(f"  {o} {tag}: source written in the last "
@@ -1401,6 +1449,7 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
             print(f"  {len(miri)} MIRI {MIRI_FILTER.upper()} "
                   f"{'residual ' if residual else ''}mosaic(s)")
             if not residual:
+                miri_images.update(miri)
                 # Without this the background-matched flavour silently stops
                 # tracking the survey: fields that land after the last hand-run
                 # solve report NOMATCH for ever.  Re-rendering follows on its
@@ -1422,11 +1471,16 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                 tag = ("MIRI+res" if residual else
                        "MIRI+bg" if bgmatch else "MIRI")
                 for o, src in sorted(miri.items()):
-                    why = miri_needs_build(o, src, bgmatch, residual)
+                    why = miri_needs_build(o, src, bgmatch, residual,
+                                           image_src=miri_images.get(o))
                     if why == "VANISHED":
                         print(f"  {o} {tag}: its mosaic went away while this "
                               f"tick was running (stale-tagged for "
                               f"regeneration?); skipping it this time")
+                        continue
+                    if why == "CHAIN":
+                        print(f"  {o} {tag}: residual predates the image "
+                              f"mosaic; waiting for the chain to rewrite it")
                         continue
                     if why == "SETTLING":
                         print(f"  {o} {tag}: source written in the last "

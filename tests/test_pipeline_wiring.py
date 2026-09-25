@@ -267,7 +267,7 @@ def test_a_refused_coadd_makes_the_tick_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(G, "build_miri_obs", lambda o, **k: (None, None))
     monkeypatch.setattr(G, "needs_build", lambda o, inv, **k: "no RGB yet")
     monkeypatch.setattr(G, "miri_needs_build",
-                        lambda o, s, bg=False, residual=False: None)
+                        lambda o, s, bg=False, residual=False, **k: None)
     monkeypatch.setattr(G, "miri_match_is_stale", lambda m: None)
     monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
     monkeypatch.setattr(G, "find_residual_i2d", lambda *a, **k: {})
