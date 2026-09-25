@@ -62,6 +62,50 @@ def test_dedupe_collapses_a_row_repeated_in_many_fields():
     assert keep.sum() == 1 and keep[0]
 
 
+
+def test_cross_field_separations_measures_only_cross_field_pairs():
+    ra = np.array([266.4, 266.4 + 0.03 / 3600, 266.5, 266.5 + 0.2 / 3600,
+                   266.6, 266.6 + 0.01 / 3600])
+    dec = np.full(6, -29.0)
+    who = np.array(["o040", "o073", "o040", "o073", "o040", "o040"])
+    sep = np.sort(overlays.cross_field_separations(ra, dec, who))
+    # the within-field pair (rows 4/5) is not reported
+    np.testing.assert_allclose(sep, [0.03 * np.cos(np.radians(29)),
+                                     0.2 * np.cos(np.radians(29))], rtol=1e-3)
+
+
+def _staged_layer(root, name, order_min, orders):
+    d = root / name
+    for k in orders:
+        (d / f"Norder{k}").mkdir(parents=True)
+    (d / "properties").write_text(f"hips_order_min = {order_min}\n")
+
+
+def test_publish_checks_each_layer_at_its_own_order_min(tmp_path, monkeypatch):
+    out, web = tmp_path / "out", tmp_path / "web"
+    web.mkdir()
+    _staged_layer(out, "cat", 1, [1, 2])      # catalogue: no Norder3 needed
+    _staged_layer(out, "img", 3, [3, 4])
+    monkeypatch.setattr(overlays, "OUT", str(out))
+    monkeypatch.setattr(overlays, "WEB", str(web))
+    monkeypatch.setattr(overlays, "LAYERS", ["cat", "img"])
+    overlays.publish()
+    assert (web / "cat" / "Norder1").is_dir()
+    assert (web / "img" / "Norder3").is_dir()
+
+
+def test_publish_refuses_an_image_layer_without_its_order_min(tmp_path,
+                                                              monkeypatch):
+    out, web = tmp_path / "out", tmp_path / "web"
+    web.mkdir()
+    _staged_layer(out, "img", 3, [1, 2])
+    monkeypatch.setattr(overlays, "OUT", str(out))
+    monkeypatch.setattr(overlays, "WEB", str(web))
+    monkeypatch.setattr(overlays, "LAYERS", ["img"])
+    with pytest.raises(RuntimeError, match="no Norder3"):
+        overlays.publish()
+    assert not (web / "img").exists()
+
 # -- star styling and rendering ---------------------------------------------
 
 def test_star_style_colour_size_and_alpha():

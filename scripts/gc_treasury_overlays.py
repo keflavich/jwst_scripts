@@ -88,6 +88,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 from scipy.ndimage import gaussian_filter
 from jwst_rgb.hips_naming import properties_for
+from jwst_rgb.hips_formats import _read_properties
 
 CAT = "/orange/adamginsburg/jwst/gc-treasury/catalogs"
 OUT = "/orange/adamginsburg/jwst/gc-treasury/pngs"
@@ -369,6 +370,27 @@ def dedupe_across_fields(ra, dec, who, tol=DEDUPE_ARCSEC):
     return keep
 
 
+def cross_field_separations(ra, dec, who, rmax=0.5):
+    """Separations (arcsec) of every cross-field pair closer than `rmax`.
+
+    Reported once per build so DEDUPE_ARCSEC is a measured choice: the
+    copied saturated rows sit at ~0, genuine overlap pairs spread out with
+    the two reductions' astrometric scatter.
+    """
+    from scipy.spatial import cKDTree
+    ra, dec = np.radians(ra), np.radians(dec)
+    xyz = np.column_stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra),
+                           np.sin(dec)])
+    chord = 2 * np.sin(np.radians(rmax / 3600) / 2)
+    pairs = cKDTree(xyz).query_pairs(chord, output_type="ndarray")
+    if not len(pairs):
+        return np.zeros(0)
+    who = np.asarray(who)
+    pairs = pairs[who[pairs[:, 0]] != who[pairs[:, 1]]]
+    d = np.linalg.norm(xyz[pairs[:, 0]] - xyz[pairs[:, 1]], axis=1)
+    return np.degrees(2 * np.arcsin(d / 2)) * 3600
+
+
 def match_catalogs(pairs, tol=MATCH_ARCSEC):
     """Per-field guard, cross-filter match, then cross-field dedupe.
 
@@ -427,6 +449,12 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
     M = {k: np.concatenate(v) for k, v in M.items()}
     F = {k: np.concatenate(v) for k, v in F.items()}
     for nm, D in (("matched", M), ("F212N", F)):
+        sep = cross_field_separations(D["ra"], D["dec"], D["who"])
+        edges = [0, 0.01, 0.05, DEDUPE_ARCSEC, 0.2, 0.3, 0.5]
+        hist, _ = np.histogram(sep, bins=edges)
+        print(f"  {nm}: cross-field pair separations (arcsec) " + ", ".join(
+            f"{lo:g}-{hi:g}: {n:,}"
+            for lo, hi, n in zip(edges[:-1], edges[1:], hist)), flush=True)
         keep = dedupe_across_fields(D["ra"], D["dec"], D["who"])
         print(f"  {nm}: {len(keep):,} rows, {(~keep).sum():,} seen by an "
               f"earlier field removed", flush=True)
@@ -942,8 +970,14 @@ def publish(dry=False):
         if dry:
             continue
         subprocess.run(cmd, check=True)
-        if not os.path.isdir(f"{stage}/Norder3"):
-            raise RuntimeError(f"{stage}: no Norder3; refusing to swap in")
+        # A catalogue HiPS starts at order 1; the image layers at 3.
+        order_min = 3
+        if os.path.exists(f"{stage}/properties"):
+            order_min = int(_read_properties(f"{stage}/properties")
+                            .get("hips_order_min", 3))
+        if not os.path.isdir(f"{stage}/Norder{order_min}"):
+            raise RuntimeError(f"{stage}: no Norder{order_min}; "
+                               "refusing to swap in")
         old = dest + ".old"
         shutil.rmtree(old, ignore_errors=True)
         if os.path.isdir(dest):
