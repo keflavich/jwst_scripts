@@ -153,6 +153,68 @@ STAR_RADIUS_MAG, STAR_RADIUS_PIX = (8.0, 13.0, 17.0, 23.0), (7.0, 4.0, 2.0, 1.0)
 STAR_ALPHA_MAG, STAR_ALPHA = (10.0, 23.0), (255.0, 90.0)
 CATALOG_ROWS_PER_TILE = 500
 
+_GRID = (f"on a {PIXEL_ARCSEC:g}\" grid smoothed by a Gaussian of sigma "
+         f"{SMOOTH_ARCSEC:g}\"")
+_CATALOGUES = ("From the per-field vetted DAOPHOT catalogues of JWST GO "
+               f"10678, F212N and F480M matched within {MATCH_ARCSEC:g}\"")
+_SOURCE = f"{_CATALOGUES}; saturated stars included, each counted once."
+#: `obs_description` for each layer.  HiPS 1.0 has no pixel-unit keyword, so
+#: the unit is stated here, where viewers and hipslist readers show it.
+LAYER_DESCRIPTIONS = {
+    "jwst-red-stars-hips":
+        "Pixel value: surface density in stars/arcmin^2 of stars with "
+        f"F212N-F480M > {RED_COLOUR:g} and F480M < {RED_MAGLIMIT:g} (AB), "
+        f"{_GRID}. {_SOURCE}",
+    "jwst-rc-blue-hips":
+        "Pixel value: surface density in stars/arcmin^2 of red-clump stars "
+        f"(|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}) bluer than "
+        f"F212N-F480M = {SPLIT:g}, {_GRID}. {_SOURCE}",
+    "jwst-rc-red-hips":
+        "Pixel value: surface density in stars/arcmin^2 of red-clump stars "
+        f"(|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}) at or redder "
+        f"than F212N-F480M = {SPLIT:g}, {_GRID}. {_SOURCE}",
+    "jwst-star-density-hips":
+        "Pixel value: surface density in stars/arcmin^2 of all F212N "
+        f"sources, {_GRID}. {_SOURCE}",
+    "jwst-star-density-f212n-cube-hips":
+        "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
+        f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
+        f"{F212N_CONFUSION_LIMIT:g} (confusion) AB, {_GRID}; the cube axis "
+        f"is the bin centre in F212N AB mag. {_SOURCE}",
+    "jwst-star-density-colour-cube-hips":
+        "Pixel value: surface density in stars/arcmin^2 of stars with F480M "
+        f"< {COLOUR_MAGLIMIT:g} AB in {COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
+        f"bins of F212N-F480M from {COLOUR_EDGES[0]:g} to "
+        f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin centre in "
+        "AB mag. Redder bins trace higher extinction (a pseudo-extinction "
+        f"map, not calibrated to A_V). {_SOURCE}",
+    "jwst-median-colour-hips":
+        "Pixel value: median F212N-F480M in AB mag of unsaturated stars with "
+        f"F480M < {COLOUR_MAGLIMIT:g} AB, in {MEDIAN_PIXEL_ARCSEC:g}\" cells "
+        f"holding at least {MEDIAN_MIN_STARS} stars (blank otherwise). Higher "
+        "values mean more reddening (a pseudo-extinction map, not calibrated "
+        f"to A_V). {_CATALOGUES}.",
+    "jwst-stars-colour-hips":
+        "Each matched star drawn as a disc coloured by F212N-F480M "
+        f"({STAR_CMAP} over {STAR_COLOUR_RANGE[0]:g} to "
+        f"{STAR_COLOUR_RANGE[1]:g} AB mag), with radius and opacity set by "
+        "F212N brightness. Pixel values are display colours, not flux. "
+        f"{_SOURCE}",
+    "jwst-stars-catalog-hips":
+        "Matched stars, brightest F212N first. Columns: ra, dec (deg, ICRS), "
+        "f212n, f480m, color (F212N-F480M) in AB mag, saturated (1 if "
+        "saturated in either filter), obs (10678 observation), rgb (the "
+        f"jwst-stars-colour-hips display colour). {_SOURCE}",
+}
+
+
+def layer_properties(name):
+    """`properties_for(name)` plus the layer's obs_description."""
+    extra = {}
+    if name in LAYER_DESCRIPTIONS:
+        extra["obs_description"] = LAYER_DESCRIPTIONS[name]
+    return properties_for(name, **extra)
+
 # The qualifier group is the point: reductions gain tags over time
 # (resbgsub, ...) and a pattern that does not allow for them does not fail --
 # it silently selects an older iteration.
@@ -563,7 +625,7 @@ def build_hips(arr, w, name, level=None, threads=8, dest=None):
     reproject_to_hips((arr, w), coord_system_out="galactic", level=level,
                       reproject_function=reproject_interp,
                       output_directory=stage, threads=threads,
-                      properties=properties_for(name), generate_moc=True)
+                      properties=layer_properties(name), generate_moc=True)
     if not os.path.isdir(f"{stage}/Norder3"):
         raise RuntimeError(f"{name}: no Norder3; refusing to publish")
     swap_in(stage, dest)
@@ -761,7 +823,7 @@ def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
     vmax = float(np.nanpercentile(cube, 99.5))
     assemble_hips_cube(frames, f"{OUT}/{name}", crval3=hdr["CRVAL3"],
                        cdelt3=step, bunit3=bunit3, pixel_cut=(0.0, vmax),
-                       extra=properties_for(name))
+                       extra=layer_properties(name))
     shutil.rmtree(f"{OUT}/_frames/{name}", ignore_errors=True)
     print(f"  BUILT {OUT}/{name} ({len(frames)} frames, cut 0-{vmax:.1f})",
           flush=True)
@@ -901,7 +963,7 @@ def build_star_image(M, level=None, threads=8):
     reproject_to_hips(png, coord_system_out="galactic", level=level,
                       reproject_function=reproject_interp,
                       output_directory=stage, threads=threads,
-                      properties=properties_for(name))
+                      properties=layer_properties(name))
     if not os.path.isdir(f"{stage}/Norder3"):
         raise RuntimeError(f"{name}: no Norder3; refusing to publish")
     swap_in(stage, dest)
@@ -943,7 +1005,7 @@ def build_star_catalog(M):
                          "saturated-star fit)",
             "obs": "10678 observation the source was taken from",
             "rgb": f"display colour: {STAR_CMAP} over {STAR_COLOUR_RANGE}"},
-        properties=properties_for("jwst-stars-catalog-hips"))
+        properties=layer_properties("jwst-stars-catalog-hips"))
     print(f"  BUILT {OUT}/jwst-stars-catalog-hips: {info['nrows']:,} rows, "
           f"orders 1-{info['order_max']}, tiles per order "
           f"{info['tiles_per_order']}", flush=True)

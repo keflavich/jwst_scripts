@@ -374,3 +374,14 @@ def test_match_catalogs_guards_the_f480m_side_too(tmp_path, monkeypatch):
         SkyCoord(X[0] * u.deg, X[1] * u.deg)).arcsec
     assert not (sep < 0.05).any()
     assert len(M["ra"]) == 5 and not M["sat"].any()
+
+
+def test_every_layer_carries_a_one_line_description():
+    for name in overlays.LAYERS:
+        desc = overlays.LAYER_DESCRIPTIONS[name]
+        assert "\n" not in desc and desc.strip() == desc
+        assert overlays.layer_properties(name)["obs_description"] == desc
+    assert set(overlays.LAYER_DESCRIPTIONS) == set(overlays.LAYERS)
+    for name in overlays.LAYERS:
+        if "density" in name or name.startswith(("jwst-red-", "jwst-rc-")):
+            assert "stars/arcmin^2" in overlays.LAYER_DESCRIPTIONS[name]
