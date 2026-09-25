@@ -66,6 +66,9 @@ MIRI_COADD_NAME = "jwst_gc_treasury_miri_hips"
 # single shared stretch applied.  They are kept side by side so the effect of
 # the matching can be judged on the sky rather than argued about.
 MIRI_BGMATCH_COADD_NAME = "jwst_gc_treasury_miri_bgmatch_hips"
+# The star-subtracted MIRI mosaic.  Plain only: the background match is solved
+# on the images.
+MIRI_RESIDUAL_COADD_NAME = "jwst_gc_treasury_miri_residual_hips"
 
 # How far the served tiles may sit from the source FITS before check_orientation
 # calls it a failure.  The HiPS grid is ~0.02"/px at order 14 and reprojection
@@ -109,6 +112,64 @@ MAST_I2D = re.compile(
     r"^jw\d+-o\d+_t\d+_"
     r"(nircam_clear-[a-z0-9]+|miri_[a-z0-9]+)"
     r"_i2d\.fits$")
+
+# Star-subtracted ("residual") flavour: the same layers built from the DAOPHOT
+# residual mosaic each cataloguing stage writes beside the image, so the sky
+# shows the diffuse emission and extinction with the point sources removed.
+# The chain writes one per stage and keeps them all.  Only the chain's LAST
+# residual stage is used: resbgsub_m7 (the cross-band merge) for NIRCam, and
+# resbgsub_m6 for MIRI, whose chain has no m7.  Taking whatever stage is
+# present would rebuild a tile at every stage it passes, and plan_coadd turns
+# every changed layer into a full coadd rebuild -- with half the tiles mid-chain
+# that is a rebuild per tick.  The early stages also subtract worse: on o105 the
+# fraction of F480M pixels below -5 sigma is 16.4e-3 at m4 and 5.2e-3 at m7.
+RESIDUAL_STAGES = ("m2", "m3", "m4", "resbgsub_m5", "resbgsub_m6",
+                   "resbgsub_m7")
+RESIDUAL_FINAL_STAGE = {"nircam": "resbgsub_m7", "miri": "resbgsub_m6"}
+RESIDUAL_I2D = re.compile(
+    r"^jw\d+-(o\d+)_t001_"
+    r"(?:nircam_clear-[a-z0-9]+-(merged|nrca|nrcb)|miri_clear-[a-z0-9]+-mirimage)"
+    r"_(" + "|".join(RESIDUAL_STAGES) + r")"
+    r"_daophot_basic_mergedcat_residual_i2d\.fits$")
+
+
+def find_residual_i2d(filt, final_only=True):
+    """Latest-stage residual mosaic per observation, keyed like find_i2d.
+
+    With `final_only` (the default, and what every build uses) an observation
+    whose chain has not yet written its final residual stage is left out; see
+    RESIDUAL_FINAL_STAGE.  `final_only=False` is for reporting what is waiting.
+
+    Keyed by the filename's observation token, not OBSERVTN: the residuals are
+    written by the cataloguing chain, one file per stage, and opening every
+    stage of every tile to read a header each tick would cost more than the
+    rest of the inventory.  The token and the header agree for stage 3
+    products, which these are derived from.
+
+    A -merged residual supersedes the per-module ones, as in find_i2d.
+    """
+    best = {}
+    for p in glob.glob(f"{BASE}/{filt.upper()}/pipeline/*_residual_i2d.fits"):
+        m = RESIDUAL_I2D.match(os.path.basename(p))
+        if not m:
+            continue
+        obs, mod, stage = m.groups()
+        key = f"{obs}_{mod}" if mod in ("nrca", "nrcb") else obs
+        rank = RESIDUAL_STAGES.index(stage)
+        inst = "nircam" if mod else "miri"
+        if final_only and rank < RESIDUAL_STAGES.index(RESIDUAL_FINAL_STAGE[inst]):
+            continue
+        if key not in best or rank > best[key][0]:
+            best[key] = (rank, p)
+    out = {k: p for k, (_, p) in best.items()}
+    for key in [k for k in out if "_nrc" not in k]:
+        for mod in ("nrca", "nrcb"):
+            out.pop(f"{key}_{mod}", None)
+    return out
+
+
+def residual_suffix(residual):
+    return "_residual" if residual else ""
 
 
 def source_mtime(path):
@@ -225,8 +286,9 @@ def find_i2d(filt, exposure_level=False):
     return out
 
 
-def inventory():
-    inv = {f: find_i2d(f) for f in FILTERS}
+def inventory(residual=False):
+    find = find_residual_i2d if residual else find_i2d
+    inv = {f: find(f) for f in FILTERS}
     obs = sorted(set().union(*[set(v) for v in inv.values()]) if inv else [])
     return inv, obs
 
@@ -258,13 +320,18 @@ def cmd_list():
     return 0
 
 
-def build_obs(obs, avm_mode="raw", hips=True, stretch="pct"):   # DEFAULT_STRETCH
+def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
+              residual=False):
     """One observation -> RGB png + HiPS, returned as (png, hips_dir).
 
     `stretch` picks a key from STRETCHES.  One flavour per call rather than a
     loop over all of them, so a new flavour can be built for every field
     without rebuilding -- and risking -- the ones already verified.
+
+    `residual` builds from the star-subtracted mosaics (find_residual_i2d)
+    instead of the images, with the RESIDUAL_STRETCHES cuts.
     """
+    check_residual_stretch(stretch, residual)
     from astropy.io import fits
     from astropy.wcs import WCS
     from astropy.visualization import simple_norm
@@ -275,10 +342,11 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct"):   # DEFAULT_STRETC
     from jwst_rgb.save_rgb import avm_for_saved_png
     Image.MAX_IMAGE_PIXELS = None
 
-    inv, _ = inventory()
+    inv, _ = inventory(residual=residual)
     missing = [f for f in FILTERS if obs not in inv[f]]
     if missing:
-        raise RuntimeError(f"{obs}: no i2d for {missing}")
+        raise RuntimeError(f"{obs}: no {'residual ' if residual else ''}"
+                           f"i2d for {missing}")
 
     os.makedirs(OUTDIR, exist_ok=True)
     tgt = fits.open(inv[TARGET_FILTER][obs])
@@ -361,7 +429,8 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct"):   # DEFAULT_STRETC
         print(f"  stretch '{stretch}': {kw}", flush=True)
 
     # obs may carry a _nrca/_nrcb module tag
-    name = os.path.basename(png_for(obs, stretch=stretch))[:-4]
+    name = os.path.basename(png_for(obs, stretch=stretch,
+                                    residual=residual))[:-4]
     png = f"{OUTDIR}/{name}.png"
     # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
     # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
@@ -532,15 +601,37 @@ DEFAULT_STRETCH = "pct"
 PRIMARY_STRETCH = "vminmax"
 
 
-def coadd_name_for(stretch=None):
-    """jwst_gc_treasury_hips / jwst_gc_treasury_vminmax_hips.
+# Flavours built from the star-subtracted mosaics.  The cuts are the image
+# flavours' own, so a residual layer and its image layer render a given MJy/sr
+# as the same colour and can be toggled against each other; the residuals keep
+# the diffuse background (o105 resbgsub_m7 median 7.7 MJy/sr in F212N, 12.9 in
+# F480M, against 10.1 and 15.8 in the image), so the same cuts suit them.
+#
+# pct is left out.  Per-image percentiles on a residual are set by the star
+# remnants: the negative over-subtraction craters put the 1% floor below the
+# sky in F212N and not in F480M, which renders every tile washed out with a
+# blue cast (o105, 2026-09-24).  bgmatch is left out because its offsets and
+# cuts are solved on the images.
+RESIDUAL_STRETCHES = ("vminmax", "log")
+
+
+def check_residual_stretch(stretch, residual):
+    if residual and stretch not in RESIDUAL_STRETCHES:
+        raise ValueError(f"no residual flavour for stretch {stretch!r}; "
+                         f"residual stretches are {RESIDUAL_STRETCHES}")
+
+
+def coadd_name_for(stretch=None, residual=False):
+    """jwst_gc_treasury_hips / jwst_gc_treasury_vminmax_hips /
+    jwst_gc_treasury_residual_vminmax_hips.
 
     The suffix goes before _hips so the names sort and read like the MIRI pair
     (jwst_gc_treasury_miri_bgmatch_hips), rather than trailing after it.
     """
+    base = COADD_NAME.replace("_hips", f"{residual_suffix(residual)}_hips")
     if stretch is None or stretch == DEFAULT_STRETCH:
-        return COADD_NAME
-    return COADD_NAME.replace("_hips", f"_{stretch}_hips")
+        return base
+    return base.replace("_hips", f"_{stretch}_hips")
 
 
 def stretch_suffix(stretch):
@@ -553,25 +644,48 @@ def stretch_suffix(stretch):
     return "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
 
 
-def png_for(obs, stretch=DEFAULT_STRETCH):
+def png_for(obs, stretch=DEFAULT_STRETCH, residual=False):
     return (f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212"
-            f"{stretch_suffix(stretch)}.png")
+            f"{residual_suffix(residual)}{stretch_suffix(stretch)}.png")
 
 
-def hips_for(obs, stretch=DEFAULT_STRETCH):
-    return png_for(obs, stretch).replace(".png", "_hips")
+def hips_for(obs, stretch=DEFAULT_STRETCH, residual=False):
+    return png_for(obs, stretch, residual).replace(".png", "_hips")
 
 
-def miri_suffix(bgmatch):
-    return "_bgmatch" if bgmatch else ""
+def miri_suffix(bgmatch, residual=False):
+    return residual_suffix(residual) + ("_bgmatch" if bgmatch else "")
 
 
-def miri_png_for(obs, bgmatch=False):
-    return f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W{miri_suffix(bgmatch)}.png"
+def miri_png_for(obs, bgmatch=False, residual=False):
+    return (f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W"
+            f"{miri_suffix(bgmatch, residual)}.png")
 
 
-def miri_hips_for(obs, bgmatch=False):
-    return f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W{miri_suffix(bgmatch)}_hips"
+def miri_hips_for(obs, bgmatch=False, residual=False):
+    return (f"{OUTDIR}/GCTreasury_{obs}_MIRI_F770W"
+            f"{miri_suffix(bgmatch, residual)}_hips")
+
+
+def layer_tail(miri=False, bgmatch=False, stretch=DEFAULT_STRETCH,
+               residual=False):
+    """The name ending shared by every per-observation layer of one coadd.
+
+    cmd_coadd globs GCTreasury_*<tail> and strips the tail to get the key it
+    checks against the active inventory -- a layer the glob picks up by mistake
+    reads as superseded and is RETIRED, so no two flavours may share a tail or
+    have one tail end another.
+    """
+    if miri:
+        return f"_MIRI_F770W{miri_suffix(bgmatch, residual)}_hips"
+    return (f"_RGB_480-mean-212{residual_suffix(residual)}"
+            f"{stretch_suffix(stretch)}_hips")
+
+
+def miri_coadd_name_for(bgmatch=False, residual=False):
+    if residual:
+        return MIRI_RESIDUAL_COADD_NAME
+    return MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME
 
 
 # Block-averaging factor for background matching.  MEASURE AT 1.
@@ -899,13 +1013,19 @@ def load_miri_match():
         return json.load(fh)
 
 
-def build_miri_obs(obs, bgmatch=False, hips=True):
+def build_miri_obs(obs, bgmatch=False, hips=True, residual=False):
     """One observation's MIRI F770W mosaic -> monochrome png + HiPS.
 
     Grayscale rather than colour: 10678's MIRI parallel observes F770W alone, so
     there is nothing to make a colour from, and a single band rendered in three
     identical channels is the format a HiPS viewer expects.
+
+    `residual` renders the star-subtracted mosaic (find_residual_i2d) with the
+    plain flavour's per-tile stretch.
     """
+    if residual and bgmatch:
+        raise ValueError("no background-matched residual MIRI flavour: the "
+                         "match is solved on the images")
     from astropy.io import fits
     from astropy.visualization import simple_norm
     from PIL import Image
@@ -916,9 +1036,10 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
     from astropy.wcs import WCS
     Image.MAX_IMAGE_PIXELS = None
 
-    src = find_i2d(MIRI_FILTER).get(obs)
+    src = (find_residual_i2d if residual else find_i2d)(MIRI_FILTER).get(obs)
     if not src:
-        raise RuntimeError(f"{obs}: no {MIRI_FILTER.upper()} mosaic")
+        raise RuntimeError(f"{obs}: no {MIRI_FILTER.upper()} "
+                           f"{'residual ' if residual else ''}mosaic")
     os.makedirs(OUTDIR, exist_ok=True)
     hdu = next(h for h in fits.open(src)
                if h.data is not None and h.data.ndim == 2)
@@ -946,7 +1067,7 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
     else:
         g = simple_norm(d, stretch="asinh", min_percent=1, max_percent=99.5)(d)
     mono = np.stack([np.nan_to_num(g)] * 3, axis=2)
-    png = miri_png_for(obs, bgmatch)
+    png = miri_png_for(obs, bgmatch, residual)
     avm = avm_for_saved_png(WCS(hdu.header).celestial, ny, nx,
                             flip=-1, transpose=Image.ROTATE_180)
     _save_rgb(np.clip(mono, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
@@ -959,7 +1080,7 @@ def build_miri_obs(obs, bgmatch=False, hips=True):
         from tqdm import tqdm
         from reproject.hips import reproject_to_hips
         from jwst_rgb.landing_page import patch_hips_dir
-        hips_dir = miri_hips_for(obs, bgmatch)
+        hips_dir = miri_hips_for(obs, bgmatch, residual)
         if os.path.exists(hips_dir):
             shutil.rmtree(hips_dir)
         reproject_to_hips(png, coord_system_out="galactic", level=None,
@@ -1002,13 +1123,15 @@ def miri_match_is_stale(miri):
     return None
 
 
-def miri_needs_build(obs, src, bgmatch=False):
+def miri_needs_build(obs, src, bgmatch=False, residual=False, image_src=None):
     import time
     t_src = source_mtime(src)
     if t_src is None:
         return "VANISHED"
     if time.time() - t_src < SETTLE_SECONDS:
         return "SETTLING"
+    if residual and residual_predates_image(src, image_src):
+        return "CHAIN"
     if bgmatch:
         # Existence of the table is not enough: it carries offsets for the
         # fields --miri-match was last run over, and build_miri_obs raises on
@@ -1021,10 +1144,10 @@ def miri_needs_build(obs, src, bgmatch=False):
         match = load_miri_match()
         if not match or obs not in match.get("offsets", {}):
             return "NOMATCH"
-    png = miri_png_for(obs, bgmatch)
+    png = miri_png_for(obs, bgmatch, residual)
     if not os.path.exists(png):
         return "no MIRI png yet"
-    hips = miri_hips_for(obs, bgmatch)
+    hips = miri_hips_for(obs, bgmatch, residual)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "png exists but its HiPS is missing or incomplete"
     if t_src > os.path.getmtime(png):
@@ -1042,7 +1165,24 @@ def miri_needs_build(obs, src, bgmatch=False):
     return None
 
 
-def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
+def residual_predates_image(residual_src, image_src):
+    """True when a residual mosaic is older than the image mosaic beside it.
+
+    The cataloguing chain keeps every stage it writes, so after a re-reduction
+    the previous run's final-stage residual stays on disk next to the new
+    image until the chain reaches that stage again, which takes days.  A
+    residual built in that window would be a residual of the old reduction
+    shown beside the new image layer.  A missing path on either side is not
+    this case (the VANISHED verdicts cover a mosaic going away).
+    """
+    if not residual_src or not image_src:
+        return False
+    t_res, t_img = source_mtime(residual_src), source_mtime(image_src)
+    return t_res is not None and t_img is not None and t_res < t_img
+
+
+def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
+                image_inv=None):
     """Is this observation missing an RGB, or is its RGB older than its data?
 
     The mtime comparison matters more than usual here: 10678 has no astrometric
@@ -1050,6 +1190,10 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     and are expected to be re-reduced once the tie is measured.  When that
     happens the i2d files are rewritten and every product built from them must
     be rebuilt -- silently serving the pre-tie version is the failure mode.
+
+    For a residual flavour, `image_inv` is the image inventory; a residual
+    older than its image returns CHAIN (see residual_predates_image) and is
+    left for the chain to rewrite.
     """
     import time
     # A mosaic that changed in the last few minutes may still be being written;
@@ -1063,6 +1207,11 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
             return "VANISHED"
         if time.time() - mtime < SETTLE_SECONDS:
             return "SETTLING"
+    if residual and image_inv is not None and any(
+            residual_predates_image(inv[f].get(obs),
+                                    (image_inv.get(f) or {}).get(obs))
+            for f in FILTERS):
+        return "CHAIN"
     if stretch_match(stretch):
         # Same rule as MIRI: the table existing is not enough, because
         # build_obs raises on a field the table does not cover.  Reporting it
@@ -1072,14 +1221,18 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
                 obs not in match["filters"].get(f, {}).get("offsets", {})
                 for f in FILTERS):
             return "NOMATCH"
-    png = png_for(obs, stretch=stretch)
+    # `inv` has to be the inventory of the same kind -- inventory(residual) --
+    # since the source mtimes below are read from it.  A regenerated chain
+    # rewrites its final-stage residual, which then rebuilds like a
+    # re-reduction.
+    png = png_for(obs, stretch=stretch, residual=residual)
     if not os.path.exists(png):
         return "no RGB yet"
     # The HiPS has to be checked separately.  A run killed between writing the
     # png and finishing the pyramid leaves a png NEWER than its sources, which
     # every later tick then reads as up to date -- so the observation silently
     # never reaches the coadd.  That happened to o135_nrcb.
-    hips = hips_for(obs, stretch=stretch)
+    hips = hips_for(obs, stretch=stretch, residual=residual)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "RGB exists but its HiPS is missing or incomplete"
     if stretch_match(stretch) and os.path.exists(NIRCAM_MATCH_JSON) and \
@@ -1100,37 +1253,74 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH):
     return None
 
 
+def nircam_flavours():
+    """(residual, stretch) for every NIRCam layer, image flavours first."""
+    return ([(False, k) for k in sorted(STRETCHES)] +
+            [(True, k) for k in RESIDUAL_STRETCHES])
+
+
+#: (residual, bgmatch) for every MIRI layer, image flavours first.
+MIRI_FLAVOURS = ((False, False), (False, True), (True, False))
+
+# Hours of building an --auto run may START, after which it stops building and
+# coadds what it has.  The cron job's wall is 8 h, and coadding only happens
+# once every build is done: 43089429 (2026-09-23) built 51 layers in 8 h and
+# was killed before its coadd, so none of them reached a mosaic that tick.
+# The residual flavours add a build per tile per flavour on top of that, so
+# the budget is what lets a backlog drain over several ticks instead of timing
+# out on every one.  Two hours are left for the coadds and a one-build overrun.
+DEFAULT_BUILD_BUDGET_H = 6.0
+
+
 def _pending_summary():
     """What an unblocked --auto tick would build right now, as display lines.
 
     Read-only: used to report work stuck behind a held lock.
     """
-    inv, obs_all = inventory()
     out = []
-    for stretch in sorted(STRETCHES):
-        for o in [o for o in obs_all if all(o in inv[f] for f in FILTERS)]:
-            why = needs_build(o, inv, stretch=stretch)
-            # VANISHED joins SETTLING as a not-buildable-right-now verdict
-            # rather than pending work: nothing is waiting on it, the tile is
-            # mid-regeneration and comes back on a later tick.
-            if why and why not in ("SETTLING", "VANISHED"):
-                out.append(f"{o} NIRCam/{stretch} -- {why}")
-    miri = find_i2d(MIRI_FILTER)
-    for bgmatch in (False, True):
-        tag = "MIRI+bg" if bgmatch else "MIRI"
+    image_inv = None
+    for residual in (False, True):
+        inv, obs_all = inventory(residual=residual)
+        if not residual:
+            image_inv = inv
+        ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
+        for r, stretch in nircam_flavours():
+            if r != residual:
+                continue
+            tag = f"residual/{stretch}" if residual else stretch
+            for o in ready:
+                why = needs_build(o, inv, stretch=stretch, residual=residual,
+                                  image_inv=image_inv if residual else None)
+                # VANISHED joins SETTLING as a not-buildable-right-now verdict
+                # rather than pending work: nothing is waiting on it, the tile
+                # is mid-regeneration and comes back on a later tick.  CHAIN
+                # waits on the cataloguing chain, not on this lock.
+                if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
+                    out.append(f"{o} NIRCam/{tag} -- {why}")
+    miri_images = find_i2d(MIRI_FILTER)
+    for residual, bgmatch in MIRI_FLAVOURS:
+        miri = find_residual_i2d(MIRI_FILTER) if residual else miri_images
+        tag = "MIRI+res" if residual else "MIRI+bg" if bgmatch else "MIRI"
         for o, src in sorted(miri.items()):
-            why = miri_needs_build(o, src, bgmatch)
+            why = miri_needs_build(o, src, bgmatch, residual,
+                                   image_src=miri_images.get(o))
             # One exclusion more than the NIRCam loop above, because only
             # miri_needs_build can return NOMATCH.
-            if why and why not in ("SETTLING", "NOMATCH", "VANISHED"):
+            if why and why not in ("SETTLING", "NOMATCH", "VANISHED", "CHAIN"):
                 out.append(f"{o} {tag} -- {why}")
     return out
 
 
-def cmd_auto(publish=False):
+def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
     """Build whatever is buildable and not yet built, then recoadd if anything
     changed.  Safe to run on a schedule: a lock file keeps a slow build from
     overlapping the next tick, and nothing is rebuilt unless its source moved.
+
+    Builds stop being started once `budget_hours` have passed; whatever is
+    left waits for the next tick, and what was built is coadded now.  Every
+    image flavour is tried before any residual one, so the residual layers
+    wait behind an image backlog: a survey-wide re-reduction (~57 tiles x 4
+    image flavours) holds them back for several ticks.
     """
     import time
     lock = f"{OUTDIR}/.auto.lock"
@@ -1178,110 +1368,179 @@ def cmd_auto(publish=False):
         print("another run took the lock as this one started; exiting")
         return 0
     try:
-        inv, obs_all = inventory()
-        ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
-              f"{len(ready)} observation(s) complete in all filters")
-        built, failed = {k: [] for k in STRETCHES}, []
-        for stretch in sorted(STRETCHES):
-          for o in ready:
-            why = needs_build(o, inv, stretch=stretch)
-            if why == "VANISHED":
-                print(f"  {o} {stretch}: a source mosaic went away while this "
-                      f"tick was running (stale-tagged for regeneration?); "
-                      f"skipping it this time")
-                continue
-            if why == "SETTLING":
-                print(f"  {o} {stretch}: source written in the last "
-                      f"{SETTLE_SECONDS // 60} min; leaving it to settle")
-                continue
-            if why == "NOMATCH":
-                print(f"  {o} {stretch}: no background match for this field; "
-                      f"run --nircam-match")
-                continue
-            if not why:
-                print(f"  {o} {stretch}: up to date")
-                continue
-            print(f"  {o} {stretch}: building -- {why}", flush=True)
-            try:
-                _, hd = build_obs(o, stretch=stretch)
-            except Exception as exc:                       # keep going on the rest
-                print(f"  {o} {stretch}: FAILED {type(exc).__name__}: {exc}",
-                      flush=True)
-                failed.append(f"{o}:{stretch}")
-                continue
-            if hd:
-                try:
-                    check_orientation(hd, inv[TARGET_FILTER][o])
-                except (RuntimeError, OSError, ValueError, TypeError,
-                        KeyError) as exc:
-                    print(f"  {o} {stretch}: orientation check unavailable "
-                          f"({type(exc).__name__}: {exc})", flush=True)
-            built[stretch].append(o)
-        # MIRI parallel: its own field, its own monochrome layers, its own
-        # coadds.  Two flavours of every tile -- plain and background-matched --
-        # so the two mosaics can be compared directly on the same sky.
-        miri = find_i2d(MIRI_FILTER)
-        print(f"  {len(miri)} MIRI {MIRI_FILTER.upper()} mosaic(s)")
-        # Without this the background-matched flavour silently stops tracking
-        # the survey: fields that land after the last hand-run solve report
-        # NOMATCH for ever.  Re-rendering follows on its own, since
-        # miri_needs_build treats a match newer than a png as stale.
-        why = miri_match_is_stale(miri)
-        if why:
-            print(f"  refreshing the MIRI background match -- {why}",
-                  flush=True)
-            try:
-                cmd_miri_match()
-            except (OSError, ValueError, TypeError, KeyError,
-                    RuntimeError) as exc:
-                print(f"  MIRI match FAILED {type(exc).__name__}: {exc}; "
-                      f"the bgmatch flavour will be left as it is", flush=True)
-        miri_built = {False: [], True: []}
-        for bgmatch in (False, True):
-            tag = "MIRI+bg" if bgmatch else "MIRI"
-            for o, src in sorted(miri.items()):
-                why = miri_needs_build(o, src, bgmatch)
-                if why == "VANISHED":
-                    print(f"  {o} {tag}: its mosaic went away while this tick "
-                          f"was running (stale-tagged for regeneration?); "
-                          f"skipping it this time")
-                    continue
-                if why == "SETTLING":
-                    print(f"  {o} {tag}: source written in the last "
-                          f"{SETTLE_SECONDS // 60} min; leaving it to settle")
-                    continue
-                if why == "NOMATCH":
-                    print(f"  {o} {tag}: no background match on disk; "
-                          f"run --miri-match")
-                    continue
-                if not why:
-                    print(f"  {o} {tag}: up to date")
-                    continue
-                print(f"  {o} {tag}: building -- {why}", flush=True)
-                try:
-                    _, hd = build_miri_obs(o, bgmatch=bgmatch)
-                except (RuntimeError, OSError, ValueError,
-                        TypeError, KeyError) as exc:
-                    print(f"  {o} {tag}: FAILED {type(exc).__name__}: {exc}",
-                          flush=True)
-                    failed.append(f"{o}:{tag}")
-                    continue
-                if hd:
-                    try:
-                        check_orientation(hd, src)
-                    except (RuntimeError, OSError, ValueError, TypeError,
-                            KeyError) as exc:
-                        print(f"  {o} {tag}: orientation check unavailable "
-                              f"({type(exc).__name__}: {exc})", flush=True)
-                miri_built[bgmatch].append(o)
+        deadline = time.time() + budget_hours * 3600
+        deferred = []
+        # Residual builds held by a CHAIN verdict.  Counted in the tick log
+        # because nothing else reports them: they are not pending on the lock,
+        # and a chain that never reruns would leave them waiting silently.
+        chained = []
 
-        for stretch in sorted(STRETCHES):
-            name = coadd_name_for(stretch)
-            if built[stretch]:
-                print(f"built {len(built[stretch])} for {name}: "
-                      f"{', '.join(built[stretch])} -- recoadding")
-                if cmd_coadd(stretch=stretch):
+        def out_of_time(what):
+            # Checked before each build, never inside one: a build is ~9 min,
+            # so the overrun past the budget is one build at most.
+            if time.time() < deadline:
+                return False
+            deferred.append(what)
+            return True
+
+        built = {fl: [] for fl in nircam_flavours()}
+        miri_built = {fl: [] for fl in MIRI_FLAVOURS}
+        failed = []
+        # Taken by the image passes and read by the residual ones, which run
+        # after them, for the residual-older-than-image check.
+        image_inv, miri_images = {}, {}
+
+        def nircam_pass(residual):
+            inv, obs_all = inventory(residual=residual)
+            if not residual:
+                image_inv.update(inv)
+            ready = [o for o in obs_all if all(o in inv[f] for f in FILTERS)]
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                  f"{len(ready)} observation(s) complete in all filters"
+                  f"{' (residual)' if residual else ''}")
+            stretches = RESIDUAL_STRETCHES if residual else sorted(STRETCHES)
+            for stretch in stretches:
+                tag = f"residual/{stretch}" if residual else stretch
+                for o in ready:
+                    why = needs_build(o, inv, stretch=stretch,
+                                      residual=residual,
+                                      image_inv=image_inv if residual else None)
+                    if why == "VANISHED":
+                        print(f"  {o} {tag}: a source mosaic went away while "
+                              f"this tick was running (stale-tagged for "
+                              f"regeneration?); skipping it this time")
+                        continue
+                    if why == "CHAIN":
+                        print(f"  {o} {tag}: residual predates the image "
+                              f"mosaic; waiting for the chain to rewrite it")
+                        chained.append(f"{o} {tag}")
+                        continue
+                    if why == "SETTLING":
+                        print(f"  {o} {tag}: source written in the last "
+                              f"{SETTLE_SECONDS // 60} min; leaving it to settle")
+                        continue
+                    if why == "NOMATCH":
+                        print(f"  {o} {tag}: no background match for this "
+                              f"field; run --nircam-match")
+                        continue
+                    if not why:
+                        print(f"  {o} {tag}: up to date")
+                        continue
+                    if out_of_time(f"{o} {tag}"):
+                        continue
+                    print(f"  {o} {tag}: building -- {why}", flush=True)
+                    try:
+                        _, hd = build_obs(o, stretch=stretch, residual=residual)
+                    except Exception as exc:               # keep going on the rest
+                        print(f"  {o} {tag}: FAILED {type(exc).__name__}: {exc}",
+                              flush=True)
+                        failed.append(f"{o}:{tag}")
+                        continue
+                    if hd:
+                        try:
+                            check_orientation(hd, inv[TARGET_FILTER][o])
+                        except (RuntimeError, OSError, ValueError, TypeError,
+                                KeyError) as exc:
+                            print(f"  {o} {tag}: orientation check unavailable "
+                                  f"({type(exc).__name__}: {exc})", flush=True)
+                    built[(residual, stretch)].append(o)
+
+        def miri_pass(residual):
+            # MIRI parallel: its own field, its own monochrome layers, its own
+            # coadds.  Two image flavours of every tile -- plain and
+            # background-matched -- so the two mosaics can be compared directly
+            # on the same sky, and one residual flavour.
+            miri = (find_residual_i2d if residual else find_i2d)(MIRI_FILTER)
+            print(f"  {len(miri)} MIRI {MIRI_FILTER.upper()} "
+                  f"{'residual ' if residual else ''}mosaic(s)")
+            if not residual:
+                miri_images.update(miri)
+                # Without this the background-matched flavour silently stops
+                # tracking the survey: fields that land after the last hand-run
+                # solve report NOMATCH for ever.  Re-rendering follows on its
+                # own, since miri_needs_build treats a match newer than a png
+                # as stale.
+                why = miri_match_is_stale(miri)
+                if why:
+                    print(f"  refreshing the MIRI background match -- {why}",
+                          flush=True)
+                    try:
+                        cmd_miri_match()
+                    except (OSError, ValueError, TypeError, KeyError,
+                            RuntimeError) as exc:
+                        print(f"  MIRI match FAILED {type(exc).__name__}: "
+                              f"{exc}; the bgmatch flavour will be left as it "
+                              f"is", flush=True)
+            for fl in [f for f in MIRI_FLAVOURS if f[0] == residual]:
+                bgmatch = fl[1]
+                tag = ("MIRI+res" if residual else
+                       "MIRI+bg" if bgmatch else "MIRI")
+                for o, src in sorted(miri.items()):
+                    why = miri_needs_build(o, src, bgmatch, residual,
+                                           image_src=miri_images.get(o))
+                    if why == "VANISHED":
+                        print(f"  {o} {tag}: its mosaic went away while this "
+                              f"tick was running (stale-tagged for "
+                              f"regeneration?); skipping it this time")
+                        continue
+                    if why == "CHAIN":
+                        print(f"  {o} {tag}: residual predates the image "
+                              f"mosaic; waiting for the chain to rewrite it")
+                        chained.append(f"{o} {tag}")
+                        continue
+                    if why == "SETTLING":
+                        print(f"  {o} {tag}: source written in the last "
+                              f"{SETTLE_SECONDS // 60} min; leaving it to settle")
+                        continue
+                    if why == "NOMATCH":
+                        print(f"  {o} {tag}: no background match on disk; "
+                              f"run --miri-match")
+                        continue
+                    if not why:
+                        print(f"  {o} {tag}: up to date")
+                        continue
+                    if out_of_time(f"{o} {tag}"):
+                        continue
+                    print(f"  {o} {tag}: building -- {why}", flush=True)
+                    try:
+                        _, hd = build_miri_obs(o, bgmatch=bgmatch,
+                                               residual=residual)
+                    except (RuntimeError, OSError, ValueError,
+                            TypeError, KeyError) as exc:
+                        print(f"  {o} {tag}: FAILED {type(exc).__name__}: {exc}",
+                              flush=True)
+                        failed.append(f"{o}:{tag}")
+                        continue
+                    if hd:
+                        try:
+                            check_orientation(hd, src)
+                        except (RuntimeError, OSError, ValueError, TypeError,
+                                KeyError) as exc:
+                            print(f"  {o} {tag}: orientation check unavailable "
+                                  f"({type(exc).__name__}: {exc})", flush=True)
+                    miri_built[fl].append(o)
+
+        # Every image flavour before any residual one, so a tick that runs out
+        # of budget spends it on the layers the viewers show by default.
+        for residual in (False, True):
+            nircam_pass(residual)
+            miri_pass(residual)
+        if deferred:
+            print(f"build budget of {budget_hours:g} h used up; "
+                  f"{len(deferred)} build(s) left for the next tick: "
+                  f"{', '.join(deferred)}")
+        if chained:
+            print(f"{len(chained)} residual build(s) waiting for their chain "
+                  f"to rewrite a residual older than its image: "
+                  f"{', '.join(chained)}")
+
+        for fl in nircam_flavours():
+            residual, stretch = fl
+            name = coadd_name_for(stretch, residual=residual)
+            if built[fl]:
+                print(f"built {len(built[fl])} for {name}: "
+                      f"{', '.join(built[fl])} -- recoadding")
+                if cmd_coadd(stretch=stretch, residual=residual):
                     # the input guard refuses by returning non-zero; without
                     # this the tick prints its reason and still reports success
                     failed.append(f"coadd:{name}")
@@ -1289,12 +1548,13 @@ def cmd_auto(publish=False):
                 print(f"nothing new for {name}; left alone")
         if any(built.values()) and publish:
             cmd_publish()
-        for bgmatch in (False, True):
-            name = MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME
-            if miri_built[bgmatch]:
-                print(f"built {len(miri_built[bgmatch])} for {name}: "
-                      f"{', '.join(miri_built[bgmatch])} -- recoadding")
-                if cmd_coadd(miri=True, bgmatch=bgmatch):
+        for fl in MIRI_FLAVOURS:
+            residual, bgmatch = fl
+            name = miri_coadd_name_for(bgmatch, residual)
+            if miri_built[fl]:
+                print(f"built {len(miri_built[fl])} for {name}: "
+                      f"{', '.join(miri_built[fl])} -- recoadding")
+                if cmd_coadd(miri=True, bgmatch=bgmatch, residual=residual):
                     failed.append(f"coadd:{name}")
             else:
                 print(f"nothing new for {name}; left alone")
@@ -1344,6 +1604,11 @@ def cmd_publish():
     # is the product, and 34 more trees is a lot of rsync for nothing.
     src += [f"{OUTDIR}/{MIRI_COADD_NAME}",
             f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME}"]
+    # Residual flavours: the coadds only, like MIRI.  Per-field residual
+    # layers would double the per-field NIRCam trees for a view no page links.
+    src += [f"{OUTDIR}/{coadd_name_for(k, residual=True)}"
+            for k in RESIDUAL_STRETCHES]
+    src += [f"{OUTDIR}/{MIRI_RESIDUAL_COADD_NAME}"]
     for s in src:
         if not os.path.isdir(os.path.join(s, "Norder3")):
             print(f"  skipping {os.path.basename(s)}: no Norder3")
@@ -1541,19 +1806,20 @@ def unreadable_layers(layers):
     return out
 
 
-def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
+def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
+              residual=False):
     """Coadd every per-observation HiPS into one growing mosaic.
 
     NIRCam and MIRI are coadded separately: the two point at different sky and
     coadd_hips paints last-wins, so mixing them would let whichever came last
-    overwrite the other wherever they happen to touch.
+    overwrite the other wherever they happen to touch.  Residual layers are
+    coadded into their own mosaics for the same reason.
     """
     from reproject.hips import coadd_hips
-    if miri:
-        pat = f"GCTreasury_*_MIRI_F770W{miri_suffix(bgmatch)}_hips"
-    else:
-        pat = f"GCTreasury_*_RGB_480-mean-212{stretch_suffix(stretch)}_hips"
-    layers = sorted(glob.glob(f"{OUTDIR}/{pat}"))
+    if not miri:
+        check_residual_stretch(stretch, residual)
+    tail = layer_tail(miri, bgmatch, stretch, residual)
+    layers = sorted(glob.glob(f"{OUTDIR}/GCTreasury_*{tail}"))
     if miri and not bgmatch:
         # the plain glob also matches the _bgmatch layers; keep them apart
         layers = [L for L in layers if "_bgmatch_hips" not in L]
@@ -1565,12 +1831,13 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
                 layers = [L for L in layers if f"_{other}_hips" not in L]
     # Retire layers whose source is no longer current -- chiefly the per-module
     # halves once a -merged mosaic supersedes them.  Renamed, never deleted.
-    active = set(find_i2d(MIRI_FILTER) if miri else inventory()[1])
+    if miri:
+        active = set((find_residual_i2d if residual else find_i2d)(MIRI_FILTER))
+    else:
+        active = set(inventory(residual=residual)[1])
     keep = []
     for L in layers:
         b = os.path.basename(L)
-        tail = (f"_MIRI_F770W{miri_suffix(bgmatch)}_hips" if miri
-                else f"_RGB_480-mean-212{stretch_suffix(stretch)}_hips")
         key = b[len("GCTreasury_"):-len(tail)]
         if key in active:
             keep.append(L)
@@ -1584,10 +1851,10 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH):
         print(f"no per-observation {'MIRI ' if miri else ''}HiPS to coadd")
         return 1
     if miri:
-        out = f"{OUTDIR}/{MIRI_BGMATCH_COADD_NAME if bgmatch else MIRI_COADD_NAME}"
+        out = f"{OUTDIR}/{miri_coadd_name_for(bgmatch, residual)}"
     else:
         # suffix goes BEFORE _hips, matching jwst_gc_treasury_miri_bgmatch_hips
-        out = f"{OUTDIR}/{coadd_name_for(stretch)}"
+        out = f"{OUTDIR}/{coadd_name_for(stretch, residual=residual)}"
 
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, order_layers, plan_coadd, save_manifest,
@@ -1706,12 +1973,32 @@ def main():
     ap.add_argument("--full-coadd", action="store_true",
                     help="force a full coadd rebuild instead of appending new "
                          "layers to the existing one")
-    ap.add_argument("--stretch", choices=sorted(STRETCHES), default=DEFAULT_STRETCH,
+    ap.add_argument("--stretch", choices=sorted(STRETCHES), default=None,
                     help="rendering flavour: pct = per-image percentiles "
                          "(default, historical name), vminmax = one fixed pair "
-                         "of cuts in MJy/sr for every image")
+                         "of cuts in MJy/sr for every image.  With --residual "
+                         f"the default is {RESIDUAL_STRETCHES[0]} and only "
+                         f"{', '.join(RESIDUAL_STRETCHES)} are allowed")
+    ap.add_argument("--residual", action="store_true",
+                    help="build from the star-subtracted DAOPHOT residual "
+                         "mosaics instead of the images (--obs/--all/--miri/"
+                         "--coadd)")
+    ap.add_argument("--budget-hours", type=float, default=DEFAULT_BUILD_BUDGET_H,
+                    help="with --auto, stop starting builds after this many "
+                         f"hours (default {DEFAULT_BUILD_BUDGET_H}); the rest "
+                         "wait for the next tick")
     ap.add_argument("--no-hips", action="store_true", help="png only")
     a = ap.parse_args()
+    if a.stretch is None:
+        a.stretch = RESIDUAL_STRETCHES[0] if a.residual else DEFAULT_STRETCH
+    if a.residual and not a.miri:
+        # fail before any lock is taken or any file is touched
+        try:
+            check_residual_stretch(a.stretch, a.residual)
+        except ValueError as e:
+            ap.error(str(e))
+    if a.residual and a.bgmatch:
+        ap.error("--residual has no bgmatch flavour")
 
     if a.list:
         return cmd_list()
@@ -1720,43 +2007,47 @@ def main():
     if a.miri_match:
         return cmd_miri_match()
     if a.auto:
-        return cmd_auto(publish=a.publish)
+        return cmd_auto(publish=a.publish, budget_hours=a.budget_hours)
     if a.coadd:
         # cmd_auto holds the lock around its own recoadds, so this is taken
         # here rather than inside cmd_coadd, which both paths call.
-        what = f"--coadd {'miri' if a.miri else a.stretch}"
+        what = (f"--coadd {'miri' if a.miri else a.stretch}"
+                f"{' residual' if a.residual else ''}")
         with coadd_lock(what):
             return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
-                             stretch=a.stretch)
+                             stretch=a.stretch, residual=a.residual)
 
     if a.miri:
         # MIRI is one filter and its own set of layers, so it has its own
         # inventory and its own builder.  Selecting a single field matters for
         # the background-matched flavour: a fresh solve invalidates all 34, and
         # serially that is most of a day.
-        miri = find_i2d(MIRI_FILTER)
+        miri = (find_residual_i2d if a.residual else find_i2d)(MIRI_FILTER)
         targets = [a.obs] if a.obs else sorted(miri)
         missing = [o for o in targets if o not in miri]
         if missing:
-            print(f"no MIRI {MIRI_FILTER.upper()} mosaic for: "
+            print(f"no MIRI {MIRI_FILTER.upper()} "
+                  f"{'final-stage residual ' if a.residual else ''}mosaic for: "
                   f"{', '.join(missing)}")
             return 1
         for o in targets:
             png, hd = build_miri_obs(o, bgmatch=a.bgmatch,
-                                     hips=not a.no_hips)
+                                     hips=not a.no_hips, residual=a.residual)
             if hd:
                 check_orientation(hd, miri[o])
         return 0
 
-    inv, obs = inventory()
+    inv, obs = inventory(residual=a.residual)
     targets = ([a.obs] if a.obs else
                [o for o in obs if all(o in inv[f] for f in FILTERS)])
     if not targets:
-        print("nothing to build: no observation has i2d in every filter yet")
+        print(f"nothing to build: no observation has "
+              f"{'a final-stage residual' if a.residual else 'i2d'} "
+              f"in every filter yet")
         return 1
     for o in targets:
         png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips,
-                            stretch=a.stretch)
+                            stretch=a.stretch, residual=a.residual)
         if hd:
             check_orientation(hd, inv[TARGET_FILTER][o])
     return 0

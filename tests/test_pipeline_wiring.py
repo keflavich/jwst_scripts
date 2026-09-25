@@ -195,7 +195,7 @@ def test_cmd_coadd_checks_inputs_before_removing_the_output(tmp_path,
 
     monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
     monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
-    monkeypatch.setattr(G, "inventory", lambda: ({}, ["o001", "o002"]))
+    monkeypatch.setattr(G, "inventory", lambda **k: ({}, ["o001", "o002"]))
     monkeypatch.setattr(G.glob, "glob", lambda pat: sorted(layers))
 
     def explode(*a, **k):                         # coadd_hips must never run
@@ -266,12 +266,14 @@ def test_a_refused_coadd_makes_the_tick_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(G, "build_obs", lambda o, **k: (None, None))
     monkeypatch.setattr(G, "build_miri_obs", lambda o, **k: (None, None))
     monkeypatch.setattr(G, "needs_build", lambda o, inv, **k: "no RGB yet")
-    monkeypatch.setattr(G, "miri_needs_build", lambda o, s, bg=False: None)
+    monkeypatch.setattr(G, "miri_needs_build",
+                        lambda o, s, bg=False, residual=False, **k: None)
     monkeypatch.setattr(G, "miri_match_is_stale", lambda m: None)
     monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda *a, **k: {})
     monkeypatch.setattr(G, "inventory",
-                        lambda: ({f: {"o001": "x"} for f in G.FILTERS},
-                                 ["o001"]))
+                        lambda **k: ({f: {"o001": "x"} for f in G.FILTERS},
+                                     ["o001"]))
     assert G.cmd_auto() == 1
 
 

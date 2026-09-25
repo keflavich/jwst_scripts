@@ -112,7 +112,7 @@ def test_needs_build_nomatch_when_field_absent_from_table(
 def test_needs_build_plain_ignores_the_match_table(tmp_path, monkeypatch, match_file):
     """Only the background-matched flavour consults it."""
     inv = _inv(tmp_path, "o999")
-    monkeypatch.setattr(G, "png_for", lambda o, stretch=None: str(tmp_path / "absent.png"))
+    monkeypatch.setattr(G, "png_for", lambda o, stretch=None, residual=False: str(tmp_path / "absent.png"))
     assert G.needs_build("o999", inv, stretch="pct") == "no RGB yet"
 
 
@@ -127,8 +127,8 @@ def test_needs_build_flags_a_refreshed_match_as_stale(
     png.write_bytes(b"0")
     hips = tmp_path / "o127_hips" / "Norder3"
     hips.mkdir(parents=True)
-    monkeypatch.setattr(G, "png_for", lambda o, stretch=None: str(png))
-    monkeypatch.setattr(G, "hips_for", lambda o, stretch=None: str(tmp_path / "o127_hips"))
+    monkeypatch.setattr(G, "png_for", lambda o, stretch=None, residual=False: str(png))
+    monkeypatch.setattr(G, "hips_for", lambda o, stretch=None, residual=False: str(tmp_path / "o127_hips"))
 
     old = time.time() - 500
     os.utime(png, (old, old))
