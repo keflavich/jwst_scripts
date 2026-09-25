@@ -997,6 +997,12 @@ def push_remote(dry=False):
 PRODUCTS = ("red", "rc", "ultrared", "density", "colour", "stars", "catalog")
 
 
+#: `--check`'s exit status for "a rebuild is due" -- distinct from 1, which
+#: main() already returns for "no catalogue pairs", so the cron can tell a due
+#: rebuild from a broken check.
+REBUILD_DUE = 3
+
+
 def take_lock(max_age=6 * 3600):
     if os.path.exists(LOCK):
         age = time.time() - os.path.getmtime(LOCK)
@@ -1031,6 +1037,11 @@ def main():
     ap.add_argument("--push-only", action="store_true",
                     help="mirror whatever is already published to starformation "
                          "and exit; takes no lock and builds nothing")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 0 when the published build matches the input "
+                         "catalogues, %d when a rebuild is due; builds nothing "
+                         "and takes no lock.  Lets the cron size (or skip) the "
+                         "build job before submitting it" % REBUILD_DUE)
     ap.add_argument("--refit", action="store_true",
                     help="report the RC ridge and exit without building")
     ap.add_argument("--level", type=int, default=None)
@@ -1076,6 +1087,16 @@ def main():
     report_lineage(pairs)
 
     fp = fingerprint(pairs)
+    if a.check:
+        built = None
+        if os.path.exists(STAMP):
+            with open(STAMP) as fh:
+                built = json.load(fh).get("built")
+        if built == fp:
+            print("overlays up to date")
+            return 0
+        print("overlays rebuild due")
+        return REBUILD_DUE
     if a.auto and not a.force and os.path.exists(STAMP):
         with open(STAMP) as fh:
             old = json.load(fh)

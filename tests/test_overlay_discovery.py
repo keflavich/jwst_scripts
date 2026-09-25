@@ -236,3 +236,31 @@ def test_cache_version_bump_invalidates_the_stamp(catdir, monkeypatch):
     after = overlays.fingerprint(pairs)
     assert before["items"] == after["items"]
     assert before != after
+
+
+def test_check_reports_due_then_up_to_date_and_builds_nothing(
+        catdir, tmp_path, monkeypatch):
+    """The cron sizes and submits the build job on --check's exit status, so
+    3 must mean "due", 0 "up to date", and neither may build or lock."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE == 3
+    assert called == [] and not os.path.exists(tmp_path / "lock")
+
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--auto"])
+    assert rc == 0 and sorted(called) == sorted(BUILDERS)
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == 0 and called == []
+
+    touch(catdir, cat("o128", "f212n", 1))
+    touch(catdir, cat("o128", "f480m", 1))
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE and called == []
+
+
+def test_check_is_distinct_from_a_broken_run(catdir, tmp_path, monkeypatch):
+    """No catalogues at all is an error (1), which the cron must not read as
+    either "up to date" (0) or "due" (3)."""
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc not in (0, overlays.REBUILD_DUE) and called == []
