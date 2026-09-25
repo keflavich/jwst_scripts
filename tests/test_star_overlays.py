@@ -287,3 +287,22 @@ def test_star_png_round_trips_through_its_avm(tmp_path, monkeypatch):
         assert px[3] > 0, f"star {k}: transparent at its own position"
         assert np.abs(px[:3].astype(int) - rgb[k]).max() <= 2, (
             f"star {k}: found {px[:3]}, expected {rgb[k]}")
+
+
+def test_match_catalogs_guards_the_f480m_side_too(tmp_path, monkeypatch):
+    """A foreign saturated row in the F480M catalogue must not reach the
+    matched set, even where the F212N catalogue has a source for it to match.
+    X is an F212N detection far from the rest of the field; F480M carries X
+    only as a (survey-wide, foreign) saturated row."""
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    step = 2.0 / 3600
+    own = [(266.40 + i * step, -29.0) for i in range(5)]
+    X = (266.60, -29.0)
+    ra, dec = np.array(own + [X]).T
+    _write_cat(tmp_path, "o040", "f212n", ra, dec, [False] * 6, 0.031)
+    _write_cat(tmp_path, "o040", "f480m", ra, dec, [False] * 5 + [True], 0.063)
+    M, F = overlays.match_catalogs(overlays.latest_pairs())
+    sep = SkyCoord(M["ra"] * u.deg, M["dec"] * u.deg).separation(
+        SkyCoord(X[0] * u.deg, X[1] * u.deg)).arcsec
+    assert not (sep < 0.05).any()
+    assert len(M["ra"]) == 5 and not M["sat"].any()
