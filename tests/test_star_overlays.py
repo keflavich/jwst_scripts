@@ -1,5 +1,6 @@
 """The catalogue-derived star layers: saturated-row guard, cross-field dedupe,
 star styling and rendering, and the HiPS catalogue and cube writers."""
+import json
 import os
 
 import numpy as np
@@ -257,6 +258,73 @@ def test_assemble_hips_cube_names_frames(tmp_path):
     assert props["hips_cube_firstframe"] == "0"
     assert float(props["data_cube_crval3"]) == 17.5
     assert props["hips_pixel_cut"] == "0 5"
+
+
+def test_assemble_hips_cube_also_names_frame_0_with_a_suffix(tmp_path):
+    # Aladin Lite asks for frame 0 as Npix<n>_0; HiPS 1.0 leaves it bare.
+    frames = [_fake_frame(tmp_path, f"f{i}") for i in range(2)]
+    out = str(tmp_path / "cube")
+    hips_formats.assemble_hips_cube(frames, out)
+    tiles = os.path.join(out, "Norder3", "Dir0")
+    assert open(os.path.join(tiles, "Npix12_0.fits"), "rb").read() == b"f0"
+    assert open(os.path.join(tiles, "Npix12.fits"), "rb").read() == b"f0"
+    assert os.path.exists(os.path.join(out, "Norder3", "Allsky_0.fits"))
+
+
+def _aladin_lite_frame(freq, props):
+    """Frame Aladin Lite 3.7-3.9 shows for `freq` (d3/mod.rs, channel_idx)."""
+    c = 299792458.0
+    f_lo, f_hi = c / float(props["em_max"]), c / float(props["em_min"])
+    return int((freq - f_lo) / (f_hi - f_lo) * int(props["hips_cube_depth"]))
+
+
+@pytest.mark.parametrize("depth", [5, 9])
+def test_cube_index_selects_each_frame_in_aladin_lite(tmp_path, depth):
+    frames = [_fake_frame(tmp_path, f"f{i}") for i in range(depth)]
+    out = str(tmp_path / "cube")
+    hips_formats.assemble_hips_cube(frames, out, crval3=17.5, cdelt3=1.0,
+                                    bunit3="mag", em_range=(4.966e-6, 2.108e-6))
+    props = hips_formats._read_properties(os.path.join(out, "properties"))
+    assert float(props["em_min"]) < float(props["em_max"])
+    page = open(os.path.join(out, "index.html")).read()
+    freqs = json.loads(page.split("const FREQS = ")[1].split(";")[0])
+    assert [_aladin_lite_frame(f, props) for f in freqs] == list(range(depth))
+    assert "setFrequency" in page and "17 to 18 mag" in page
+
+
+def test_cube_without_em_range_keeps_the_frame_0_landing_page(tmp_path):
+    frames = [_fake_frame(tmp_path, f"f{i}") for i in range(2)]
+    open(os.path.join(frames[0], "index.html"), "w").write("frame 0 page")
+    out = str(tmp_path / "cube")
+    hips_formats.assemble_hips_cube(frames, out)
+    props = hips_formats._read_properties(os.path.join(out, "properties"))
+    assert "em_min" not in props
+    assert open(os.path.join(out, "index.html")).read() == "frame 0 page"
+
+
+def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
+    got = {}
+
+    def fake_cube(*args, em_range=None, **kw):
+        got[args[6]] = em_range
+        raise StopIteration  # the median-colour half of build_colour is not under test
+
+    for fn in ("report_limits", "write_density", "build_hips"):
+        monkeypatch.setattr(overlays, fn, lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "density",
+                        lambda *a, **k: (np.ones((2, 2)), None, np.ones((2, 2), bool)))
+    monkeypatch.setattr(overlays, "density_cube", fake_cube)
+    x = np.array([0.0, 1.0])
+    with pytest.raises(StopIteration):
+        overlays.build_star_density({"ra": x, "dec": x, "m212": x + 18})
+    with pytest.raises(StopIteration):
+        overlays.build_colour({"ra": x, "dec": x, "col": x, "m480": x + 15,
+                               "sat": np.zeros(2, bool)})
+    assert got["jwst-star-density-f212n-cube-hips"] == overlays.F212N_EM_RANGE
+    assert (got["jwst-star-density-colour-cube-hips"]
+            == overlays.F212N_F480M_EM_RANGE)
+    for lo, hi in got.values():
+        assert 1e-6 < lo < hi < 6e-6
 
 
 def test_assemble_hips_cube_refuses_mismatched_orders(tmp_path):
