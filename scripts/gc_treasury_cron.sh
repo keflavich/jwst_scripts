@@ -113,13 +113,16 @@ already_pending() {
 #
 # The job is sized for a FULL rebuild of all seven products (the star-image
 # render and its order-11 HiPS dominate): publish and the stamp run only at
-# the end, so a timeout publishes nothing.  A job that size waits longer on
+# the end, so a timeout publishes nothing.  Measured on 44 fields
+# (2026-09-25, jobs 43190444 + 43257768): ~12 min wall, 11 GB peak RSS at
+# 16 threads; 8 CPU / 48 GB / 4 h leaves room for the other 24 fields
+# and for 8 threads instead of 16.  Even at this size the job waits longer on
 # astronomy-dept-b, so it is submitted only when --check (run here, on the
 # login node: a glob and a stat per catalogue) says a rebuild is due, rather
 # than every tick as a no-op.  Exit 3 = due; anything but 0/3 is a broken
 # check and must not look like "up to date".
 # RUNNING counts too: a running build has not written its stamp yet, so
-# --check would say "due" and queue a second 128 GB job behind it.
+# --check would say "due" and queue a second job behind it.
 overlays_running() {
     local ids
     ids=$(squeue -h -u "$(id -un)" -t RUNNING -n gctreasury_overlays -o %i 2>/dev/null) || return 1
@@ -130,7 +133,7 @@ overlays_running() {
     return 1
 }
 # A build that fails every time writes no stamp, so --check keeps saying
-# "due" and each tick would queue another 128 GB job behind the failure.
+# "due" and each tick would queue another job behind the failure.
 # If the last two *finished* runs (cancellations ignored) both failed
 # (FAILED/OOM/TIMEOUT/NODE_FAIL), stop submitting until someone looks.
 # Counting the last two finished runs, rather than failures inside a fixed
@@ -156,9 +159,9 @@ if ! already_pending gctreasury_overlays && ! overlays_running \
     0) echo "[$STAMP] overlays up to date; not submitting" ;;
     3) sbatch --job-name=gctreasury_overlays \
          --account=astronomy-dept --qos=astronomy-dept-b \
-         --nodes=1 --ntasks=1 --cpus-per-task=16 --mem=128gb --time=24:00:00 \
+         --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=48gb --time=4:00:00 \
          --output="$LOGDIR/gctreasury_overlays_%j.log" \
-         --wrap "$PY $OVERLAYS --auto --publish --threads 16" ;;
+         --wrap "$PY $OVERLAYS --auto --publish --threads 8" ;;
     *) echo "[$STAMP] overlays --check FAILED (exit $OVERLAY_RC); not submitting.  Output:"
        printf '%s\n' "$OVERLAY_CHECK" | tail -20 ;;
   esac
