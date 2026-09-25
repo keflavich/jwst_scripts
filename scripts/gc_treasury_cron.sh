@@ -105,18 +105,67 @@ already_pending() {
   || echo "[$STAMP] HiPS publish returned non-zero (or was already running)"
 
 # Catalogue-derived overlays (red-star and red-clump density HiPS, the
-# ultra-red source catalogue).  Submitted first, whenever no copy is already
-# pending, and without the imaging gate below: these track the vetted daophot
-# catalogues, not the i2d mosaics, so that gate says nothing about whether
-# they are stale.  --auto fingerprints
-# the input catalogues and exits without a rebuild when nothing changed, and
-# it takes its own lock, so an extra tick is cheap.
-already_pending gctreasury_overlays || \
-sbatch --job-name=gctreasury_overlays \
-  --account=astronomy-dept --qos=astronomy-dept-b \
-  --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=64gb --time=4:00:00 \
-  --output="$LOGDIR/gctreasury_overlays_%j.log" \
-  --wrap "$PY $OVERLAYS --auto --publish --threads 8"
+# ultra-red source catalogue, the star-colour image and catalogue, the density
+# cubes and the colour maps).  Handled first, whenever no copy is already
+# pending or running, and without the imaging gate below: these track the
+# vetted daophot catalogues, not the i2d mosaics, so that gate says nothing
+# about whether they are stale.
+#
+# The job is sized for a FULL rebuild of all seven products (the star-image
+# render and its order-11 HiPS dominate): publish and the stamp run only at
+# the end, so a timeout publishes nothing.  Measured on 44 fields
+# (2026-09-25, jobs 43190444 + 43257768): ~12 min wall, 11 GB peak RSS at
+# 16 threads; 8 CPU / 48 GB / 4 h leaves room for the other 24 fields
+# and for 8 threads instead of 16.  Even at this size the job waits longer on
+# astronomy-dept-b, so it is submitted only when --check (run here, on the
+# login node: a glob and a stat per catalogue) says a rebuild is due, rather
+# than every tick as a no-op.  Exit 3 = due; anything but 0/3 is a broken
+# check and must not look like "up to date".
+# RUNNING counts too: a running build has not written its stamp yet, so
+# --check would say "due" and queue a second job behind it.
+overlays_running() {
+    local ids
+    ids=$(squeue -h -u "$(id -un)" -t RUNNING -n gctreasury_overlays -o %i 2>/dev/null) || return 1
+    if [ -n "$ids" ]; then
+        echo "[$STAMP] gctreasury_overlays running ($(echo $ids | tr ' ' ',')); not submitting another"
+        return 0
+    fi
+    return 1
+}
+# A build that fails every time writes no stamp, so --check keeps saying
+# "due" and each tick would queue another job behind the failure.
+# If the last two *finished* runs (cancellations ignored) both failed
+# (FAILED/OOM/TIMEOUT/NODE_FAIL), stop submitting until someone looks.
+# Counting the last two finished runs, rather than failures inside a fixed
+# window, still catches repeated 24 h TIMEOUTs; one success clears it.
+overlays_failing() {
+    local last
+    last=$(sacct -n -X -P -u "$(id -un)" --name=gctreasury_overlays \
+             -S "$(date -d '30 days ago' +%F)" -E now \
+             -s COMPLETED,FAILED,OUT_OF_MEMORY,TIMEOUT,NODE_FAIL \
+             -o End,State 2>/dev/null | sort | tail -2 || true)
+    if [ "$(printf '%s\n' "$last" | grep -c '|' || true)" -eq 2 ] \
+       && ! printf '%s\n' "$last" | grep -q '|COMPLETED'; then
+        echo "[$STAMP] last two gctreasury_overlays runs failed ($(printf '%s' "$last" | tr '\n' ' ')); not submitting (see $LOGDIR/gctreasury_overlays_*.log)"
+        return 0
+    fi
+    return 1
+}
+if ! already_pending gctreasury_overlays && ! overlays_running \
+   && ! overlays_failing; then
+  OVERLAY_RC=0
+  OVERLAY_CHECK=$("$PY" "$OVERLAYS" --check 2>&1) || OVERLAY_RC=$?
+  case $OVERLAY_RC in
+    0) echo "[$STAMP] overlays up to date; not submitting" ;;
+    3) sbatch --job-name=gctreasury_overlays \
+         --account=astronomy-dept --qos=astronomy-dept-b \
+         --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=48gb --time=4:00:00 \
+         --output="$LOGDIR/gctreasury_overlays_%j.log" \
+         --wrap "$PY $OVERLAYS --auto --publish --threads 8" ;;
+    *) echo "[$STAMP] overlays --check FAILED (exit $OVERLAY_RC); not submitting.  Output:"
+       printf '%s\n' "$OVERLAY_CHECK" | tail -20 ;;
+  esac
+fi
 
 
 # Checked before --list, which is the slow part of a tick.

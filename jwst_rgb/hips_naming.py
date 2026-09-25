@@ -160,6 +160,28 @@ SPECIAL = {
     "jwst-rc-blue-hips": (
         "jwst-gc-blue-cluster-overlay",
         "JWST Galactic Centre: blue-cluster candidate catalogue overlay"),
+    "jwst-star-density-hips": (
+        "jwst-gc-treasury-star-density",
+        "JWST GC Treasury: F212N stellar surface density (saturated stars "
+        "included)"),
+    "jwst-star-density-f212n-cube-hips": (
+        "jwst-gc-treasury-star-density-f212n-cube",
+        "JWST GC Treasury: F212N stellar surface density in 1-mag bins "
+        "(cube)"),
+    "jwst-star-density-colour-cube-hips": (
+        "jwst-gc-treasury-star-density-colour-cube",
+        "JWST GC Treasury: stellar surface density in F212N-F480M colour "
+        "bins, a pseudo-extinction map (cube)"),
+    "jwst-median-colour-hips": (
+        "jwst-gc-treasury-median-colour",
+        "JWST GC Treasury: median F212N-F480M stellar colour, a "
+        "pseudo-extinction map"),
+    "jwst-stars-colour-hips": (
+        "jwst-gc-treasury-stars-by-colour",
+        "JWST GC Treasury: stars coloured by F212N-F480M and sized by F212N"),
+    "jwst-stars-catalog-hips": (
+        "jwst-gc-treasury-star-catalogue",
+        "JWST GC Treasury: F212N/F480M star catalogue"),
     "MUSTANG_TENS_noaxes_noalpha_hips": (
         "mustang2-cmz-90ghz",
         "MUSTANG-2 90 GHz continuum map of the Central Molecular Zone"),

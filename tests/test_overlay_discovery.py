@@ -143,6 +143,11 @@ def test_abmag_without_pixscale_fails_by_name():
 # `full = True` passes the whole suite, which is how the bug shipped.
 
 
+BUILDERS = ("build_red_stars", "build_rc", "build_ultrared",
+            "build_star_density", "build_colour", "build_star_image",
+            "build_star_catalog")
+
+
 def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
     """Drive main() with the builders stubbed out, so only the bookkeeping runs."""
     import numpy as np
@@ -151,18 +156,21 @@ def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
     monkeypatch.setattr(overlays, "LOCK", str(tmp_path / "lock"))
     monkeypatch.setattr(overlays, "OUT", str(tmp_path))
     called = []
-    for name in ("build_red_stars", "build_rc", "build_ultrared"):
+    for name in BUILDERS:
         monkeypatch.setattr(overlays, name,
                             lambda *a, _n=name, **k: called.append(_n))
     monkeypatch.setattr(overlays, "publish", lambda *a, **k: None)
     monkeypatch.setattr(overlays, "push_remote", lambda *a, **k: None)
     monkeypatch.setattr(overlays, "report_ridge", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "report_limits", lambda *a, **k: None)
     fake = np.zeros(3)
+    M = {k: fake for k in ("col", "m480", "m212", "ra", "dec")}
+    M["who"] = np.array(["o127"] * 3)
+    M["sat"] = np.zeros(3, bool)
+    F = {k: M[k] for k in ("m212", "ra", "dec", "who", "sat")}
     monkeypatch.setattr(overlays, "load_matched",
                         lambda pairs, force=False: (
-                            fake, fake, fake, fake,
-                            np.array(["o127"] * 3),
-                            overlays.fingerprint(pairs)))
+                            M, F, overlays.fingerprint(pairs)))
     monkeypatch.setattr(sys, "argv", ["gc_treasury_overlays.py"] + argv)
     rc = overlays.main()
     return rc, stamp, called
@@ -187,7 +195,7 @@ def test_full_build_does_claim_the_input_set_as_built(catdir, tmp_path, monkeypa
     touch(catdir, cat("o127", "f480m", 1))
     rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, [])
     assert rc == 0
-    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"]
+    assert sorted(called) == sorted(BUILDERS)
     written = json.loads(stamp.read_text())
     assert written["built"] == overlays.fingerprint(overlays.latest_pairs())
 
@@ -212,5 +220,58 @@ def test_auto_rebuilds_after_a_partial_build(catdir, tmp_path, monkeypatch):
     _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
     rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--auto"])
     assert rc == 0
-    assert sorted(called) == ["build_rc", "build_red_stars", "build_ultrared"], (
+    assert sorted(called) == sorted(BUILDERS), (
         "--auto treated a partial build as complete")
+
+
+def test_cache_version_bump_invalidates_the_stamp(catdir, monkeypatch):
+    """A CACHE_VERSION bump must make --auto rebuild even when not one input
+    file changed -- that is how a fix to the matching reaches the published
+    layers."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    pairs = overlays.latest_pairs()
+    before = overlays.fingerprint(pairs)
+    monkeypatch.setattr(overlays, "CACHE_VERSION", overlays.CACHE_VERSION + 1)
+    after = overlays.fingerprint(pairs)
+    assert before["items"] == after["items"]
+    assert before != after
+
+
+def test_check_reports_due_then_up_to_date_and_builds_nothing(
+        catdir, tmp_path, monkeypatch):
+    """The cron sizes and submits the build job on --check's exit status, so
+    3 must mean "due", 0 "up to date", and neither may build or lock."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE == 3
+    assert called == [] and not os.path.exists(tmp_path / "lock")
+
+    rc, stamp, called = _run_main(monkeypatch, tmp_path, catdir, ["--auto"])
+    assert rc == 0 and sorted(called) == sorted(BUILDERS)
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == 0 and called == []
+
+    touch(catdir, cat("o128", "f212n", 1))
+    touch(catdir, cat("o128", "f480m", 1))
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE and called == []
+
+
+def test_check_is_distinct_from_a_broken_run(catdir, tmp_path, monkeypatch):
+    """No catalogues at all is an error (1), which the cron must not read as
+    either "up to date" (0) or "due" (3)."""
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc not in (0, overlays.REBUILD_DUE) and called == []
+
+
+def test_check_is_due_after_a_partial_build(catdir, tmp_path, monkeypatch):
+    """--check's twin of test_auto_rebuilds_after_a_partial_build: a partial
+    build writes the `match` key but not `built`, and --check must read
+    `built`, or the cron never submits the full rebuild."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    _run_main(monkeypatch, tmp_path, catdir, ["--only", "red"])
+    rc, _, called = _run_main(monkeypatch, tmp_path, catdir, ["--check"])
+    assert rc == overlays.REBUILD_DUE and called == []
