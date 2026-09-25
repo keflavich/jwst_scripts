@@ -131,16 +131,19 @@ overlays_running() {
 }
 # A build that fails every time writes no stamp, so --check keeps saying
 # "due" and each tick would queue another 128 GB job behind the failure.
-# Two failed runs (FAILED/OOM/TIMEOUT/NODE_FAIL) in the last 24 h stop
-# submission until someone looks; the log line says why.
+# If the last two *finished* runs (cancellations ignored) both failed
+# (FAILED/OOM/TIMEOUT/NODE_FAIL), stop submitting until someone looks.
+# Counting the last two finished runs, rather than failures inside a fixed
+# window, still catches repeated 24 h TIMEOUTs; one success clears it.
 overlays_failing() {
-    local n
-    n=$(sacct -n -X -u "$(id -un)" --name=gctreasury_overlays \
-          -S "$(date -d '24 hours ago' +%Y-%m-%dT%H:%M)" \
-          -s FAILED,OUT_OF_MEMORY,TIMEOUT,NODE_FAIL -o JobID 2>/dev/null \
-          | grep -c . || true)
-    if [ "${n:-0}" -ge 2 ]; then
-        echo "[$STAMP] gctreasury_overlays failed $n times in 24 h; not submitting (see $LOGDIR/gctreasury_overlays_*.log)"
+    local last
+    last=$(sacct -n -X -P -u "$(id -un)" --name=gctreasury_overlays \
+             -S "$(date -d '30 days ago' +%F)" -E now \
+             -s COMPLETED,FAILED,OUT_OF_MEMORY,TIMEOUT,NODE_FAIL \
+             -o End,State 2>/dev/null | sort | tail -2 || true)
+    if [ "$(printf '%s\n' "$last" | grep -c '|' || true)" -eq 2 ] \
+       && ! printf '%s\n' "$last" | grep -q '|COMPLETED'; then
+        echo "[$STAMP] last two gctreasury_overlays runs failed ($(printf '%s' "$last" | tr '\n' ' ')); not submitting (see $LOGDIR/gctreasury_overlays_*.log)"
         return 0
     fi
     return 1
