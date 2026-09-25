@@ -222,3 +222,17 @@ def test_auto_rebuilds_after_a_partial_build(catdir, tmp_path, monkeypatch):
     assert rc == 0
     assert sorted(called) == sorted(BUILDERS), (
         "--auto treated a partial build as complete")
+
+
+def test_cache_version_bump_invalidates_the_stamp(catdir, monkeypatch):
+    """A CACHE_VERSION bump must make --auto rebuild even when not one input
+    file changed -- that is how a fix to the matching reaches the published
+    layers."""
+    touch(catdir, cat("o127", "f212n", 1))
+    touch(catdir, cat("o127", "f480m", 1))
+    pairs = overlays.latest_pairs()
+    before = overlays.fingerprint(pairs)
+    monkeypatch.setattr(overlays, "CACHE_VERSION", overlays.CACHE_VERSION + 1)
+    after = overlays.fingerprint(pairs)
+    assert before["items"] == after["items"]
+    assert before != after

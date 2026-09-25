@@ -195,3 +195,95 @@ def test_assemble_hips_cube_refuses_mismatched_orders(tmp_path):
     frames = [_fake_frame(tmp_path, "a"), _fake_frame(tmp_path, "b", "4")]
     with pytest.raises(ValueError, match="hips_order"):
         hips_formats.assemble_hips_cube(frames, str(tmp_path / "cube"))
+
+
+# -- the guard and dedupe as wired into match_catalogs -----------------------
+
+def _write_cat(d, obs, filt, ra, dec, sat, pixscale):
+    t = Table({"skycoord": SkyCoord(np.asarray(ra) * u.deg,
+                                    np.asarray(dec) * u.deg),
+               "flux": np.full(len(ra), 1e3),
+               "is_saturated": np.asarray(sat, bool)})
+    t.meta["PIXSCALE"] = pixscale
+    p = os.path.join(d, f"{filt}_merged_{obs}_indivexp_merged_m4_dao_basic_"
+                        "vetted.fits")
+    t.write(p)
+    return p
+
+
+def test_match_catalogs_keeps_each_saturated_star_in_its_own_field(
+        tmp_path, monkeypatch):
+    """Two fields on disk, each carrying the SAME survey-wide saturated list
+    (the upstream bug), plus one unsaturated star both fields detect."""
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    step = 2.0 / 3600
+    own_a = [(266.40 + i * step, -29.0) for i in range(5)]
+    own_b = [(266.60 + i * step, -29.0) for i in range(5)]
+    shared = (266.50, -29.0)                  # overlap: both fields see it
+    sat_a = (266.40 + 1.5 * step, -29.0003)   # inside field a only
+    sat_b = (266.60 + 1.5 * step, -29.0003)   # inside field b only
+    near_shared_a = (266.50 - step, -29.0)    # gives each field a detection
+    near_shared_b = (266.50 + step, -29.0)    # next to the shared star
+    rows = {
+        "o040": own_a + [near_shared_a, shared, sat_a, sat_b],
+        "o073": own_b + [near_shared_b, shared, sat_a, sat_b],
+    }
+    for obs, pos in rows.items():
+        ra, dec = np.array(pos).T
+        sat = [False] * (len(pos) - 2) + [True, True]
+        for filt, ps in (("f212n", 0.031), ("f480m", 0.063)):
+            _write_cat(tmp_path, obs, filt, ra, dec, sat, ps)
+
+    pairs = overlays.latest_pairs()
+    assert sorted(pairs) == ["o040", "o073"]
+    M, F = overlays.match_catalogs(pairs)
+
+    for D in (M, F):
+        pos = SkyCoord(D["ra"] * u.deg, D["dec"] * u.deg)
+
+        def owners(p):
+            sep = pos.separation(SkyCoord(p[0] * u.deg, p[1] * u.deg)).arcsec
+            return sorted(D["who"][sep < 0.05])
+
+        # each saturated star once, credited to the field it lies in
+        assert owners(sat_a) == ["o040"]
+        assert owners(sat_b) == ["o073"]
+        # the overlap star once, from the field that sorts first
+        assert owners(shared) == ["o040"]
+        assert D["sat"].sum() == 2
+        assert len(D["ra"]) == 5 + 5 + 2 + 1 + 2
+
+
+# -- the published star PNG reads back at the right sky positions -----------
+
+def test_star_png_round_trips_through_its_avm(tmp_path, monkeypatch):
+    """PNG -> embedded AVM -> WCS -> pixel: each star's colour must be found
+    at that star's own position.  Three stars in an L, each a different
+    colour, so a flip about either axis (or a 180 degree rotation) moves a
+    colour onto the wrong star."""
+    from PIL import Image
+    import pyavm
+    import reproject.hips
+
+    def fake_hips(png, output_directory, **kw):
+        os.makedirs(os.path.join(output_directory, "Norder3"))
+    monkeypatch.setattr(reproject.hips, "reproject_to_hips", fake_hips)
+    monkeypatch.setattr(overlays, "OUT", str(tmp_path))
+
+    g = SkyCoord(l=[0.1, 0.1, 0.1 + 30 / 3600] * u.deg,
+                 b=[0.0, 20 / 3600, 0.0] * u.deg, frame="galactic").icrs
+    M = {"ra": g.ra.deg, "dec": g.dec.deg,
+         "m212": np.array([12.0, 12.0, 12.0]),
+         "col": np.array([-1.5, 2.5, 0.5])}     # blue, red, yellow-ish
+    overlays.build_star_image(M)
+
+    png = tmp_path / "jwst-stars-colour.png"
+    w = pyavm.AVM.from_image(str(png)).to_wcs()
+    arr = np.asarray(Image.open(png))[::-1]      # FITS row order
+    rgb, _, _ = overlays.star_style(M["m212"], M["col"])
+    x, y = w.world_to_pixel(g)
+    for k in range(3):
+        px = arr[int(round(float(y[k]))), int(round(float(x[k])))]
+        assert px[3] > 0, f"star {k}: transparent at its own position"
+        assert np.abs(px[:3].astype(int) - rgb[k]).max() <= 2, (
+            f"star {k}: found {px[:3]}, expected {rgb[k]}")
