@@ -156,7 +156,7 @@ CATALOG_ROWS_PER_TILE = 500
 
 _GRID = (f"on a {PIXEL_ARCSEC:g}\" grid smoothed by a Gaussian of sigma "
          f"{SMOOTH_ARCSEC:g}\"")
-_CATALOGUES = ("From the per-field vetted DAOPHOT catalogues of JWST GO "
+_CATALOGUES = ("From the per-field vetted DAOPHOT catalogs of JWST GO "
                f"10678, F212N and F480M matched within {MATCH_ARCSEC:g}\"")
 _SOURCE = f"{_CATALOGUES}; saturated stars included, each counted once."
 _RC_BAND = (f"|F480M - {SLOPE:g}(F212N-F480M) - {WRC:g}| < {HW:g}, "
@@ -184,12 +184,12 @@ LAYER_DESCRIPTIONS = {
         "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
         f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
         f"{F212N_CONFUSION_LIMIT:g} (confusion) AB, {_GRID}; the cube axis "
-        f"is the bin centre in F212N AB mag. {_SOURCE}",
+        f"is the bin center in F212N AB mag. {_SOURCE}",
     "jwst-star-density-colour-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of stars with F480M "
         f"< {COLOUR_MAGLIMIT:g} AB in {COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
         f"bins of F212N-F480M from {COLOUR_EDGES[0]:g} to "
-        f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin centre in "
+        f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin center in "
         "AB mag. Redder bins trace higher extinction (a pseudo-extinction "
         f"map, not calibrated to A_V). {_SOURCE}",
     "jwst-median-colour-hips":
@@ -199,16 +199,16 @@ LAYER_DESCRIPTIONS = {
         "values mean more reddening (a pseudo-extinction map, not calibrated "
         f"to A_V). {_CATALOGUES}.",
     "jwst-stars-colour-hips":
-        "Each matched star drawn as a disc coloured by F212N-F480M "
+        "Each matched star drawn as a disk colored by F212N-F480M "
         f"({STAR_CMAP} over {STAR_COLOUR_RANGE[0]:g} to "
         f"{STAR_COLOUR_RANGE[1]:g} AB mag), with radius and opacity set by "
-        "F212N brightness. Pixel values are display colours, not flux. "
+        "F212N brightness. Pixel values are display colors, not flux. "
         f"{_SOURCE}",
     "jwst-stars-catalog-hips":
         "Matched stars, brightest F212N first. Columns: ra, dec (deg, ICRS), "
         "f212n, f480m, color (F212N-F480M) in AB mag, saturated (1 if "
         "saturated in either filter), obs (10678 observation), rgb (the "
-        f"jwst-stars-colour-hips display colour). {_SOURCE}",
+        f"jwst-stars-colour-hips display color). {_SOURCE}",
 }
 
 
@@ -1009,7 +1009,7 @@ def build_star_catalog(M):
             "saturated": "1 if saturated in either filter (flux from the "
                          "saturated-star fit)",
             "obs": "10678 observation the source was taken from",
-            "rgb": f"display colour: {STAR_CMAP} over {STAR_COLOUR_RANGE}"},
+            "rgb": f"display color: {STAR_CMAP} over {STAR_COLOUR_RANGE}"},
         properties=layer_properties("jwst-stars-catalog-hips"))
     print(f"  BUILT {OUT}/jwst-stars-catalog-hips: {info['nrows']:,} rows, "
           f"orders 1-{info['order_max']}, tiles per order "

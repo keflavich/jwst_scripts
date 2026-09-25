@@ -190,18 +190,18 @@ SPECIAL = {
         "(cube)"),
     "jwst-star-density-colour-cube-hips": (
         "jwst-gc-treasury-star-density-colour-cube",
-        "JWST GC Treasury: stellar surface density in F212N-F480M colour "
+        "JWST GC Treasury: stellar surface density in F212N-F480M color "
         "bins, a pseudo-extinction map (cube)"),
     "jwst-median-colour-hips": (
         "jwst-gc-treasury-median-colour",
-        "JWST GC Treasury: median F212N-F480M stellar colour, a "
+        "JWST GC Treasury: median F212N-F480M stellar color, a "
         "pseudo-extinction map"),
     "jwst-stars-colour-hips": (
         "jwst-gc-treasury-stars-by-colour",
-        "JWST GC Treasury: stars coloured by F212N-F480M and sized by F212N"),
+        "JWST GC Treasury: stars colored by F212N-F480M and sized by F212N"),
     "jwst-stars-catalog-hips": (
         "jwst-gc-treasury-star-catalogue",
-        "JWST GC Treasury: F212N/F480M star catalogue"),
+        "JWST GC Treasury: F212N/F480M star catalog"),
     "MUSTANG_TENS_noaxes_noalpha_hips": (
         "mustang2-cmz-90ghz",
         "MUSTANG-2 90 GHz continuum map of the Central Molecular Zone"),
