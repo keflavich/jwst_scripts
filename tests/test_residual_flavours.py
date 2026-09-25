@@ -305,6 +305,19 @@ def test_a_chain_verdict_is_skipped_not_built_or_deferred(tmp_path, monkeypatch,
     assert "o001 residual/vminmax: residual predates the image mosaic" in out
     assert "o132 MIRI+res: residual predates the image mosaic" in out
     assert "left for the next tick" not in out
+    # the one place these waits are counted: the lock report leaves them out
+    held = [f"o001 residual/{s}" for s in G.RESIDUAL_STRETCHES] + [
+        "o132 MIRI+res"]
+    assert (f"{len(held)} residual build(s) waiting for their chain to "
+            f"rewrite a residual older than its image: {', '.join(held)}"
+            ) in out
+
+
+def test_a_tick_with_no_chain_wait_prints_no_count(tmp_path, monkeypatch,
+                                                   capsys):
+    _auto_fakes(monkeypatch, tmp_path)
+    assert G.cmd_auto(budget_hours=100) == 0
+    assert "waiting for their chain" not in capsys.readouterr().out
 
 
 def test_the_lock_report_reads_each_flavour_from_its_own_inventory(monkeypatch):
@@ -326,6 +339,34 @@ def test_the_lock_report_reads_each_flavour_from_its_own_inventory(monkeypatch):
     assert "o133 MIRI -- no MIRI png yet" in lines
     assert "o132 MIRI+res -- no MIRI png yet" in lines
     assert not [ln for ln in lines if ln.startswith("o133 MIRI+res")]
+
+
+def test_the_lock_report_gives_residual_verdicts_their_image(monkeypatch):
+    # Without the image inventory the CHAIN guard is off, so a residual older
+    # than its image would be reported as work waiting on the lock.
+    image = {f: {"o001": "i"} for f in G.FILTERS}
+    resid = {f: {"o001": "r"} for f in G.FILTERS}
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        (resid, ["o001"]) if residual else (image, ["o001"])))
+    monkeypatch.setattr(G, "find_i2d", lambda filt, **k: {"o132": "i"})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {"o132": "r"})
+    seen = []
+
+    def needs_build(o, inv, residual=False, image_inv=None, **k):
+        seen.append(("nircam", residual, image_inv))
+        return "CHAIN" if residual and image_inv is not None else "stale"
+
+    def miri_needs_build(o, s, bg=False, residual=False, image_src=None):
+        seen.append(("miri", residual, image_src))
+        return "CHAIN" if residual and image_src is not None else "stale"
+
+    monkeypatch.setattr(G, "needs_build", needs_build)
+    monkeypatch.setattr(G, "miri_needs_build", miri_needs_build)
+    lines = G._pending_summary()
+    assert not [ln for ln in lines if "residual" in ln or "MIRI+res" in ln]
+    held = [(kind, img) for kind, residual, img in seen if residual]
+    assert held and all(img is image if kind == "nircam" else img == "i"
+                        for kind, img in held)
 
 
 def test_budget_hours_reaches_cmd_auto(monkeypatch):

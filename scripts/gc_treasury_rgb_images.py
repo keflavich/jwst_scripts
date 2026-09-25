@@ -1370,6 +1370,10 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
     try:
         deadline = time.time() + budget_hours * 3600
         deferred = []
+        # Residual builds held by a CHAIN verdict.  Counted in the tick log
+        # because nothing else reports them: they are not pending on the lock,
+        # and a chain that never reruns would leave them waiting silently.
+        chained = []
 
         def out_of_time(what):
             # Checked before each build, never inside one: a build is ~9 min,
@@ -1409,6 +1413,7 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                     if why == "CHAIN":
                         print(f"  {o} {tag}: residual predates the image "
                               f"mosaic; waiting for the chain to rewrite it")
+                        chained.append(f"{o} {tag}")
                         continue
                     if why == "SETTLING":
                         print(f"  {o} {tag}: source written in the last "
@@ -1481,6 +1486,7 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                     if why == "CHAIN":
                         print(f"  {o} {tag}: residual predates the image "
                               f"mosaic; waiting for the chain to rewrite it")
+                        chained.append(f"{o} {tag}")
                         continue
                     if why == "SETTLING":
                         print(f"  {o} {tag}: source written in the last "
@@ -1523,6 +1529,10 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
             print(f"build budget of {budget_hours:g} h used up; "
                   f"{len(deferred)} build(s) left for the next tick: "
                   f"{', '.join(deferred)}")
+        if chained:
+            print(f"{len(chained)} residual build(s) waiting for their chain "
+                  f"to rewrite a residual older than its image: "
+                  f"{', '.join(chained)}")
 
         for fl in nircam_flavours():
             residual, stretch = fl
