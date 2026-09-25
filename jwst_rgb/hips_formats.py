@@ -9,6 +9,19 @@ cube (sec. 4.2.3, 4.3)
     NOT reproject's HiPS3D, which tiles the third axis too, needs a spectral
     WCS, and is not what Aladin's frame slider reads.
 
+    Aladin Lite (checked 3.7.2-beta through 3.9.0-beta) departs from this in
+    three ways, so a cube also carries what it needs:
+
+    - it aborts on a cube without ``em_min``/``em_max``, which it uses to map
+      a frequency onto a frame;
+    - it asks for frame 0 as ``Npix<n>_0``, so frame 0 is written under both
+      names;
+    - its slice slider converts slice to frequency linearly in wavelength and
+      back to frame linearly in frequency, which reverses the frames and
+      sends the first slice past the last frame.  The cube's own
+      ``index.html`` therefore selects frames with ``setFrequency`` at each
+      frame's midpoint, which lands on the intended frame.
+
 catalog (sec. 4.2.2, 4.4.3, 6.3.2)
     UTF-8 TSV tiles; the first non-comment line is the column names; ``#``
     lines are comments.  Sources are distributed down the hierarchy: a tile at
@@ -17,6 +30,8 @@ catalog (sec. 4.2.2, 4.4.3, 6.3.2)
     VOTable, ``metadata.xml``.
 """
 import glob
+import html
+import json
 import os
 import shutil
 import time
@@ -48,8 +63,23 @@ def _write_properties(path, props):
 # cube
 
 
+C_LIGHT = 299792458.0  # m/s
+
+
+def cube_frame_frequencies(em_range, depth):
+    """Frequency (Hz) at the middle of each frame, in Aladin Lite's mapping.
+
+    Aladin Lite picks frame ``floor((f - f_lo) / (f_hi - f_lo) * depth)``,
+    with f_lo, f_hi from ``em_max``, ``em_min`` (wavelengths, m).  The
+    midpoint keeps the pick away from the frame edges, where rounding would
+    decide it.
+    """
+    f_lo, f_hi = C_LIGHT / max(em_range), C_LIGHT / min(em_range)
+    return [f_lo + (k + 0.5) / depth * (f_hi - f_lo) for k in range(depth)]
+
+
 def assemble_hips_cube(frame_dirs, out_dir, crval3=0.0, cdelt3=1.0,
-                       bunit3="", pixel_cut=None, extra=None):
+                       bunit3="", pixel_cut=None, extra=None, em_range=None):
     """Merge per-frame image HiPS into one HiPS 1.0 cube at `out_dir`.
 
     Every frame must have been built on the same grid at the same order: the
@@ -60,6 +90,11 @@ def assemble_hips_cube(frame_dirs, out_dir, crval3=0.0, cdelt3=1.0,
     `pixel_cut` should span ALL frames: the properties copied from frame 0
     would otherwise stretch every frame to frame 0's range, and a cube read
     frame-by-frame at one stretch is the point of making it a cube.
+
+    `em_range` is the (min, max) wavelength in m of the data behind the cube,
+    written as ``em_min``/``em_max``.  Aladin Lite cannot open a cube
+    without it; with it, the cube also gets an ``index.html`` whose frame
+    selector works in Aladin Lite (see the module docstring).
     """
     if not frame_dirs:
         raise ValueError("no frames")
@@ -88,6 +123,8 @@ def assemble_hips_cube(frame_dirs, out_dir, crval3=0.0, cdelt3=1.0,
             dest = os.path.join(stage, stem + suffix + ext)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(path, dest)
+            if f == 0:
+                shutil.copy2(path, os.path.join(stage, stem + "_0" + ext))
     for aux in ("Moc.fits", "index.html", "metadata.fits"):
         if os.path.exists(os.path.join(frame_dirs[0], aux)):
             shutil.copy2(os.path.join(frame_dirs[0], aux),
@@ -106,13 +143,94 @@ def assemble_hips_cube(frame_dirs, out_dir, crval3=0.0, cdelt3=1.0,
     })
     if pixel_cut is not None:
         props["hips_pixel_cut"] = f"{pixel_cut[0]} {pixel_cut[1]}"
+    if em_range is not None:
+        props["em_min"] = repr(float(min(em_range)))
+        props["em_max"] = repr(float(max(em_range)))
     props.update(extra or {})
     _write_properties(os.path.join(stage, "properties"), props)
+    if em_range is not None:
+        with open(os.path.join(stage, "index.html"), "w") as fh:
+            fh.write(_cube_index_html(props, len(frame_dirs), crval3, cdelt3,
+                                      bunit3, em_range))
 
     if not os.path.isdir(os.path.join(stage, "Norder3")):
         raise RuntimeError(f"{stage}: no Norder3; refusing to swap in")
     _swap_in(stage, out_dir)
     return out_dir
+
+
+ALADIN_LITE = "https://aladin.cds.unistra.fr/AladinLite/api/v3/3.7.2-beta/aladin.js"
+
+
+def _cube_index_html(props, depth, crval3, cdelt3, bunit3, em_range):
+    """A landing page whose frame selector uses `setFrequency`."""
+    freqs = cube_frame_frequencies(em_range, depth)
+    labels = []
+    for k in range(depth):
+        center = crval3 + k * cdelt3
+        lo, hi = center - cdelt3 / 2, center + cdelt3 / 2
+        labels.append(f"{lo:g} to {hi:g}" + (f" {bunit3}" if bunit3 else ""))
+    title = html.escape(props.get("obs_title", "HiPS cube"))
+    desc = html.escape(props.get("obs_description", ""))
+    start = depth // 2
+    options = "\n".join(
+        f'      <option value="{k}"{" selected" if k == start else ""}>'
+        f"{k + 1}/{depth}: {html.escape(label)}</option>"
+        for k, label in enumerate(labels))
+    target = f'{props.get("hips_initial_ra", "0")} {props.get("hips_initial_dec", "0")}'
+    fov = props.get("hips_initial_fov", "1")
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<script src="{ALADIN_LITE}"></script>
+<style>
+  :root {{ --bg: #ffffff; --fg: #1a1a1a; --muted: #555555; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg: #16181c; --fg: #e8e8e8; --muted: #a0a0a0; }}
+  }}
+  body {{ margin: 0; padding: 0 16px 16px; background: var(--bg);
+         color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }}
+  h1 {{ font-size: 1.2em; margin: 12px 0 4px; }}
+  p {{ margin: 4px 0; color: var(--muted); max-width: 70em; }}
+  label {{ display: inline-block; margin: 8px 0; }}
+  select {{ font: inherit; max-width: 100%; }}
+  #aladin {{ width: 100%; height: 75vh; min-height: 320px; }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<p>{desc}</p>
+<label>Frame:
+  <select id="frame">
+{options}
+  </select>
+</label>
+<p>Choose the frame here.  Aladin Lite's own cube slider (in the layer
+menu) numbers the frames in reverse for this cube.</p>
+<div id="aladin"></div>
+<script>
+  const FREQS = {json.dumps(freqs)};
+  const select = document.getElementById("frame");
+  A.init.then(() => {{
+    const aladin = A.aladin("#aladin", {{
+      survey: new URL(".", window.location.href).href,
+      target: "{target}", fov: {fov},
+      showCooGridControl: true, showSimbadPointerControl: false }});
+    const show = () => {{
+      const layer = aladin.getBaseImageLayer();
+      if (!layer || !layer.added) {{ setTimeout(show, 200); return; }}
+      layer.setFrequency({{ value: FREQS[+select.value] }});
+    }};
+    select.addEventListener("change", show);
+    show();
+  }});
+</script>
+</body>
+</html>
+"""
 
 
 def _swap_in(stage, dest):

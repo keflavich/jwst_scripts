@@ -115,6 +115,11 @@ RED_COLOUR, RED_MAGLIMIT = 0.0, 18.0
 # red-clump band and split (see module docstring -- empirical, held fixed)
 SLOPE, WRC, HW, SPLIT = 0.890, 17.50, 0.9, -0.325
 RC_M480_RANGE, RC_COLOUR_RANGE = (14.0, 19.0), (-2.5, 3.5)
+#: Wavelength coverage (m) of the data behind each cube, for em_min/em_max:
+#: pivot +/- bandwidth/2 from the JDox NIRCam filter table (approximate).
+#: Aladin Lite cannot open a HiPS cube without it (see jwst_rgb.hips_formats).
+F212N_EM_RANGE = (2.108e-6, 2.135e-6)
+F212N_F480M_EM_RANGE = (2.108e-6, 4.966e-6)
 # ultra-red catalogue
 ULTRARED_CUT = 4.0
 # density grid
@@ -797,7 +802,7 @@ def report_limits(F):
 
 
 def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
-                 threads=8, bunit3=""):
+                 threads=8, bunit3="", em_range=None):
     """One density frame per [edges[i], edges[i+1]) of `value`, as a HiPS
     cube plus a FITS cube of the same frames.  All frames share one grid,
     which `assemble_hips_cube` needs and checks."""
@@ -828,7 +833,7 @@ def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
     vmax = float(np.nanpercentile(cube, 99.5))
     assemble_hips_cube(frames, f"{OUT}/{name}", crval3=hdr["CRVAL3"],
                        cdelt3=step, bunit3=bunit3, pixel_cut=(0.0, vmax),
-                       extra=layer_properties(name))
+                       extra=layer_properties(name), em_range=em_range)
     shutil.rmtree(f"{OUT}/_frames/{name}", ignore_errors=True)
     print(f"  BUILT {OUT}/{name} ({len(frames)} frames, cut 0-{vmax:.1f})",
           flush=True)
@@ -848,7 +853,7 @@ def build_star_density(F, level=None, threads=8):
     print(f"F212N magnitude cube, {len(edges) - 1} frames:")
     density_cube(ra, dec, m, edges, ra, dec,
                  "jwst-star-density-f212n-cube-hips", level, threads,
-                 bunit3="mag (F212N, AB)")
+                 bunit3="mag (F212N, AB)", em_range=F212N_EM_RANGE)
 
 
 def build_colour(M, level=None, threads=8):
@@ -869,7 +874,8 @@ def build_colour(M, level=None, threads=8):
           f"with F480M < {COLOUR_MAGLIMIT}")
     density_cube(ra[bright], dec[bright], col[bright], COLOUR_EDGES, ra, dec,
                  "jwst-star-density-colour-cube-hips", level, threads,
-                 bunit3="mag (F212N-F480M, AB)")
+                 bunit3="mag (F212N-F480M, AB)",
+                 em_range=F212N_F480M_EM_RANGE)
 
     w, ny, nx = make_grid(ra, dec, MEDIAN_PIXEL_ARCSEC)
     use = bright & ~sat
