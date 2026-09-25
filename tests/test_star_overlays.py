@@ -385,3 +385,14 @@ def test_every_layer_carries_a_one_line_description():
     for name in overlays.LAYERS:
         if "density" in name or name.startswith(("jwst-red-", "jwst-rc-")):
             assert "stars/arcmin^2" in overlays.LAYER_DESCRIPTIONS[name]
+
+
+def test_density_layer_titles_match_their_selection():
+    from jwst_rgb.hips_naming import properties_for
+    title = {n: properties_for(n)["obs_title"] for n in
+             ("jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips")}
+    assert f"> {overlays.RED_COLOUR:g}" in title["jwst-red-stars-hips"]
+    assert f"< {overlays.RED_MAGLIMIT:g}" in title["jwst-red-stars-hips"]
+    for n in ("jwst-rc-blue-hips", "jwst-rc-red-hips"):
+        assert "red-clump" in title[n] and f"{overlays.SPLIT:g}" in title[n]
+        assert "cluster" not in title[n]
