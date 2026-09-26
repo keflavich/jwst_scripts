@@ -662,3 +662,56 @@ def test_match_catalogs_drops_f480m_rows_without_a_magnitude(
     M, F, L = overlays.match_catalogs(overlays.latest_pairs())
     assert len(L["ra"]) == 4 and np.isfinite(L["m480"]).all()
     assert len(F["ra"]) == 5
+
+
+# -- coverage: no border of zeros, NaN beyond the data -----------------------
+
+def _uniform_field(n=20000, side_arcsec=120.0, seed=2):
+    rng = np.random.default_rng(seed)
+    ra = 266.4 + rng.uniform(0, side_arcsec, n) / 3600 / np.cos(np.radians(-29))
+    dec = -29.0 + rng.uniform(0, side_arcsec, n) / 3600
+    return ra, dec
+
+
+def test_density_is_blank_beyond_the_stars_and_flat_up_to_the_edge():
+    ra, dec = _uniform_field()
+    arr, w, cov = overlays.density(ra, dec, ra, dec)
+    x, y = overlays.sky_to_pix(w, ra, dec)
+    ys, xs = np.nonzero(cov)
+    # coverage ends within a few pixels of the outermost stars
+    assert xs.min() >= x.min() - 4 and xs.max() <= x.max() + 4
+    assert ys.min() >= y.min() - 4 and ys.max() <= y.max() + 4
+    assert np.isnan(arr[~cov]).all() and np.isfinite(arr[cov]).all()
+    # 20000 stars / 4 arcmin^2; the edge is not diluted by the empty sky
+    expect = 20000 / 4.0
+    inner = arr[int(np.median(ys)), int(np.median(xs))]
+    edge = arr[int(np.median(ys)), xs.min() + 1]
+    assert abs(inner / expect - 1) < 0.2
+    assert abs(edge / expect - 1) < 0.3
+
+
+def test_footprint_fills_an_empty_hole_inside_the_field():
+    ra, dec = _uniform_field()
+    grid = overlays.make_grid(ra, dec, 2.0)
+    x, y = overlays.sky_to_pix(grid[0], ra, dec)
+    cx, cy = np.median(x), np.median(y)
+    hole = np.hypot(x - cx, y - cy) < 8          # a 16" dark cloud
+    cov = overlays.footprint(ra[~hole], dec[~hole], grid, 3)
+    assert cov[int(round(cy)), int(round(cx))]
+
+
+def test_knn_median_covers_the_footprint_and_takes_the_local_median():
+    ra, dec = _uniform_field()
+    x0 = np.median(ra)
+    col = np.where(ra < x0, 0.0, 2.0)          # two halves, sharp boundary
+    grid = overlays.make_grid(ra, dec, 2.0)
+    cov = overlays.footprint(ra, dec, grid, 3)
+    # only 1 star in 20 passes the cuts: sparse, as behind a dark cloud
+    use = np.arange(len(ra)) % 20 == 0
+    med, reach = overlays.knn_median(ra[use], dec[use], col[use], grid, cov, 15)
+    assert np.isfinite(med[cov]).all() and np.isnan(med[~cov]).all()
+    ys, xs = np.nonzero(cov)
+    row = int(np.median(ys))
+    left, right = med[row, xs.min() + 2], med[row, xs.max() - 2]
+    assert {left, right} == {0.0, 2.0}
+    assert np.nanmax(reach) < 30
