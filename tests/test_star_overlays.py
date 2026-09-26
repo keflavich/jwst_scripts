@@ -282,12 +282,14 @@ def _fake_frame(root, name, order="3"):
 
 
 def test_assemble_hips_cube_names_frames(tmp_path):
+    # without em_range: HiPS 1.0 layout, frame 0 also as _0 (Aladin asks so)
     frames = [_fake_frame(tmp_path, f"f{i}") for i in range(3)]
     out = str(tmp_path / "cube")
     hips_formats.assemble_hips_cube(frames, out, crval3=17.5, cdelt3=1.0,
                                     bunit3="mag", pixel_cut=(0, 5))
     tiles = os.path.join(out, "Norder3", "Dir0")
     assert open(os.path.join(tiles, "Npix12.fits"), "rb").read() == b"f0"
+    assert open(os.path.join(tiles, "Npix12_0.fits"), "rb").read() == b"f0"
     assert open(os.path.join(tiles, "Npix12_1.fits"), "rb").read() == b"f1"
     assert open(os.path.join(tiles, "Npix12_2.fits"), "rb").read() == b"f2"
     assert os.path.exists(os.path.join(out, "Norder3", "Allsky_2.fits"))
@@ -299,36 +301,50 @@ def test_assemble_hips_cube_names_frames(tmp_path):
     assert props["hips_pixel_cut"] == "0 5"
 
 
-def test_assemble_hips_cube_also_names_frame_0_with_a_suffix(tmp_path):
-    # Aladin Lite asks for frame 0 as Npix<n>_0; HiPS 1.0 leaves it bare.
-    frames = [_fake_frame(tmp_path, f"f{i}") for i in range(2)]
-    out = str(tmp_path / "cube")
-    hips_formats.assemble_hips_cube(frames, out)
-    tiles = os.path.join(out, "Norder3", "Dir0")
-    assert open(os.path.join(tiles, "Npix12_0.fits"), "rb").read() == b"f0"
-    assert open(os.path.join(tiles, "Npix12.fits"), "rb").read() == b"f0"
-    assert os.path.exists(os.path.join(out, "Norder3", "Allsky_0.fits"))
-
-
-def _aladin_lite_frame(freq, props):
-    """Frame Aladin Lite 3.7-3.9 shows for `freq` (d3/mod.rs, channel_idx)."""
+def _aladin_lite_slice(s, props):
+    """Tile suffix Aladin Lite 3.7-3.9 requests at cube slider slice `s`:
+    setSliceNumber (aladin.js), then channel_idx (d3/mod.rs)."""
     c = 299792458.0
-    f_lo, f_hi = c / float(props["em_max"]), c / float(props["em_min"])
-    return int((freq - f_lo) / (f_hi - f_lo) * int(props["hips_cube_depth"]))
+    em_min, em_max = float(props["em_min"]), float(props["em_max"])
+    depth = int(props["hips_cube_depth"])
+    freq = c / (em_min + s / depth * (em_max - em_min))
+    f_lo, f_hi = c / em_max, c / em_min
+    return max(int((freq - f_lo) / (f_hi - f_lo) * depth), 0)
 
 
 @pytest.mark.parametrize("depth", [5, 9])
-def test_cube_index_selects_each_frame_in_aladin_lite(tmp_path, depth):
+@pytest.mark.parametrize("em_range", [(2.135e-6, 2.108e-6),
+                                      (4.662e-6, 4.966e-6)])
+def test_aladin_cube_slider_shows_frame_s_at_slice_s(tmp_path, depth,
+                                                     em_range):
     frames = [_fake_frame(tmp_path, f"f{i}") for i in range(depth)]
     out = str(tmp_path / "cube")
     hips_formats.assemble_hips_cube(frames, out, crval3=17.5, cdelt3=1.0,
-                                    bunit3="mag", em_range=(4.966e-6, 2.108e-6))
+                                    bunit3="mag", em_range=em_range)
     props = hips_formats._read_properties(os.path.join(out, "properties"))
     assert float(props["em_min"]) < float(props["em_max"])
+    tiles = os.path.join(out, "Norder3")
+    for s in range(depth):
+        k = _aladin_lite_slice(s, props)
+        assert open(os.path.join(tiles, "Dir0", f"Npix12_{k}.fits"),
+                    "rb").read() == f"f{s}".encode()
+        assert open(os.path.join(tiles, f"Allsky_{k}.fits"),
+                    "rb").read() == f"f{s}".encode()
+    # slice 0 is on the edge; Aladin Lite 3.7.2-beta asks for _<depth-1>
+    assert open(os.path.join(tiles, "Dir0", f"Npix12_{depth - 1}.fits"),
+                "rb").read() == b"f0"
+    # clients that ignore cubes see frame 0
+    assert open(os.path.join(tiles, "Dir0", "Npix12.fits"), "rb").read() == b"f0"
     page = open(os.path.join(out, "index.html")).read()
-    freqs = json.loads(page.split("const FREQS = ")[1].split(";")[0])
-    assert [_aladin_lite_frame(f, props) for f in freqs] == list(range(depth))
-    assert "setFrequency" in page and "17 to 18 mag" in page
+    assert "setSliceNumber" in page and "17 to 18 mag" in page
+
+
+def test_aladin_slice_suffixes_refuses_a_range_the_slider_cannot_cover():
+    # F212N to F480M: the slider would show one frame twice and skip another
+    with pytest.raises(ValueError, match="narrower"):
+        hips_formats.aladin_slice_suffixes((2.108e-6, 4.966e-6), 9)
+    assert hips_formats.aladin_slice_suffixes((2.108e-6, 2.135e-6), 5) == [
+        5, 3, 2, 1, 0]
 
 
 def test_cube_without_em_range_keeps_the_frame_0_landing_page(tmp_path):
@@ -362,7 +378,7 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
                                "sat": np.zeros(2, bool)})
     assert got["jwst-star-density-f212n-cube-hips"] == overlays.F212N_EM_RANGE
     assert (got["jwst-star-density-colour-cube-hips"]
-            == overlays.F212N_F480M_EM_RANGE)
+            == overlays.F480M_EM_RANGE)
     for lo, hi in got.values():
         assert 1e-6 < lo < hi < 6e-6
 
@@ -455,6 +471,46 @@ def test_match_catalogs_keeps_each_saturated_star_in_its_own_field(
         assert owners(shared) == ["o040"]
         assert D["sat"].sum() == 2
         assert len(D["ra"]) == 5 + 5 + 2 + 1 + 2
+
+
+def _crowded(n, shift_arcsec, seed=1):
+    """A crowded SW list, and an LW list of 30% of it shifted in RA by
+    `shift_arcsec` with 20 mas scatter."""
+    rng = np.random.default_rng(seed)
+    ra = 266.4 + rng.uniform(0, 20 / 3600, n)
+    dec = -29.0 + rng.uniform(0, 20 / 3600, n)
+    pick = rng.random(n) < 0.3
+    cosd = np.cos(np.radians(-29.0))
+    lra = ra[pick] + (shift_arcsec + rng.normal(0, 0.02, pick.sum())) / 3600 / cosd
+    ldec = dec[pick] + rng.normal(0, 0.02, pick.sum()) / 3600
+    return ra, dec, lra, ldec
+
+
+@pytest.mark.parametrize("n,shift", [(2000, 0.0), (2000, 0.2), (8000, 0.25)])
+def test_field_offset_recovers_a_bulk_offset_among_chance_pairs(n, shift):
+    # 5-20 stars/arcsec^2: at 20, a star's nearest neighbour is usually
+    # closer than 0.25", so nearest-neighbour matching would miss the offset
+    ra, dec, lra, ldec = _crowded(n, shift)
+    sw = SkyCoord(ra * u.deg, dec * u.deg)
+    lw = SkyCoord(lra * u.deg, ldec * u.deg)
+    dx, dy, off = overlays.field_offset(sw, lw)
+    assert abs(dx - shift) < 0.01 and abs(dy) < 0.01
+    assert abs(off - shift) < 0.01
+
+
+def test_match_catalogs_leaves_an_offset_field_out_of_the_colours(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    for obs, shift, ra0 in (("o040", 0.0, 266.40), ("o113", 0.2, 266.60)):
+        ra, dec, lra, ldec = _crowded(400, shift)
+        ra, lra = ra - 266.4 + ra0, lra - 266.4 + ra0
+        _write_cat(tmp_path, obs, "f212n", ra, dec, np.zeros(len(ra)), 0.031)
+        _write_cat(tmp_path, obs, "f480m", lra, ldec, np.zeros(len(lra)),
+                   0.063)
+    M, F, L = overlays.match_catalogs(overlays.latest_pairs())
+    assert set(M["who"]) == {"o040"}
+    assert set(F["who"]) == set(L["who"]) == {"o040", "o113"}
+    assert overlays.CACHE_VERSION >= 4
 
 
 # -- the published star PNG reads back at the right sky positions -----------
@@ -606,3 +662,108 @@ def test_match_catalogs_drops_f480m_rows_without_a_magnitude(
     M, F, L = overlays.match_catalogs(overlays.latest_pairs())
     assert len(L["ra"]) == 4 and np.isfinite(L["m480"]).all()
     assert len(F["ra"]) == 5
+
+
+# -- coverage: no border of zeros, NaN beyond the data -----------------------
+
+def _uniform_field(n=20000, side_arcsec=120.0, seed=2):
+    rng = np.random.default_rng(seed)
+    ra = 266.4 + rng.uniform(0, side_arcsec, n) / 3600 / np.cos(np.radians(-29))
+    dec = -29.0 + rng.uniform(0, side_arcsec, n) / 3600
+    return ra, dec
+
+
+def test_density_is_blank_beyond_the_stars_and_flat_up_to_the_edge():
+    ra, dec = _uniform_field()
+    arr, w, cov = overlays.density(ra, dec, ra, dec)
+    x, y = overlays.sky_to_pix(w, ra, dec)
+    ys, xs = np.nonzero(cov)
+    # coverage ends within a few pixels of the outermost stars
+    assert xs.min() >= x.min() - 4 and xs.max() <= x.max() + 4
+    assert ys.min() >= y.min() - 4 and ys.max() <= y.max() + 4
+    assert np.isnan(arr[~cov]).all() and np.isfinite(arr[cov]).all()
+    # 20000 stars / 4 arcmin^2; the edge is not diluted by the empty sky
+    expect = 20000 / 4.0
+    inner = arr[int(np.median(ys)), int(np.median(xs))]
+    edge = arr[int(np.median(ys)), xs.min() + 1]
+    assert abs(inner / expect - 1) < 0.2
+    assert abs(edge / expect - 1) < 0.3
+
+
+def test_footprint_fills_an_empty_hole_inside_the_field():
+    ra, dec = _uniform_field()
+    grid = overlays.make_grid(ra, dec, 2.0)
+    x, y = overlays.sky_to_pix(grid[0], ra, dec)
+    cx, cy = np.median(x), np.median(y)
+    hole = np.hypot(x - cx, y - cy) < 8          # a 16" dark cloud
+    cov = overlays.footprint(ra[~hole], dec[~hole], grid, 3)
+    assert cov[int(round(cy)), int(round(cx))]
+
+
+def test_knn_median_covers_the_footprint_and_takes_the_local_median():
+    ra, dec = _uniform_field()
+    x0 = np.median(ra)
+    col = np.where(ra < x0, 0.0, 2.0)          # two halves, sharp boundary
+    grid = overlays.make_grid(ra, dec, 2.0)
+    cov = overlays.footprint(ra, dec, grid, 3)
+    # only 1 star in 20 passes the cuts: sparse, as behind a dark cloud
+    use = np.arange(len(ra)) % 20 == 0
+    med, reach = overlays.knn_median(ra[use], dec[use], col[use], grid, cov, 15)
+    assert np.isfinite(med[cov]).all() and np.isnan(med[~cov]).all()
+    ys, xs = np.nonzero(cov)
+    row = int(np.median(ys))
+    left, right = med[row, xs.min() + 2], med[row, xs.max() - 2]
+    assert {left, right} == {0.0, 2.0}
+    assert np.nanmax(reach) < 30
+
+
+def test_aladin_slice_suffixes_refuses_a_slice_on_a_frame_boundary():
+    # distinct suffixes [5, 3, 2, 1, 0], but slice 2 lands at 2.0009,
+    # where browser rounding could pick frame 1 instead
+    with pytest.raises(ValueError, match="boundary"):
+        hips_formats.aladin_slice_suffixes((2.108e-6, 4.7395e-6), 5)
+
+
+def test_field_offset_refines_the_peak_below_the_bin_size():
+    # 50 mas bins put the peak at 0.175 or 0.225; the refinement recovers 0.204
+    ra, dec, lra, ldec = _crowded(2000, 0.2037)
+    sw = SkyCoord(ra * u.deg, dec * u.deg)
+    lw = SkyCoord(lra * u.deg, ldec * u.deg)
+    dx, dy, off = overlays.field_offset(sw, lw, step=0.05, core=0.06)
+    assert abs(dx - 0.2037) < 0.01
+
+
+def test_knn_median_reach_is_in_arcsec():
+    # stars on a 3" square lattice: from any point, the 9th nearest star is
+    # 3-5" away (1.5-2.5 of the 2" pixels)
+    step = 3.0 / 3600
+    cosd = np.cos(np.radians(-29.0))
+    g = np.arange(40)
+    ra = 266.4 + np.repeat(g, 40) * step / cosd
+    dec = -29.0 + np.tile(g, 40) * step
+    grid = overlays.make_grid(ra, dec, 2.0)
+    cov = overlays.footprint(ra, dec, grid, 3)
+    _, reach = overlays.knn_median(ra, dec, np.zeros(len(ra)), grid, cov, 9)
+    ys, xs = np.nonzero(cov)
+    centre = reach[int(np.median(ys)), int(np.median(xs))]
+    assert 2.9 < centre < 5.5
+
+
+def test_rc_maps_take_their_coverage_from_every_matched_star(monkeypatch):
+    calls = []
+
+    def fake_density(ra, dec, allra, alldec, **kw):
+        calls.append(len(allra))
+        return np.ones((2, 2)), "wcs", np.ones((2, 2), bool)
+
+    monkeypatch.setattr(overlays, "density", fake_density)
+    monkeypatch.setattr(overlays, "write_density", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "build_hips", lambda *a, **k: None)
+    n = 50
+    col = np.linspace(-2, 3, n)
+    m480 = np.full(n, 30.0)                  # none in the red-clump band ...
+    m480[:4] = 17.5 + overlays.SLOPE * col[:4]  # ... but four
+    m480[-4:] = 17.5 + overlays.SLOPE * col[-4:]
+    x = np.zeros(n)
+    overlays.build_rc(col, m480, x, x)
+    assert calls == [n, n]
