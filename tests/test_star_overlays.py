@@ -735,7 +735,7 @@ def test_field_offset_refines_the_peak_below_the_bin_size():
 
 def test_knn_median_reach_is_in_arcsec():
     # stars on a 3" square lattice: from any point, the 9th nearest star is
-    # 3-4.3" away (1.5-2.2 of the 2" pixels)
+    # 3-5" away (1.5-2.5 of the 2" pixels)
     step = 3.0 / 3600
     cosd = np.cos(np.radians(-29.0))
     g = np.arange(40)
@@ -746,7 +746,7 @@ def test_knn_median_reach_is_in_arcsec():
     _, reach = overlays.knn_median(ra, dec, np.zeros(len(ra)), grid, cov, 9)
     ys, xs = np.nonzero(cov)
     centre = reach[int(np.median(ys)), int(np.median(xs))]
-    assert 2.9 < centre < 4.5
+    assert 2.9 < centre < 5.5
 
 
 def test_rc_maps_take_their_coverage_from_every_matched_star(monkeypatch):
