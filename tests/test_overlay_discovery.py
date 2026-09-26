@@ -168,9 +168,10 @@ def _run_main(monkeypatch, tmp_path, catdir, argv, builders=None):
     M["who"] = np.array(["o127"] * 3)
     M["sat"] = np.zeros(3, bool)
     F = {k: M[k] for k in ("m212", "ra", "dec", "who", "sat")}
+    L = {k: M[k] for k in ("m480", "ra", "dec", "who", "sat")}
     monkeypatch.setattr(overlays, "load_matched",
                         lambda pairs, force=False: (
-                            M, F, overlays.fingerprint(pairs)))
+                            M, F, L, overlays.fingerprint(pairs)))
     monkeypatch.setattr(sys, "argv", ["gc_treasury_overlays.py"] + argv)
     rc = overlays.main()
     return rc, stamp, called

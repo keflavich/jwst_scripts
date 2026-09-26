@@ -121,25 +121,64 @@ def test_star_style_colour_size_and_alpha():
     assert np.all(np.diff(alpha.astype(int)) <= 0)
 
 
-def test_render_stars_puts_each_star_at_its_position():
-    # Two stars 20" apart in galactic latitude; the bright one is red.
-    c = SkyCoord(l=[0.1, 0.1] * u.deg, b=[0.0, 20 / 3600] * u.deg,
-                 frame="galactic").icrs
-    M = {"ra": c.ra.deg, "dec": c.dec.deg,
-         "m212": np.array([12.0, 21.0]), "col": np.array([2.5, -1.5])}
-    img, w = overlays.render_stars(M, pixel=0.2)
-    assert img.shape[2] == 4
+def _galactic_stars(l_arcsec, b_arcsec, col, sat=None):
+    c = SkyCoord(l=(0.1 + np.asarray(l_arcsec) / 3600) * u.deg,
+                 b=np.asarray(b_arcsec) / 3600 * u.deg, frame="galactic").icrs
+    n = len(col)
+    return {"ra": c.ra.deg, "dec": c.dec.deg, "col": np.asarray(col, float),
+            "m212": np.full(n, 15.0), "m480": np.full(n, 14.0),
+            "sat": np.zeros(n, bool) if sat is None else np.asarray(sat)}
+
+
+def _at(field, w, M, j):
+    x, y = overlays.sky_to_pix(w, M["ra"][j], M["dec"][j])
+    return field[int(round(float(y))), int(round(float(x)))]
+
+
+def test_colour_field_is_the_inverse_distance_mean_of_the_neighbours():
+    # Two stars 4" apart in l, colours 0 and 2: the midpoint is 1 with k=2;
+    # the pixel on a star leans to that star's colour; k=1 is the nearest.
+    M = _galactic_stars([0, 4, 2], [0, 0, 0], [0.0, 2.0, 9.0],
+                        sat=[False, False, True])
+    field, w = overlays.colour_field(M, pixel=0.1, k=2, max_arcsec=10,
+                                     workers=1)
+    mid = overlays.sky_to_pix(w, M["ra"][2], M["dec"][2])
+    assert abs(field[int(round(float(mid[1]))),
+                     int(round(float(mid[0])))] - 1.0) < 0.05
+    assert 0.0 < _at(field, w, M, 0) < 0.2
+    assert 1.8 < _at(field, w, M, 1) < 2.0
+    one, w1 = overlays.colour_field(M, pixel=0.1, k=1, max_arcsec=10,
+                                    workers=1)
+    assert _at(one, w1, M, 0) == 0.0 and _at(one, w1, M, 1) == 2.0
+    # the saturated star (colour 9) is never used
+    assert np.nanmax(field) <= 2.0 and np.nanmax(one) <= 2.0
+
+
+def test_colour_field_is_blank_beyond_the_neighbour_distance():
+    M = _galactic_stars([0, 1], [0, 0], [0.5, 0.5])
+    field, w = overlays.colour_field(M, pixel=0.2, k=2, max_arcsec=3,
+                                     workers=1, chunk_rows=7)
     x, y = overlays.sky_to_pix(w, M["ra"], M["dec"])
-    xi, yi = np.round(x).astype(int), np.round(y).astype(int)
-    bright, faint = img[yi[0], xi[0]], img[yi[1], xi[1]]
-    assert bright[3] > faint[3] > 0
-    assert bright[0] > bright[2] and faint[2] > faint[0]
-    # the grid is galactic and b increases with the row index (FITS order)
-    assert yi[1] > yi[0] and abs(xi[1] - xi[0]) <= 1
-    # nothing painted far from either star
-    assert img[..., 3].sum() == img[max(yi.min() - 8, 0):yi.max() + 9,
-                                    max(xi.min() - 8, 0):xi.max() + 9,
-                                    3].sum()
+    yy, xx = np.indices(field.shape)
+    dist = 0.2 * np.hypot(xx - x.max(), yy - y.mean())
+    assert np.isfinite(field[dist < 1.5]).all()
+    assert np.isnan(field[dist > 5]).all()
+    assert np.allclose(field[np.isfinite(field)], 0.5)
+
+
+def test_render_colour_field_is_opaque_only_where_covered():
+    M = _galactic_stars([0, 1, 30], [0, 0, 0], [-1.5, 2.5, 0.5])
+    img, w = overlays.render_colour_field(M, pixel=0.2, k=1, max_arcsec=3,
+                                          workers=1)
+    rgb, _, _ = overlays.star_style(M["m212"], M["col"])
+    for j in range(3):
+        px = _at(img, w, M, j)
+        assert px[3] == 255
+        assert np.abs(px[:3].astype(int) - rgb[j]).max() <= 2
+    assert set(np.unique(img[..., 3])) == {0, 255}
+    # 15" from every star: transparent
+    gap = _galactic_stars([15], [0], [0.0])
+    assert _at(img, w, gap, 0)[3] == 0
 
 
 # -- HiPS catalogue ---------------------------------------------------------
@@ -316,7 +355,8 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
     monkeypatch.setattr(overlays, "density_cube", fake_cube)
     x = np.array([0.0, 1.0])
     with pytest.raises(StopIteration):
-        overlays.build_star_density({"ra": x, "dec": x, "m212": x + 18})
+        overlays.build_star_density({"ra": x, "dec": x, "m212": x + 18},
+                                    {"ra": x, "dec": x, "m480": x + 15})
     with pytest.raises(StopIteration):
         overlays.build_colour({"ra": x, "dec": x, "col": x, "m480": x + 15,
                                "sat": np.zeros(2, bool)})
@@ -325,6 +365,33 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
             == overlays.F212N_F480M_EM_RANGE)
     for lo, hi in got.values():
         assert 1e-6 < lo < hi < 6e-6
+
+
+def test_f480m_density_counts_f480m_sources_within_the_f212n_coverage(
+        monkeypatch):
+    calls, built = [], []
+
+    def fake_density(ra, dec, allra, alldec, **kw):
+        calls.append((ra.copy(), allra.copy()))
+        return np.ones((2, 2)), "wcs", np.ones((2, 2), bool)
+
+    monkeypatch.setattr(overlays, "report_limits", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "write_density", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "density", fake_density)
+    monkeypatch.setattr(overlays, "density_cube", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "build_hips",
+                        lambda arr, w, name, *a, **k: built.append(name))
+    f212 = {"ra": np.array([266.40, 266.41]), "dec": np.array([-29.0, -29.0]),
+            "m212": np.array([18.0, 19.0])}
+    f480 = {"ra": np.array([266.405]), "dec": np.array([-29.0]),
+            "m480": np.array([15.0])}
+    overlays.build_star_density(f212, f480)
+    assert built == ["jwst-star-density-hips", "jwst-star-density-f480m-hips"]
+    ra480, cover = calls[1]
+    assert ra480.tolist() == f480["ra"].tolist()
+    assert cover.tolist() == f212["ra"].tolist()
+    assert "jwst-star-density-f480m-hips" in overlays.LAYERS
+    assert "F480M" in overlays.LAYER_DESCRIPTIONS["jwst-star-density-f480m-hips"]
 
 
 def test_assemble_hips_cube_refuses_mismatched_orders(tmp_path):
@@ -372,9 +439,9 @@ def test_match_catalogs_keeps_each_saturated_star_in_its_own_field(
 
     pairs = overlays.latest_pairs()
     assert sorted(pairs) == ["o040", "o073"]
-    M, F = overlays.match_catalogs(pairs)
+    M, F, L = overlays.match_catalogs(pairs)
 
-    for D in (M, F):
+    for D in (M, F, L):
         pos = SkyCoord(D["ra"] * u.deg, D["dec"] * u.deg)
 
         def owners(p):
@@ -410,7 +477,11 @@ def test_star_png_round_trips_through_its_avm(tmp_path, monkeypatch):
                  b=[0.0, 20 / 3600, 0.0] * u.deg, frame="galactic").icrs
     M = {"ra": g.ra.deg, "dec": g.dec.deg,
          "m212": np.array([12.0, 12.0, 12.0]),
-         "col": np.array([-1.5, 2.5, 0.5])}     # blue, red, yellow-ish
+         "col": np.array([-1.5, 2.5, 0.5]),     # blue, red, yellow-ish
+         "sat": np.zeros(3, bool)}
+    # one neighbour: each star's own pixel carries exactly its colour
+    monkeypatch.setattr(overlays, "KNN_NEIGHBORS", 1)
+    monkeypatch.setattr(overlays, "KNN_PIXEL_ARCSEC", 0.2)
     overlays.build_star_image(M)
 
     png = tmp_path / "jwst-stars-colour.png"
@@ -420,7 +491,7 @@ def test_star_png_round_trips_through_its_avm(tmp_path, monkeypatch):
     x, y = w.world_to_pixel(g)
     for k in range(3):
         px = arr[int(round(float(y[k]))), int(round(float(x[k])))]
-        assert px[3] > 0, f"star {k}: transparent at its own position"
+        assert px[3] == 255, f"star {k}: transparent at its own position"
         assert np.abs(px[:3].astype(int) - rgb[k]).max() <= 2, (
             f"star {k}: found {px[:3]}, expected {rgb[k]}")
 
@@ -437,11 +508,16 @@ def test_match_catalogs_guards_the_f480m_side_too(tmp_path, monkeypatch):
     ra, dec = np.array(own + [X]).T
     _write_cat(tmp_path, "o040", "f212n", ra, dec, [False] * 6, 0.031)
     _write_cat(tmp_path, "o040", "f480m", ra, dec, [False] * 5 + [True], 0.063)
-    M, F = overlays.match_catalogs(overlays.latest_pairs())
+    M, F, L = overlays.match_catalogs(overlays.latest_pairs())
     sep = SkyCoord(M["ra"] * u.deg, M["dec"] * u.deg).separation(
         SkyCoord(X[0] * u.deg, X[1] * u.deg)).arcsec
     assert not (sep < 0.05).any()
     assert len(M["ra"]) == 5 and not M["sat"].any()
+    # nor the F480M source list behind the F480M density map
+    sepL = SkyCoord(L["ra"] * u.deg, L["dec"] * u.deg).separation(
+        SkyCoord(X[0] * u.deg, X[1] * u.deg)).arcsec
+    assert not (sepL < 0.05).any()
+    assert len(L["ra"]) == 5 and not L["sat"].any()
 
 
 def test_every_layer_carries_a_one_line_description():
@@ -472,3 +548,61 @@ def test_red_clump_descriptions_state_every_rc_masks_cut():
         for v in (*overlays.RC_M480_RANGE, *overlays.RC_COLOUR_RANGE,
                   overlays.SLOPE, overlays.WRC, overlays.HW, overlays.SPLIT):
             assert f"{v:g}" in d, (n, v)
+
+
+# -- the match cache carries all three source lists --------------------------
+
+def _fake_lists(n=4):
+    r = np.arange(n, dtype=float)
+    M = {k: r + i for i, k in enumerate(("col", "m480", "m212", "ra", "dec"))}
+    M["who"], M["sat"] = np.array(["o001"] * n), np.zeros(n, bool)
+    F = {"m212": r + 10, "ra": r, "dec": r, "who": M["who"], "sat": M["sat"]}
+    L = {"m480": r + 20, "ra": r + 0.5, "dec": r, "who": M["who"],
+         "sat": np.array([True] + [False] * (n - 1))}
+    return M, F, L
+
+
+def test_load_matched_round_trips_every_list_through_the_cache(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CACHE", str(tmp_path / "cache.npz"))
+    monkeypatch.setattr(overlays, "STAMP", str(tmp_path / "stamp.json"))
+    monkeypatch.setattr(overlays, "fingerprint", lambda pairs: {
+        "n_obs": 1, "items": [], "version": overlays.CACHE_VERSION})
+    calls = []
+    lists = _fake_lists()
+    monkeypatch.setattr(overlays, "match_catalogs",
+                        lambda pairs: calls.append(1) or lists)
+    first = overlays.load_matched({})
+    with open(overlays.STAMP, "w") as fh:     # main() records the match
+        json.dump({"match": first[3]}, fh)
+    M, F, L, fp = overlays.load_matched({})
+    assert len(calls) == 1, "the second call must be a cache hit"
+    for got, want in zip((M, F, L), lists):
+        assert sorted(got) == sorted(want)
+        for k in want:
+            assert np.array_equal(got[k], want[k]), k
+    # a cache from another CACHE_VERSION is never read back
+    monkeypatch.setattr(overlays, "CACHE_VERSION", overlays.CACHE_VERSION + 1)
+    overlays.load_matched({})
+    assert len(calls) == 2
+
+
+def test_cache_version_postdates_the_f480m_list():
+    # version 2 caches hold no L_ arrays; reading one back would KeyError
+    assert overlays.CACHE_VERSION >= 3
+
+
+def test_match_catalogs_drops_f480m_rows_without_a_magnitude(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    step = 2.0 / 3600
+    ra = 266.40 + np.arange(5) * step
+    dec = np.full(5, -29.0)
+    _write_cat(tmp_path, "o040", "f212n", ra, dec, [False] * 5, 0.031)
+    p = _write_cat(tmp_path, "o040", "f480m", ra, dec, [False] * 5, 0.063)
+    t = Table.read(p)
+    t["flux"][-1] = np.nan
+    t.write(p, overwrite=True)
+    M, F, L = overlays.match_catalogs(overlays.latest_pairs())
+    assert len(L["ra"]) == 4 and np.isfinite(L["m480"]).all()
+    assert len(F["ra"]) == 5

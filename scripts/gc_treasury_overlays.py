@@ -9,6 +9,7 @@ regenerated together whenever those catalogues change:
   jwst-rc-red-hips             red-clump stars redder than the GC average
   jwst_ultrared_stars          catalogue (ecsv/fits/json) of F212N-F480M > 4
   jwst-star-density-hips       all F212N sources, saturated included
+  jwst-star-density-f480m-hips all F480M sources, saturated included
   jwst-star-density-f212n-cube-hips
                                cube: F212N sources in 1-mag bins, from the
                                saturation limit to the confusion limit
@@ -16,8 +17,8 @@ regenerated together whenever those catalogues change:
                                cube: F212N-F480M in 0.5-mag colour bins
                                (star counts by reddening: pseudo-extinction)
   jwst-median-colour-hips      median F212N-F480M per cell (pseudo-extinction)
-  jwst-stars-colour-hips       every matched star drawn as a disc coloured by
-                               F212N-F480M, sized and faded by F212N
+  jwst-stars-colour-hips       F212N-F480M at every pixel: the inverse-distance
+                               weighted mean colour of the nearest stars
   jwst-stars-catalog-hips      the same stars as a HiPS catalogue
 
 Saturated stars
@@ -101,7 +102,8 @@ LOCK = f"{OUT}/.overlays.lock"
 REMOTE = ("starformation:/h/cnswww-starformation.astro/"
           "starformation.astro.ufl.edu/htdocs/avm_images/")
 LAYERS = ["jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips",
-          "jwst-star-density-hips", "jwst-star-density-f212n-cube-hips",
+          "jwst-star-density-hips", "jwst-star-density-f480m-hips",
+          "jwst-star-density-f212n-cube-hips",
           "jwst-star-density-colour-cube-hips", "jwst-median-colour-hips",
           "jwst-stars-colour-hips", "jwst-stars-catalog-hips"]
 CATALOGUE_FILES = ["jwst_ultrared_stars.ecsv", "jwst_ultrared_stars.fits",
@@ -133,8 +135,9 @@ PIXEL_ARCSEC, SMOOTH_ARCSEC = 2.0, 6.0
 SAT_FOOTPRINT_ARCSEC = 10.0
 DEDUPE_ARCSEC = 0.1
 #: Bumped whenever the cached arrays change meaning, so an old cache (built
-#: without the guard) is never read back as if it had one.
-CACHE_VERSION = 2
+#: without the guard) is never read back as if it had one.  3: the cache also
+#: holds every F480M source, for the F480M density map.
+CACHE_VERSION = 3
 
 # F212N magnitude cube.  Saturation: the faint end of the saturated rows and
 # the bright end of the unsaturated ones meet near 17-18 AB.  Confusion: the
@@ -151,7 +154,9 @@ COLOUR_MAGLIMIT = 20.0
 # median-colour map: cell size and minimum stars per cell
 MEDIAN_PIXEL_ARCSEC, MEDIAN_MIN_STARS = 4.0, 5
 # star rendering
-STAR_PIXEL_ARCSEC = 0.2
+#: colour field: 2x the F480M (long-wave) pixel, the neighbour count, and the
+#: largest k-th neighbour distance that still counts as covered.
+KNN_PIXEL_ARCSEC, KNN_NEIGHBORS, KNN_MAX_ARCSEC = 0.126, 15, 10.0
 STAR_COLOUR_RANGE = (-1.5, 2.5)
 STAR_CMAP = "RdYlBu_r"
 #: F212N AB -> disc radius (render pixels) and alpha (0-255), interpolated.
@@ -185,6 +190,9 @@ LAYER_DESCRIPTIONS = {
     "jwst-star-density-hips":
         "Pixel value: surface density in stars/arcmin^2 of all F212N "
         f"sources, {_GRID}. {_SOURCE}",
+    "jwst-star-density-f480m-hips":
+        "Pixel value: surface density in stars/arcmin^2 of all F480M "
+        f"sources, {_GRID}. {_SOURCE}",
     "jwst-star-density-f212n-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
         f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
@@ -204,16 +212,18 @@ LAYER_DESCRIPTIONS = {
         "values mean more reddening (a pseudo-extinction map, not calibrated "
         f"to A_V). {_CATALOGUES}.",
     "jwst-stars-colour-hips":
-        "Each matched star drawn as a disk colored by F212N-F480M "
-        f"({STAR_CMAP} over {STAR_COLOUR_RANGE[0]:g} to "
-        f"{STAR_COLOUR_RANGE[1]:g} AB mag), with radius and opacity set by "
-        "F212N brightness. Pixel values are display colors, not flux. "
-        f"{_SOURCE}",
+        "F212N-F480M at every pixel: the inverse-distance weighted mean color "
+        f"of the {KNN_NEIGHBORS} nearest unsaturated matched stars on a "
+        f"{KNN_PIXEL_ARCSEC:g}\" grid, shown in {STAR_CMAP} over "
+        f"{STAR_COLOUR_RANGE[0]:g} to {STAR_COLOUR_RANGE[1]:g} AB mag; blank "
+        f"where the {KNN_NEIGHBORS}th star is more than {KNN_MAX_ARCSEC:g}\" "
+        "away. Pixel values are display colors, not flux. "
+        f"{_CATALOGUES}.",
     "jwst-stars-catalog-hips":
         "Matched stars, brightest F212N first. Columns: ra, dec (deg, ICRS), "
         "f212n, f480m, color (F212N-F480M) in AB mag, saturated (1 if "
         "saturated in either filter), obs (10678 observation), rgb (the "
-        f"jwst-stars-colour-hips display color). {_SOURCE}",
+        f"star's color in the jwst-stars-colour-hips color map). {_SOURCE}",
 }
 
 
@@ -465,7 +475,7 @@ def cross_field_separations(ra, dec, who, rmax=0.5):
 def match_catalogs(pairs, tol=MATCH_ARCSEC):
     """Per-field guard, cross-filter match, then cross-field dedupe.
 
-    Returns two dicts of aligned arrays:
+    Returns three dicts of aligned arrays:
 
     matched  -- sources in both filters: col (F212N-F480M), m480, m212, ra,
                 dec (the F480M position), who (obs), sat (saturated in either)
@@ -473,6 +483,10 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
                 The density products count these: F212N is the deeper, finer
                 filter, and requiring an F480M match would make the counts
                 depend on F480M completeness.
+    f480m    -- every F480M source, matched or not: m480, ra, dec, who, sat,
+                for the F480M density map.
+
+    Returns (matched, f212n, f480m).
 
     Nearest-neighbour with no uniqueness pass, so in a field this crowded
     several F480M detections can claim the same F212N source within the
@@ -481,6 +495,7 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
     the two filters, so tightening it would cost real matches instead."""
     M = {k: [] for k in ("col", "m480", "m212", "ra", "dec", "who", "sat")}
     F = {k: [] for k in ("m212", "ra", "dec", "who", "sat")}
+    L = {k: [] for k in ("m480", "ra", "dec", "who", "sat")}
     for obs, v in pairs.items():
         a = Table.read(v["f212n"][1])
         b = Table.read(v["f480m"][1])
@@ -497,6 +512,12 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
         F["dec"].append(a["skycoord"].dec.deg[fa])
         F["who"].append(np.full(fa.sum(), obs))
         F["sat"].append(sa[fa])
+        fb = np.isfinite(mb)
+        L["m480"].append(mb[fb])
+        L["ra"].append(b["skycoord"].ra.deg[fb])
+        L["dec"].append(b["skycoord"].dec.deg[fb])
+        L["who"].append(np.full(fb.sum(), obs))
+        L["sat"].append(sb[fb])
 
         idx, d2d, _ = b["skycoord"].match_to_catalog_sky(a["skycoord"])
         ok = d2d.arcsec < tol
@@ -519,7 +540,8 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
               flush=True)
     M = {k: np.concatenate(v) for k, v in M.items()}
     F = {k: np.concatenate(v) for k, v in F.items()}
-    for nm, D in (("matched", M), ("F212N", F)):
+    L = {k: np.concatenate(v) for k, v in L.items()}
+    for nm, D in (("matched", M), ("F212N", F), ("F480M", L)):
         sep = cross_field_separations(D["ra"], D["dec"], D["who"])
         edges = [0, 0.01, 0.05, DEDUPE_ARCSEC, 0.2, 0.3, 0.5]
         hist, _ = np.histogram(sep, bins=edges)
@@ -531,11 +553,11 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
               f"earlier field removed", flush=True)
         for k in D:
             D[k] = D[k][keep]
-    return M, F
+    return M, F, L
 
 
 def load_matched(pairs, force=False):
-    """(matched, f212n, fp): the `match_catalogs` dicts, from CACHE when it was
+    """(matched, f212n, f480m, fp): the `match_catalogs` dicts, from CACHE when it was
     built from this exact input set by this CACHE_VERSION."""
     fp = fingerprint(pairs)
     if not force and os.path.exists(CACHE) and os.path.exists(STAMP):
@@ -545,16 +567,19 @@ def load_matched(pairs, force=False):
             d = np.load(CACHE, allow_pickle=True)
             M = {k[2:]: d[k] for k in d.files if k.startswith("M_")}
             F = {k[2:]: d[k] for k in d.files if k.startswith("F_")}
+            L = {k[2:]: d[k] for k in d.files if k.startswith("L_")}
             print(f"match cache hit: {len(M['col']):,} matched, "
-                  f"{len(F['m212']):,} F212N sources over {fp['n_obs']} fields")
-            return M, F, fp
+                  f"{len(F['m212']):,} F212N and {len(L['m480']):,} F480M "
+                  f"sources over {fp['n_obs']} fields")
+            return M, F, L, fp
     print(f"matching {fp['n_obs']} field(s) at {MATCH_ARCSEC}\"", flush=True)
-    M, F = match_catalogs(pairs)
+    M, F, L = match_catalogs(pairs)
     np.savez(CACHE, **{f"M_{k}": v for k, v in M.items()},
-             **{f"F_{k}": v for k, v in F.items()})
-    print(f"{len(M['col']):,} matched, {len(F['m212']):,} F212N sources "
-          f"over {fp['n_obs']} fields")
-    return M, F, fp
+             **{f"F_{k}": v for k, v in F.items()},
+             **{f"L_{k}": v for k, v in L.items()})
+    print(f"{len(M['col']):,} matched, {len(F['m212']):,} F212N and "
+          f"{len(L['m480']):,} F480M sources over {fp['n_obs']} fields")
+    return M, F, L, fp
 
 
 # --------------------------------------------------------------------------
@@ -839,8 +864,9 @@ def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
           flush=True)
 
 
-def build_star_density(F, level=None, threads=8):
-    """Total F212N star density (saturated included) and the 1-mag cube."""
+def build_star_density(F, L, level=None, threads=8):
+    """Total F212N and F480M star densities (saturated included) and the
+    F212N 1-mag cube."""
     ra, dec, m = F["ra"], F["dec"], F["m212"]
     report_limits(F)
     arr, w, cov = density(ra, dec, ra, dec)
@@ -849,6 +875,14 @@ def build_star_density(F, level=None, threads=8):
           f"max {np.nanmax(arr):.0f}/arcmin2")
     write_density(arr, w, "jwst-star-density-hips")
     build_hips(arr, w, "jwst-star-density-hips", level, threads)
+    # F480M on the F212N grid, with the F212N coverage: a pixel inside the
+    # F212N footprint with no F480M source is a zero, not a blank.
+    arr480, _, _ = density(L["ra"], L["dec"], ra, dec, grid=make_grid(
+        ra, dec, PIXEL_ARCSEC))
+    print(f"all F480M sources: {len(L['ra']):,}; median-in-coverage "
+          f"{np.nanmedian(arr480):.0f}, max {np.nanmax(arr480):.0f}/arcmin2")
+    write_density(arr480, w, "jwst-star-density-f480m-hips")
+    build_hips(arr480, w, "jwst-star-density-f480m-hips", level, threads)
     edges = np.arange(F212N_SAT_LIMIT, F212N_CONFUSION_LIMIT + 0.01, 1.0)
     print(f"F212N magnitude cube, {len(edges) - 1} frames:")
     density_cube(ra, dec, m, edges, ra, dec,
@@ -910,44 +944,74 @@ def star_style(m212, col):
     return rgb.astype(np.uint8), alpha.astype(np.uint8), radius.astype(int)
 
 
-def render_stars(M, pixel=STAR_PIXEL_ARCSEC):
-    """RGBA image (FITS row order: row 0 is the bottom) of every matched star.
+def colour_field(M, pixel=None, k=None, max_arcsec=None, workers=8,
+                 chunk_rows=64):
+    """(colour [ny, nx] float32, wcs): F212N-F480M at every pixel of a
+    galactic grid, the inverse-distance weighted mean colour of the `k`
+    nearest unsaturated matched stars.  NaN where the k-th of them is
+    farther than `max_arcsec`, which blanks the gaps between fields and the
+    sky beyond the survey edge.
 
-    Faint stars are painted first so bright ones sit on top, and within one
-    disc size the stencil is painted from the rim inwards, so where two discs
-    overlap each keeps its own centre.
+    Saturated stars are left out: their colours are the least reliable ones,
+    and one bright star would otherwise paint its whole neighbourhood.  The
+    weight is 1/d with d floored at half a pixel, so a pixel centred on a star
+    is not that star's colour alone.
     """
-    ok = np.isfinite(M["m212"]) & np.isfinite(M["col"])
-    ra, dec, m, col = (M[k][ok] for k in ("ra", "dec", "m212", "col"))
+    from scipy.spatial import cKDTree
+    pixel = KNN_PIXEL_ARCSEC if pixel is None else pixel
+    k = KNN_NEIGHBORS if k is None else k
+    max_arcsec = KNN_MAX_ARCSEC if max_arcsec is None else max_arcsec
+    ok = np.isfinite(M["col"]) & ~M["sat"]
+    ra, dec, col = M["ra"][ok], M["dec"][ok], M["col"][ok]
     w, ny, nx = make_grid(ra, dec, pixel, galactic=True, pad=0.005)
-    print(f"star render: {ok.sum():,} stars on {nx} x {ny} at {pixel}\"/pix "
-          f"({nx * ny * 4 / 1e9:.1f} GB)", flush=True)
+    print(f"colour field: {ok.sum():,} unsaturated stars, {k} nearest, on "
+          f"{nx} x {ny} at {pixel}\"/pix", flush=True)
     x, y = sky_to_pix(w, ra, dec)
-    xi, yi = np.round(x).astype(int), np.round(y).astype(int)
-    rgb, alpha, radius = star_style(m, col)
-    img = np.zeros((ny, nx, 4), np.uint8)
-    faint_first = np.argsort(-m, kind="stable")
-    for R in np.unique(radius):
-        sel = faint_first[radius[faint_first] == R]
-        dy, dx = np.mgrid[-R:R + 1, -R:R + 1]
-        d2 = dx ** 2 + dy ** 2
-        inside = d2 <= R * R + R          # a less jagged small disc
-        stencil = sorted(zip(d2[inside], dy[inside], dx[inside]), reverse=True)
-        for _, ddy, ddx in stencil:
-            X, Y = xi[sel] + ddx, yi[sel] + ddy
-            v = (X >= 0) & (X < nx) & (Y >= 0) & (Y < ny)
-            img[Y[v], X[v], :3] = rgb[sel][v]
-            img[Y[v], X[v], 3] = alpha[sel][v]
+    tree = cKDTree(np.c_[x, y])
+    out = np.full((ny, nx), np.nan, np.float32)
+    xs = np.arange(nx)
+    for r0 in range(0, ny, chunk_rows):
+        rows = np.arange(r0, min(r0 + chunk_rows, ny))
+        X, Y = np.meshgrid(xs, rows)
+        d, i = tree.query(np.c_[X.ravel(), Y.ravel()], k=k,
+                          distance_upper_bound=max_arcsec / pixel,
+                          workers=workers)
+        d, i = d.reshape(-1, k), i.reshape(-1, k)
+        good = np.isfinite(d[:, -1])
+        wt = 1.0 / np.maximum(d[good], 0.5)
+        block = np.full(len(d), np.nan, np.float32)
+        block[good] = (wt * col[i[good]]).sum(1) / wt.sum(1)
+        out[rows] = block.reshape(len(rows), nx)
+    print(f"  {100 * np.isfinite(out).mean():.1f}% of the grid filled",
+          flush=True)
+    return out, w
+
+
+def render_colour_field(M, **kw):
+    """RGBA image (FITS row order: row 0 is the bottom) of `colour_field`,
+    in the star colour map, transparent where the field is blank."""
+    import matplotlib
+    colour, w = colour_field(M, **kw)
+    lo, hi = STAR_COLOUR_RANGE
+    cmap = matplotlib.colormaps[STAR_CMAP]
+    good = np.isfinite(colour)
+    img = np.zeros(colour.shape + (4,), np.uint8)
+    lut = (cmap(np.linspace(0, 1, 256))[:, :3] * 255).round().astype(np.uint8)
+    idx = np.clip((colour[good] - lo) / (hi - lo), 0, 1)
+    img[good, :3] = lut[np.round(idx * 255).astype(int)]
+    img[good, 3] = 255
     return img, w
 
 
 def build_star_image(M, level=None, threads=8):
-    """The coloured-disc overlay as an image HiPS with transparent sky.
+    """The star-colour field (`render_colour_field`) as an image HiPS with
+    transparent sky.
 
     Written through the same pixel path as `save_rgb` (flip the rows, then
     ROTATE_180) with `avm_for_saved_png` describing the result, which is the
     combination the astrometry tests pin.  `save_rgb` itself is not used
-    because its alpha is binary; this layer needs graded alpha.
+    because its alpha comes from NaN islands in the data, and this layer's
+    transparency is decided by the neighbour distance instead.
     """
     import PIL
     from PIL import Image
@@ -956,7 +1020,7 @@ def build_star_image(M, level=None, threads=8):
     from jwst_rgb.save_rgb import avm_for_saved_png
 
     name = "jwst-stars-colour-hips"
-    img, w = render_stars(M)
+    img, w = render_colour_field(M, workers=threads)
     ny, nx = img.shape[:2]
     PIL.Image.MAX_IMAGE_PIXELS = None
     png = f"{OUT}/{name.replace('-hips', '')}.png"
@@ -1218,7 +1282,7 @@ def main():
     if not take_lock():
         return 0
     try:
-        M, F, fp = load_matched(pairs, force=a.force)
+        M, F, L, fp = load_matched(pairs, force=a.force)
         col, m480, ra, dec, who = (M[k] for k in ("col", "m480", "ra", "dec",
                                                    "who"))
         report_ridge(col, m480)
@@ -1233,7 +1297,7 @@ def main():
         if "ultrared" in want:
             build_ultrared(col, m480, ra, dec, who, pair_provenance(pairs))
         if "density" in want:
-            build_star_density(F, a.level, a.threads)
+            build_star_density(F, L, a.level, a.threads)
         if "colour" in want:
             build_colour(M, a.level, a.threads)
         if "stars" in want:
