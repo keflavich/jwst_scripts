@@ -473,6 +473,46 @@ def test_match_catalogs_keeps_each_saturated_star_in_its_own_field(
         assert len(D["ra"]) == 5 + 5 + 2 + 1 + 2
 
 
+def _crowded(n, shift_arcsec, seed=1):
+    """A crowded SW list, and an LW list of 30% of it shifted in RA by
+    `shift_arcsec` with 20 mas scatter."""
+    rng = np.random.default_rng(seed)
+    ra = 266.4 + rng.uniform(0, 20 / 3600, n)
+    dec = -29.0 + rng.uniform(0, 20 / 3600, n)
+    pick = rng.random(n) < 0.3
+    cosd = np.cos(np.radians(-29.0))
+    lra = ra[pick] + (shift_arcsec + rng.normal(0, 0.02, pick.sum())) / 3600 / cosd
+    ldec = dec[pick] + rng.normal(0, 0.02, pick.sum()) / 3600
+    return ra, dec, lra, ldec
+
+
+@pytest.mark.parametrize("shift", [0.0, 0.2])
+def test_field_offset_recovers_a_bulk_offset_among_chance_pairs(shift):
+    # ~5 stars/arcsec^2: a nearest neighbour within 0.5" is often a chance pair
+    ra, dec, lra, ldec = _crowded(2000, shift)
+    sw = SkyCoord(ra * u.deg, dec * u.deg)
+    lw = SkyCoord(lra * u.deg, ldec * u.deg)
+    idx, d2d, _ = lw.match_to_catalog_sky(sw)
+    dx, dy, off = overlays.field_offset(sw, lw, idx, d2d)
+    assert abs(dx - shift) < 0.01 and abs(dy) < 0.01
+    assert abs(off - shift) < 0.01
+
+
+def test_match_catalogs_leaves_an_offset_field_out_of_the_colours(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    for obs, shift, ra0 in (("o040", 0.0, 266.40), ("o113", 0.2, 266.60)):
+        ra, dec, lra, ldec = _crowded(400, shift)
+        ra, lra = ra - 266.4 + ra0, lra - 266.4 + ra0
+        _write_cat(tmp_path, obs, "f212n", ra, dec, np.zeros(len(ra)), 0.031)
+        _write_cat(tmp_path, obs, "f480m", lra, ldec, np.zeros(len(lra)),
+                   0.063)
+    M, F, L = overlays.match_catalogs(overlays.latest_pairs())
+    assert set(M["who"]) == {"o040"}
+    assert set(F["who"]) == set(L["who"]) == {"o040", "o113"}
+    assert overlays.CACHE_VERSION >= 4
+
+
 # -- the published star PNG reads back at the right sky positions -----------
 
 def test_star_png_round_trips_through_its_avm(tmp_path, monkeypatch):

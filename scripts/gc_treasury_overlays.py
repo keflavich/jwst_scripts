@@ -111,6 +111,12 @@ CATALOGUE_FILES = ["jwst_ultrared_stars.ecsv", "jwst_ultrared_stars.fits",
 
 AB_ZP_JY = 3631.0
 MATCH_ARCSEC = 0.1
+#: A field whose F212N and F480M catalogues sit further apart than this
+#: (bulk offset, see `field_offset`) is left out of the matched products: at
+#: MATCH_ARCSEC most of its matches would be chance pairs.  Its F212N and
+#: F480M sources still count in the density maps.  o063 and o113 (F212N
+#: 0.15-0.27" off F480M, jwst-gc-pipeline #921) trip it until reprocessed.
+MAX_FIELD_OFFSET_ARCSEC = 0.1
 
 # red + bright density layer
 RED_COLOUR, RED_MAGLIMIT = 0.0, 18.0
@@ -138,8 +144,9 @@ SAT_FOOTPRINT_ARCSEC = 10.0
 DEDUPE_ARCSEC = 0.1
 #: Bumped whenever the cached arrays change meaning, so an old cache (built
 #: without the guard) is never read back as if it had one.  3: the cache also
-#: holds every F480M source, for the F480M density map.
-CACHE_VERSION = 3
+#: holds every F480M source, for the F480M density map.  4: fields with an
+#: F212N-F480M offset over MAX_FIELD_OFFSET_ARCSEC are left out of matched.
+CACHE_VERSION = 4
 
 # F212N magnitude cube.  Saturation: the faint end of the saturated rows and
 # the bright end of the unsaturated ones meet near 17-18 AB.  Confusion: the
@@ -453,6 +460,32 @@ def dedupe_across_fields(ra, dec, who, tol=DEDUPE_ARCSEC):
     return keep
 
 
+def field_offset(sw, lw, idx, d2d, search=0.5, core=0.1):
+    """Bulk offset (arcsec) of SkyCoord `lw` relative to `sw`, and its size.
+
+    `idx`, `d2d` are ``lw.match_to_catalog_sky(sw)``'s first two outputs.
+
+    Two passes, because in a crowded field the nearest neighbours out to
+    `search` are mostly chance pairs that pull a one-pass median towards
+    zero: the median (dRA cos dec, dDec) of pairs within `search`, then the
+    median of the pairs within `core` of that first estimate.
+    """
+    if len(sw) == 0 or len(lw) == 0:
+        return np.nan, np.nan, np.nan
+    near = sw[idx]
+    dra = ((lw.ra - near.ra).wrap_at("180d").deg
+           * np.cos(np.radians(lw.dec.deg))) * 3600
+    ddec = (lw.dec - near.dec).deg * 3600
+    close = d2d.arcsec < search
+    if not close.any():
+        return np.nan, np.nan, np.nan
+    x, y = np.median(dra[close]), np.median(ddec[close])
+    core_ = close & (np.hypot(dra - x, ddec - y) < core)
+    if core_.any():
+        x, y = np.median(dra[core_]), np.median(ddec[core_])
+    return x, y, float(np.hypot(x, y))
+
+
 def cross_field_separations(ra, dec, who, rmax=0.5):
     """Separations (arcsec) of every cross-field pair closer than `rmax`.
 
@@ -522,7 +555,13 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
         L["sat"].append(sb[fb])
 
         idx, d2d, _ = b["skycoord"].match_to_catalog_sky(a["skycoord"])
+        dx, dy, off = field_offset(a["skycoord"], b["skycoord"], idx, d2d)
         ok = d2d.arcsec < tol
+        if off > MAX_FIELD_OFFSET_ARCSEC:
+            print(f"  {obs}: F480M is ({dx:+.3f}, {dy:+.3f})\" off F212N, over "
+                  f"{MAX_FIELD_OFFSET_ARCSEC}\"; left out of the colour "
+                  "products", flush=True)
+            ok[:] = False
         c = ma[idx[ok]] - mb[ok]
         mm = mb[ok]
         g = np.isfinite(c) & np.isfinite(mm)
