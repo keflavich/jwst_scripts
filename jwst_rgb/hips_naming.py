@@ -184,6 +184,10 @@ SPECIAL = {
         "jwst-gc-treasury-star-density",
         "JWST GC Treasury: F212N stellar surface density (saturated stars "
         "included)"),
+    "jwst-star-density-f480m-hips": (
+        "jwst-gc-treasury-star-density-f480m",
+        "JWST GC Treasury: F480M stellar surface density (saturated stars "
+        "included)"),
     "jwst-star-density-f212n-cube-hips": (
         "jwst-gc-treasury-star-density-f212n-cube",
         "JWST GC Treasury: F212N stellar surface density in 1-mag bins "
@@ -198,7 +202,8 @@ SPECIAL = {
         "pseudo-extinction map"),
     "jwst-stars-colour-hips": (
         "jwst-gc-treasury-stars-by-colour",
-        "JWST GC Treasury: stars colored by F212N-F480M and sized by F212N"),
+        "JWST GC Treasury: F212N-F480M color of the nearest stars, a "
+        "pseudo-extinction map"),
     "jwst-stars-catalog-hips": (
         "jwst-gc-treasury-star-catalogue",
         "JWST GC Treasury: F212N/F480M star catalog"),
