@@ -282,12 +282,14 @@ def _fake_frame(root, name, order="3"):
 
 
 def test_assemble_hips_cube_names_frames(tmp_path):
+    # without em_range: HiPS 1.0 layout, frame 0 also as _0 (Aladin asks so)
     frames = [_fake_frame(tmp_path, f"f{i}") for i in range(3)]
     out = str(tmp_path / "cube")
     hips_formats.assemble_hips_cube(frames, out, crval3=17.5, cdelt3=1.0,
                                     bunit3="mag", pixel_cut=(0, 5))
     tiles = os.path.join(out, "Norder3", "Dir0")
     assert open(os.path.join(tiles, "Npix12.fits"), "rb").read() == b"f0"
+    assert open(os.path.join(tiles, "Npix12_0.fits"), "rb").read() == b"f0"
     assert open(os.path.join(tiles, "Npix12_1.fits"), "rb").read() == b"f1"
     assert open(os.path.join(tiles, "Npix12_2.fits"), "rb").read() == b"f2"
     assert os.path.exists(os.path.join(out, "Norder3", "Allsky_2.fits"))
@@ -299,36 +301,50 @@ def test_assemble_hips_cube_names_frames(tmp_path):
     assert props["hips_pixel_cut"] == "0 5"
 
 
-def test_assemble_hips_cube_also_names_frame_0_with_a_suffix(tmp_path):
-    # Aladin Lite asks for frame 0 as Npix<n>_0; HiPS 1.0 leaves it bare.
-    frames = [_fake_frame(tmp_path, f"f{i}") for i in range(2)]
-    out = str(tmp_path / "cube")
-    hips_formats.assemble_hips_cube(frames, out)
-    tiles = os.path.join(out, "Norder3", "Dir0")
-    assert open(os.path.join(tiles, "Npix12_0.fits"), "rb").read() == b"f0"
-    assert open(os.path.join(tiles, "Npix12.fits"), "rb").read() == b"f0"
-    assert os.path.exists(os.path.join(out, "Norder3", "Allsky_0.fits"))
-
-
-def _aladin_lite_frame(freq, props):
-    """Frame Aladin Lite 3.7-3.9 shows for `freq` (d3/mod.rs, channel_idx)."""
+def _aladin_lite_slice(s, props):
+    """Tile suffix Aladin Lite 3.7-3.9 requests at cube slider slice `s`:
+    setSliceNumber (aladin.js), then channel_idx (d3/mod.rs)."""
     c = 299792458.0
-    f_lo, f_hi = c / float(props["em_max"]), c / float(props["em_min"])
-    return int((freq - f_lo) / (f_hi - f_lo) * int(props["hips_cube_depth"]))
+    em_min, em_max = float(props["em_min"]), float(props["em_max"])
+    depth = int(props["hips_cube_depth"])
+    freq = c / (em_min + s / depth * (em_max - em_min))
+    f_lo, f_hi = c / em_max, c / em_min
+    return max(int((freq - f_lo) / (f_hi - f_lo) * depth), 0)
 
 
 @pytest.mark.parametrize("depth", [5, 9])
-def test_cube_index_selects_each_frame_in_aladin_lite(tmp_path, depth):
+@pytest.mark.parametrize("em_range", [(2.135e-6, 2.108e-6),
+                                      (4.662e-6, 4.966e-6)])
+def test_aladin_cube_slider_shows_frame_s_at_slice_s(tmp_path, depth,
+                                                     em_range):
     frames = [_fake_frame(tmp_path, f"f{i}") for i in range(depth)]
     out = str(tmp_path / "cube")
     hips_formats.assemble_hips_cube(frames, out, crval3=17.5, cdelt3=1.0,
-                                    bunit3="mag", em_range=(4.966e-6, 2.108e-6))
+                                    bunit3="mag", em_range=em_range)
     props = hips_formats._read_properties(os.path.join(out, "properties"))
     assert float(props["em_min"]) < float(props["em_max"])
+    tiles = os.path.join(out, "Norder3")
+    for s in range(depth):
+        k = _aladin_lite_slice(s, props)
+        assert open(os.path.join(tiles, "Dir0", f"Npix12_{k}.fits"),
+                    "rb").read() == f"f{s}".encode()
+        assert open(os.path.join(tiles, f"Allsky_{k}.fits"),
+                    "rb").read() == f"f{s}".encode()
+    # slice 0 is on the edge; Aladin Lite 3.7.2-beta asks for _<depth-1>
+    assert open(os.path.join(tiles, "Dir0", f"Npix12_{depth - 1}.fits"),
+                "rb").read() == b"f0"
+    # clients that ignore cubes see frame 0
+    assert open(os.path.join(tiles, "Dir0", "Npix12.fits"), "rb").read() == b"f0"
     page = open(os.path.join(out, "index.html")).read()
-    freqs = json.loads(page.split("const FREQS = ")[1].split(";")[0])
-    assert [_aladin_lite_frame(f, props) for f in freqs] == list(range(depth))
-    assert "setFrequency" in page and "17 to 18 mag" in page
+    assert "setSliceNumber" in page and "17 to 18 mag" in page
+
+
+def test_aladin_slice_suffixes_refuses_a_range_the_slider_cannot_cover():
+    # F212N to F480M: the slider would show one frame twice and skip another
+    with pytest.raises(ValueError, match="narrower"):
+        hips_formats.aladin_slice_suffixes((2.108e-6, 4.966e-6), 9)
+    assert hips_formats.aladin_slice_suffixes((2.108e-6, 2.135e-6), 5) == [
+        5, 3, 2, 1, 0]
 
 
 def test_cube_without_em_range_keeps_the_frame_0_landing_page(tmp_path):
@@ -362,7 +378,7 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
                                "sat": np.zeros(2, bool)})
     assert got["jwst-star-density-f212n-cube-hips"] == overlays.F212N_EM_RANGE
     assert (got["jwst-star-density-colour-cube-hips"]
-            == overlays.F212N_F480M_EM_RANGE)
+            == overlays.F480M_EM_RANGE)
     for lo, hi in got.values():
         assert 1e-6 < lo < hi < 6e-6
 

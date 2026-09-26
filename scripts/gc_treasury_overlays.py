@@ -117,11 +117,13 @@ RED_COLOUR, RED_MAGLIMIT = 0.0, 18.0
 # red-clump band and split (see module docstring -- empirical, held fixed)
 SLOPE, WRC, HW, SPLIT = 0.890, 17.50, 0.9, -0.325
 RC_M480_RANGE, RC_COLOUR_RANGE = (14.0, 19.0), (-2.5, 3.5)
-#: Wavelength coverage (m) of the data behind each cube, for em_min/em_max:
-#: pivot +/- bandwidth/2 from the JDox NIRCam filter table (approximate).
-#: Aladin Lite cannot open a HiPS cube without it (see jwst_rgb.hips_formats).
+#: em_min/em_max (m) of each cube: one filter's pivot +/- bandwidth/2 from
+#: the JDox NIRCam filter table (approximate).  Aladin Lite cannot open a
+#: HiPS cube without it, and its cube slider needs a narrow band to reach
+#: every frame, so the colour cube carries the F480M band alone
+#: (see jwst_rgb.hips_formats).
 F212N_EM_RANGE = (2.108e-6, 2.135e-6)
-F212N_F480M_EM_RANGE = (2.108e-6, 4.966e-6)
+F480M_EM_RANGE = (4.662e-6, 4.966e-6)
 # ultra-red catalogue
 ULTRARED_CUT = 4.0
 # density grid
@@ -909,7 +911,7 @@ def build_colour(M, level=None, threads=8):
     density_cube(ra[bright], dec[bright], col[bright], COLOUR_EDGES, ra, dec,
                  "jwst-star-density-colour-cube-hips", level, threads,
                  bunit3="mag (F212N-F480M, AB)",
-                 em_range=F212N_F480M_EM_RANGE)
+                 em_range=F480M_EM_RANGE)
 
     w, ny, nx = make_grid(ra, dec, MEDIAN_PIXEL_ARCSEC)
     use = bright & ~sat
