@@ -461,30 +461,44 @@ def dedupe_across_fields(ra, dec, who, tol=DEDUPE_ARCSEC):
     return keep
 
 
-def field_offset(sw, lw, idx, d2d, search=0.5, core=0.1):
+def field_offset(sw, lw, search=0.5, step=0.01, core=0.03):
     """Bulk offset (arcsec) of SkyCoord `lw` relative to `sw`, and its size.
 
-    `idx`, `d2d` are ``lw.match_to_catalog_sky(sw)``'s first two outputs.
-
-    Two passes, because in a crowded field the nearest neighbours out to
-    `search` are mostly chance pairs that pull a one-pass median towards
-    zero: the median (dRA cos dec, dDec) of pairs within `search`, then the
-    median of the pairs within `core` of that first estimate.
+    Every (lw, sw) pair closer than `search` goes into a 2D histogram of
+    (dRA cos dec, dDec) in `step` bins; chance pairs spread evenly over it
+    and the true counterparts pile up at the offset.  The peak of the
+    lightly smoothed histogram, refined by the median of the pairs within
+    `core` of it, is the offset.  A nearest-neighbour match cannot do this
+    in a crowded field: once the offset is a fair fraction of the star
+    spacing, the nearest star is often a chance one and the estimate is
+    pulled towards zero.
     """
+    from scipy.spatial import cKDTree
     if len(sw) == 0 or len(lw) == 0:
         return np.nan, np.nan, np.nan
-    near = sw[idx]
-    dra = ((lw.ra - near.ra).wrap_at("180d").deg
-           * np.cos(np.radians(lw.dec.deg))) * 3600
-    ddec = (lw.dec - near.dec).deg * 3600
-    close = d2d.arcsec < search
-    if not close.any():
+    ra0, dec0 = np.median(sw.ra.deg), np.median(sw.dec.deg)
+    cosd = np.cos(np.radians(dec0))
+
+    def xy(c):
+        dra = (c.ra.deg - ra0 + 180) % 360 - 180
+        return np.c_[dra * cosd * 3600, (c.dec.deg - dec0) * 3600]
+
+    pl, ps = xy(lw), xy(sw)
+    pairs = cKDTree(pl).sparse_distance_matrix(cKDTree(ps), search,
+                                               output_type="ndarray")
+    d = pl[pairs["i"]] - ps[pairs["j"]]
+    if not len(d):
         return np.nan, np.nan, np.nan
-    x, y = np.median(dra[close]), np.median(ddec[close])
-    core_ = close & (np.hypot(dra - x, ddec - y) < core)
-    if core_.any():
-        x, y = np.median(dra[core_]), np.median(ddec[core_])
-    return x, y, float(np.hypot(x, y))
+    edges = np.arange(-search, search + step / 2, step)
+    h, _, _ = np.histogram2d(d[:, 0], d[:, 1], bins=[edges, edges])
+    h = gaussian_filter(h, 1.0)
+    ix, iy = np.unravel_index(np.argmax(h), h.shape)
+    centre = 0.5 * (edges[:-1] + edges[1:])
+    x, y = centre[ix], centre[iy]
+    near = np.hypot(d[:, 0] - x, d[:, 1] - y) < core
+    if near.any():
+        x, y = np.median(d[near, 0]), np.median(d[near, 1])
+    return float(x), float(y), float(np.hypot(x, y))
 
 
 def cross_field_separations(ra, dec, who, rmax=0.5):
@@ -556,7 +570,7 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
         L["sat"].append(sb[fb])
 
         idx, d2d, _ = b["skycoord"].match_to_catalog_sky(a["skycoord"])
-        dx, dy, off = field_offset(a["skycoord"], b["skycoord"], idx, d2d)
+        dx, dy, off = field_offset(a["skycoord"], b["skycoord"])
         ok = d2d.arcsec < tol
         if off > MAX_FIELD_OFFSET_ARCSEC:
             print(f"  {obs}: F480M is ({dx:+.3f}, {dy:+.3f})\" off F212N, over "

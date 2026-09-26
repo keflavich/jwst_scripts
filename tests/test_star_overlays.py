@@ -486,14 +486,14 @@ def _crowded(n, shift_arcsec, seed=1):
     return ra, dec, lra, ldec
 
 
-@pytest.mark.parametrize("shift", [0.0, 0.2])
-def test_field_offset_recovers_a_bulk_offset_among_chance_pairs(shift):
-    # ~5 stars/arcsec^2: a nearest neighbour within 0.5" is often a chance pair
-    ra, dec, lra, ldec = _crowded(2000, shift)
+@pytest.mark.parametrize("n,shift", [(2000, 0.0), (2000, 0.2), (8000, 0.25)])
+def test_field_offset_recovers_a_bulk_offset_among_chance_pairs(n, shift):
+    # 5-20 stars/arcsec^2: at 20, a star's nearest neighbour is usually
+    # closer than 0.25", so nearest-neighbour matching would miss the offset
+    ra, dec, lra, ldec = _crowded(n, shift)
     sw = SkyCoord(ra * u.deg, dec * u.deg)
     lw = SkyCoord(lra * u.deg, ldec * u.deg)
-    idx, d2d, _ = lw.match_to_catalog_sky(sw)
-    dx, dy, off = overlays.field_offset(sw, lw, idx, d2d)
+    dx, dy, off = overlays.field_offset(sw, lw)
     assert abs(dx - shift) < 0.01 and abs(dy) < 0.01
     assert abs(off - shift) < 0.01
 
