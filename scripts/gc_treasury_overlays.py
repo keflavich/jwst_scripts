@@ -206,14 +206,17 @@ LAYER_DESCRIPTIONS = {
         "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
         f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
         f"{F212N_CONFUSION_LIMIT:g} (confusion) AB, {_GRID}; the cube axis "
-        f"is the bin center in F212N AB mag. {_SOURCE}",
+        f"is the bin center in F212N AB mag. em_min/em_max give the F212N "
+        f"band. {_SOURCE}",
     "jwst-star-density-colour-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of stars with F480M "
         f"< {COLOUR_MAGLIMIT:g} AB in {COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
         f"bins of F212N-F480M from {COLOUR_EDGES[0]:g} to "
         f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin center in "
         "AB mag. Redder bins trace higher extinction (a pseudo-extinction "
-        f"map, not calibrated to A_V). {_SOURCE}",
+        f"map, not calibrated to A_V). em_min/em_max give the F480M band "
+        "alone, which lets Aladin Lite's cube slider reach every frame. "
+        f"{_SOURCE}",
     "jwst-median-colour-hips":
         "Pixel value: median F212N-F480M in AB mag of the "
         f"{MEDIAN_NEIGHBORS} unsaturated stars with F480M < "
@@ -592,7 +595,8 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
               ("" if prov["module"] == "merged" else f"  [{prov['module']} only]")
         print(f"  {obs}: SW {na:,} -> {len(a):,} in own footprint "
               f"({sa.sum():,} saturated), LW {nb:,} -> {len(b):,} "
-              f"({sb.sum():,} saturated); {g.sum():,} with colour{tag}",
+              f"({sb.sum():,} saturated); F480M offset {1000 * off:.0f} mas; "
+              f"{g.sum():,} with colour{tag}",
               flush=True)
     M = {k: np.concatenate(v) for k, v in M.items()}
     F = {k: np.concatenate(v) for k, v in F.items()}

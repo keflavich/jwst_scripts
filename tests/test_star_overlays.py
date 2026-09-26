@@ -715,3 +715,55 @@ def test_knn_median_covers_the_footprint_and_takes_the_local_median():
     left, right = med[row, xs.min() + 2], med[row, xs.max() - 2]
     assert {left, right} == {0.0, 2.0}
     assert np.nanmax(reach) < 30
+
+
+def test_aladin_slice_suffixes_refuses_a_slice_on_a_frame_boundary():
+    # distinct suffixes [5, 3, 2, 1, 0], but slice 2 lands at 2.0009,
+    # where browser rounding could pick frame 1 instead
+    with pytest.raises(ValueError, match="boundary"):
+        hips_formats.aladin_slice_suffixes((2.108e-6, 4.7395e-6), 5)
+
+
+def test_field_offset_refines_the_peak_below_the_bin_size():
+    # 50 mas bins put the peak at 0.175 or 0.225; the refinement recovers 0.204
+    ra, dec, lra, ldec = _crowded(2000, 0.2037)
+    sw = SkyCoord(ra * u.deg, dec * u.deg)
+    lw = SkyCoord(lra * u.deg, ldec * u.deg)
+    dx, dy, off = overlays.field_offset(sw, lw, step=0.05, core=0.06)
+    assert abs(dx - 0.2037) < 0.01
+
+
+def test_knn_median_reach_is_in_arcsec():
+    # stars on a 3" square lattice: from any point, the 9th nearest star is
+    # 3-4.3" away (1.5-2.2 of the 2" pixels)
+    step = 3.0 / 3600
+    cosd = np.cos(np.radians(-29.0))
+    g = np.arange(40)
+    ra = 266.4 + np.repeat(g, 40) * step / cosd
+    dec = -29.0 + np.tile(g, 40) * step
+    grid = overlays.make_grid(ra, dec, 2.0)
+    cov = overlays.footprint(ra, dec, grid, 3)
+    _, reach = overlays.knn_median(ra, dec, np.zeros(len(ra)), grid, cov, 9)
+    ys, xs = np.nonzero(cov)
+    centre = reach[int(np.median(ys)), int(np.median(xs))]
+    assert 2.9 < centre < 4.5
+
+
+def test_rc_maps_take_their_coverage_from_every_matched_star(monkeypatch):
+    calls = []
+
+    def fake_density(ra, dec, allra, alldec, **kw):
+        calls.append(len(allra))
+        return np.ones((2, 2)), "wcs", np.ones((2, 2), bool)
+
+    monkeypatch.setattr(overlays, "density", fake_density)
+    monkeypatch.setattr(overlays, "write_density", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "build_hips", lambda *a, **k: None)
+    n = 50
+    col = np.linspace(-2, 3, n)
+    m480 = np.full(n, 30.0)                  # none in the red-clump band ...
+    m480[:4] = 17.5 + overlays.SLOPE * col[:4]  # ... but four
+    m480[-4:] = 17.5 + overlays.SLOPE * col[-4:]
+    x = np.zeros(n)
+    overlays.build_rc(col, m480, x, x)
+    assert calls == [n, n]
