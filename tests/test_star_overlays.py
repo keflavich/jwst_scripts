@@ -548,3 +548,61 @@ def test_red_clump_descriptions_state_every_rc_masks_cut():
         for v in (*overlays.RC_M480_RANGE, *overlays.RC_COLOUR_RANGE,
                   overlays.SLOPE, overlays.WRC, overlays.HW, overlays.SPLIT):
             assert f"{v:g}" in d, (n, v)
+
+
+# -- the match cache carries all three source lists --------------------------
+
+def _fake_lists(n=4):
+    r = np.arange(n, dtype=float)
+    M = {k: r + i for i, k in enumerate(("col", "m480", "m212", "ra", "dec"))}
+    M["who"], M["sat"] = np.array(["o001"] * n), np.zeros(n, bool)
+    F = {"m212": r + 10, "ra": r, "dec": r, "who": M["who"], "sat": M["sat"]}
+    L = {"m480": r + 20, "ra": r + 0.5, "dec": r, "who": M["who"],
+         "sat": np.array([True] + [False] * (n - 1))}
+    return M, F, L
+
+
+def test_load_matched_round_trips_every_list_through_the_cache(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CACHE", str(tmp_path / "cache.npz"))
+    monkeypatch.setattr(overlays, "STAMP", str(tmp_path / "stamp.json"))
+    monkeypatch.setattr(overlays, "fingerprint", lambda pairs: {
+        "n_obs": 1, "items": [], "version": overlays.CACHE_VERSION})
+    calls = []
+    lists = _fake_lists()
+    monkeypatch.setattr(overlays, "match_catalogs",
+                        lambda pairs: calls.append(1) or lists)
+    first = overlays.load_matched({})
+    with open(overlays.STAMP, "w") as fh:     # main() records the match
+        json.dump({"match": first[3]}, fh)
+    M, F, L, fp = overlays.load_matched({})
+    assert len(calls) == 1, "the second call must be a cache hit"
+    for got, want in zip((M, F, L), lists):
+        assert sorted(got) == sorted(want)
+        for k in want:
+            assert np.array_equal(got[k], want[k]), k
+    # a cache from another CACHE_VERSION is never read back
+    monkeypatch.setattr(overlays, "CACHE_VERSION", overlays.CACHE_VERSION + 1)
+    overlays.load_matched({})
+    assert len(calls) == 2
+
+
+def test_cache_version_postdates_the_f480m_list():
+    # version 2 caches hold no L_ arrays; reading one back would KeyError
+    assert overlays.CACHE_VERSION >= 3
+
+
+def test_match_catalogs_drops_f480m_rows_without_a_magnitude(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(overlays, "CAT", str(tmp_path))
+    step = 2.0 / 3600
+    ra = 266.40 + np.arange(5) * step
+    dec = np.full(5, -29.0)
+    _write_cat(tmp_path, "o040", "f212n", ra, dec, [False] * 5, 0.031)
+    p = _write_cat(tmp_path, "o040", "f480m", ra, dec, [False] * 5, 0.063)
+    t = Table.read(p)
+    t["flux"][-1] = np.nan
+    t.write(p, overwrite=True)
+    M, F, L = overlays.match_catalogs(overlays.latest_pairs())
+    assert len(L["ra"]) == 4 and np.isfinite(L["m480"]).all()
+    assert len(F["ra"]) == 5
