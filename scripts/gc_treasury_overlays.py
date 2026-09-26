@@ -16,7 +16,7 @@ regenerated together whenever those catalogues change:
   jwst-star-density-colour-cube-hips
                                cube: F212N-F480M in 0.5-mag colour bins
                                (star counts by reddening: pseudo-extinction)
-  jwst-median-colour-hips      median F212N-F480M per cell (pseudo-extinction)
+  jwst-median-colour-hips      median F212N-F480M of the nearest stars (pseudo-extinction)
   jwst-stars-colour-hips       F212N-F480M at every pixel: the inverse-distance
                                weighted mean colour of the nearest stars
   jwst-stars-catalog-hips      the same stars as a HiPS catalogue
@@ -111,17 +111,25 @@ CATALOGUE_FILES = ["jwst_ultrared_stars.ecsv", "jwst_ultrared_stars.fits",
 
 AB_ZP_JY = 3631.0
 MATCH_ARCSEC = 0.1
+#: A field whose F212N and F480M catalogues sit further apart than this
+#: (bulk offset, see `field_offset`) is left out of the matched products: at
+#: MATCH_ARCSEC most of its matches would be chance pairs.  Its F212N and
+#: F480M sources still count in the density maps.  o063 and o113 (F212N
+#: 0.15-0.27" off F480M, jwst-gc-pipeline #921) trip it until reprocessed.
+MAX_FIELD_OFFSET_ARCSEC = 0.1
 
 # red + bright density layer
 RED_COLOUR, RED_MAGLIMIT = 0.0, 18.0
 # red-clump band and split (see module docstring -- empirical, held fixed)
 SLOPE, WRC, HW, SPLIT = 0.890, 17.50, 0.9, -0.325
 RC_M480_RANGE, RC_COLOUR_RANGE = (14.0, 19.0), (-2.5, 3.5)
-#: Wavelength coverage (m) of the data behind each cube, for em_min/em_max:
-#: pivot +/- bandwidth/2 from the JDox NIRCam filter table (approximate).
-#: Aladin Lite cannot open a HiPS cube without it (see jwst_rgb.hips_formats).
+#: em_min/em_max (m) of each cube: one filter's pivot +/- bandwidth/2 from
+#: the JDox NIRCam filter table (approximate).  Aladin Lite cannot open a
+#: HiPS cube without it, and its cube slider needs a narrow band to reach
+#: every frame, so the colour cube carries the F480M band alone
+#: (see jwst_rgb.hips_formats).
 F212N_EM_RANGE = (2.108e-6, 2.135e-6)
-F212N_F480M_EM_RANGE = (2.108e-6, 4.966e-6)
+F480M_EM_RANGE = (4.662e-6, 4.966e-6)
 # ultra-red catalogue
 ULTRARED_CUT = 4.0
 # density grid
@@ -136,8 +144,9 @@ SAT_FOOTPRINT_ARCSEC = 10.0
 DEDUPE_ARCSEC = 0.1
 #: Bumped whenever the cached arrays change meaning, so an old cache (built
 #: without the guard) is never read back as if it had one.  3: the cache also
-#: holds every F480M source, for the F480M density map.
-CACHE_VERSION = 3
+#: holds every F480M source, for the F480M density map.  4: fields with an
+#: F212N-F480M offset over MAX_FIELD_OFFSET_ARCSEC are left out of matched.
+CACHE_VERSION = 4
 
 # F212N magnitude cube.  Saturation: the faint end of the saturated rows and
 # the bright end of the unsaturated ones meet near 17-18 AB.  Confusion: the
@@ -151,8 +160,8 @@ F212N_SAT_LIMIT, F212N_CONFUSION_LIMIT = 17.0, 22.0
 # itself varies with extinction.
 COLOUR_EDGES = np.arange(-1.5, 3.01, 0.5)
 COLOUR_MAGLIMIT = 20.0
-# median-colour map: cell size and minimum stars per cell
-MEDIAN_PIXEL_ARCSEC, MEDIAN_MIN_STARS = 4.0, 5
+# median-colour map: stars per median, on the density grid (PIXEL_ARCSEC)
+MEDIAN_NEIGHBORS = 15
 # star rendering
 #: colour field: 2x the F480M (long-wave) pixel, the neighbour count, and the
 #: largest k-th neighbour distance that still counts as covered.
@@ -197,18 +206,22 @@ LAYER_DESCRIPTIONS = {
         "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
         f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
         f"{F212N_CONFUSION_LIMIT:g} (confusion) AB, {_GRID}; the cube axis "
-        f"is the bin center in F212N AB mag. {_SOURCE}",
+        f"is the bin center in F212N AB mag. em_min/em_max give the F212N "
+        f"band. {_SOURCE}",
     "jwst-star-density-colour-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of stars with F480M "
         f"< {COLOUR_MAGLIMIT:g} AB in {COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
         f"bins of F212N-F480M from {COLOUR_EDGES[0]:g} to "
         f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin center in "
         "AB mag. Redder bins trace higher extinction (a pseudo-extinction "
-        f"map, not calibrated to A_V). {_SOURCE}",
+        f"map, not calibrated to A_V). em_min/em_max give the F480M band "
+        "alone, which lets Aladin Lite's cube slider reach every frame. "
+        f"{_SOURCE}",
     "jwst-median-colour-hips":
-        "Pixel value: median F212N-F480M in AB mag of unsaturated stars with "
-        f"F480M < {COLOUR_MAGLIMIT:g} AB, in {MEDIAN_PIXEL_ARCSEC:g}\" cells "
-        f"holding at least {MEDIAN_MIN_STARS} stars (blank otherwise). Higher "
+        "Pixel value: median F212N-F480M in AB mag of the "
+        f"{MEDIAN_NEIGHBORS} unsaturated stars with F480M < "
+        f"{COLOUR_MAGLIMIT:g} AB nearest each {PIXEL_ARCSEC:g}\" pixel, over "
+        "the same footprint as the density maps. Higher "
         "values mean more reddening (a pseudo-extinction map, not calibrated "
         f"to A_V). {_CATALOGUES}.",
     "jwst-stars-colour-hips":
@@ -451,6 +464,46 @@ def dedupe_across_fields(ra, dec, who, tol=DEDUPE_ARCSEC):
     return keep
 
 
+def field_offset(sw, lw, search=0.5, step=0.01, core=0.03):
+    """Bulk offset (arcsec) of SkyCoord `lw` relative to `sw`, and its size.
+
+    Every (lw, sw) pair closer than `search` goes into a 2D histogram of
+    (dRA cos dec, dDec) in `step` bins; chance pairs spread evenly over it
+    and the true counterparts pile up at the offset.  The peak of the
+    lightly smoothed histogram, refined by the median of the pairs within
+    `core` of it, is the offset.  A nearest-neighbour match cannot do this
+    in a crowded field: once the offset is a fair fraction of the star
+    spacing, the nearest star is often a chance one and the estimate is
+    pulled towards zero.
+    """
+    from scipy.spatial import cKDTree
+    if len(sw) == 0 or len(lw) == 0:
+        return np.nan, np.nan, np.nan
+    ra0, dec0 = np.median(sw.ra.deg), np.median(sw.dec.deg)
+    cosd = np.cos(np.radians(dec0))
+
+    def xy(c):
+        dra = (c.ra.deg - ra0 + 180) % 360 - 180
+        return np.c_[dra * cosd * 3600, (c.dec.deg - dec0) * 3600]
+
+    pl, ps = xy(lw), xy(sw)
+    pairs = cKDTree(pl).sparse_distance_matrix(cKDTree(ps), search,
+                                               output_type="ndarray")
+    d = pl[pairs["i"]] - ps[pairs["j"]]
+    if not len(d):
+        return np.nan, np.nan, np.nan
+    edges = np.arange(-search, search + step / 2, step)
+    h, _, _ = np.histogram2d(d[:, 0], d[:, 1], bins=[edges, edges])
+    h = gaussian_filter(h, 1.0)
+    ix, iy = np.unravel_index(np.argmax(h), h.shape)
+    centre = 0.5 * (edges[:-1] + edges[1:])
+    x, y = centre[ix], centre[iy]
+    near = np.hypot(d[:, 0] - x, d[:, 1] - y) < core
+    if near.any():
+        x, y = np.median(d[near, 0]), np.median(d[near, 1])
+    return float(x), float(y), float(np.hypot(x, y))
+
+
 def cross_field_separations(ra, dec, who, rmax=0.5):
     """Separations (arcsec) of every cross-field pair closer than `rmax`.
 
@@ -520,7 +573,13 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
         L["sat"].append(sb[fb])
 
         idx, d2d, _ = b["skycoord"].match_to_catalog_sky(a["skycoord"])
+        dx, dy, off = field_offset(a["skycoord"], b["skycoord"])
         ok = d2d.arcsec < tol
+        if off > MAX_FIELD_OFFSET_ARCSEC:
+            print(f"  {obs}: F480M is ({dx:+.3f}, {dy:+.3f})\" off F212N, over "
+                  f"{MAX_FIELD_OFFSET_ARCSEC}\"; left out of the colour "
+                  "products", flush=True)
+            ok[:] = False
         c = ma[idx[ok]] - mb[ok]
         mm = mb[ok]
         g = np.isfinite(c) & np.isfinite(mm)
@@ -536,7 +595,8 @@ def match_catalogs(pairs, tol=MATCH_ARCSEC):
               ("" if prov["module"] == "merged" else f"  [{prov['module']} only]")
         print(f"  {obs}: SW {na:,} -> {len(a):,} in own footprint "
               f"({sa.sum():,} saturated), LW {nb:,} -> {len(b):,} "
-              f"({sb.sum():,} saturated); {g.sum():,} with colour{tag}",
+              f"({sb.sum():,} saturated); F480M offset {1000 * off:.0f} mas; "
+              f"{g.sum():,} with colour{tag}",
               flush=True)
     M = {k: np.concatenate(v) for k, v in M.items()}
     F = {k: np.concatenate(v) for k, v in F.items()}
@@ -622,16 +682,46 @@ def sky_to_pix(w, ra, dec):
                                      np.asarray(dec) * u.deg))
 
 
+def footprint(allra, alldec, grid, close_pix):
+    """Pixels of `grid` inside the area the sources (allra, alldec) cover.
+
+    Pixels holding a source, closed with a disc of radius `close_pix` to
+    bridge the gaps between neighbouring stars, then with enclosed holes
+    filled (a dark cloud inside a field is observed, just empty).  The edge
+    stays within about `close_pix` of the outermost stars, so a map shows no
+    border of zeros beyond the data.
+    """
+    from scipy.ndimage import binary_closing, binary_fill_holes
+    w, ny, nx = grid
+    x, y = sky_to_pix(w, allra, alldec)
+    xi, yi = np.round(x).astype(int), np.round(y).astype(int)
+    m = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+    has = np.zeros((ny, nx), bool)
+    has[yi[m], xi[m]] = True
+    r = max(int(np.ceil(close_pix)), 1)
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    disc = xx ** 2 + yy ** 2 <= r * r
+    # pad so the closing does not treat the array edge as empty sky
+    has = np.pad(has, r)
+    cov = binary_closing(has, structure=disc)[r:-r, r:-r]
+    return binary_fill_holes(cov)
+
+
 def density(ra, dec, allra, alldec, pixel=PIXEL_ARCSEC, smooth=SMOOTH_ARCSEC,
             grid=None):
     """Stars per square arcmin on a TAN grid, NaN outside the photometric
     footprint.  Zero density and no measurement are different statements, and a
-    HiPS renders NaN as blank; coverage comes from ALL matched sources so an
-    area with stars but none selected reads as a real zero.
+    HiPS renders NaN as blank; coverage comes from ALL the given sources
+    (`footprint`) so an area with stars but none selected reads as a real zero.
+
+    The smoothing is normalised by the smoothed footprint, so a pixel near
+    the edge averages over the covered area only and is not diluted by the
+    empty sky beyond it.
 
     `grid` = make_grid(...) output, for products that must share pixels (the
     frames of a cube); by default the grid is fitted to (allra, alldec)."""
-    w, ny, nx = grid if grid is not None else make_grid(allra, alldec, pixel)
+    grid = grid if grid is not None else make_grid(allra, alldec, pixel)
+    w, ny, nx = grid
 
     def hist(r, d):
         x, y = sky_to_pix(w, r, d)
@@ -642,8 +732,10 @@ def density(ra, dec, allra, alldec, pixel=PIXEL_ARCSEC, smooth=SMOOTH_ARCSEC,
         return h
 
     sig = smooth / pixel
-    sel = gaussian_filter(hist(ra, dec), sig) / ((pixel / 60.0) ** 2)
-    cov = gaussian_filter(hist(allra, alldec), sig * 3) > 0
+    cov = footprint(allra, alldec, grid, sig)
+    num = gaussian_filter(hist(ra, dec) * cov, sig)
+    den = gaussian_filter(cov.astype(float), sig)
+    sel = num / np.maximum(den, 1e-3) / ((pixel / 60.0) ** 2)
     return np.where(cov, sel, np.nan).astype("float32"), w, cov
 
 
@@ -712,7 +804,7 @@ def build_rc(col, m480, ra, dec, level=None, threads=8):
         print(f"  {nm}: median colour {np.median(col[m]):+.3f} -> A_V ~ {av:.0f}")
     for nm, m, layer in (("blue", blue, "jwst-rc-blue-hips"),
                          ("red", red, "jwst-rc-red-hips")):
-        arr, w, cov = density(ra[m], dec[m], ra[rc], dec[rc])
+        arr, w, cov = density(ra[m], dec[m], ra, dec)
         print(f"  {nm}: grid {arr.shape}, coverage {100 * cov.mean():.1f}%, "
               f"median-in-coverage {np.nanmedian(arr):.2f}, "
               f"max {np.nanmax(arr):.1f}/arcmin2")
@@ -901,7 +993,6 @@ def build_colour(M, level=None, threads=8):
     count toward the cube (they are stars) but not toward the median, whose
     colours are the least reliable ones.
     """
-    from scipy.stats import binned_statistic_2d
     col, m480, ra, dec, sat = M["col"], M["m480"], M["ra"], M["dec"], M["sat"]
     bright = np.isfinite(col) & (m480 < COLOUR_MAGLIMIT)
     print(f"colour products: {bright.sum():,} of {len(col):,} matched stars "
@@ -909,23 +1000,50 @@ def build_colour(M, level=None, threads=8):
     density_cube(ra[bright], dec[bright], col[bright], COLOUR_EDGES, ra, dec,
                  "jwst-star-density-colour-cube-hips", level, threads,
                  bunit3="mag (F212N-F480M, AB)",
-                 em_range=F212N_F480M_EM_RANGE)
+                 em_range=F480M_EM_RANGE)
 
-    w, ny, nx = make_grid(ra, dec, MEDIAN_PIXEL_ARCSEC)
+    grid = make_grid(ra, dec, PIXEL_ARCSEC)
     use = bright & ~sat
-    x, y = sky_to_pix(w, ra[use], dec[use])
-    rng = [[-0.5, ny - 0.5], [-0.5, nx - 0.5]]
-    med = binned_statistic_2d(y, x, col[use], "median", bins=[ny, nx],
-                              range=rng).statistic
-    n = binned_statistic_2d(y, x, None, "count", bins=[ny, nx],
-                            range=rng).statistic
-    med = np.where(n >= MEDIAN_MIN_STARS, med, np.nan).astype("float32")
+    med, reach = knn_median(ra[use], dec[use], col[use], grid,
+                            footprint(ra, dec, grid, SMOOTH_ARCSEC / PIXEL_ARCSEC),
+                            MEDIAN_NEIGHBORS)
+    w = grid[0]
     good = np.isfinite(med)
-    print(f"median colour: {good.sum():,} cells of {MEDIAN_PIXEL_ARCSEC}\" with "
-          f">= {MEDIAN_MIN_STARS} stars; 5/50/95%: "
-          f"{np.round(np.nanpercentile(med, [5, 50, 95]), 2)}")
+    print(f"median colour: {good.sum():,} pixels of {PIXEL_ARCSEC}\" from the "
+          f"{MEDIAN_NEIGHBORS} nearest of {use.sum():,} stars; distance to the "
+          f"{MEDIAN_NEIGHBORS}th 50/95/99%: "
+          f"{np.round(np.nanpercentile(reach, [50, 95, 99]), 1)}\"; colour "
+          f"5/50/95%: {np.round(np.nanpercentile(med, [5, 50, 95]), 2)}")
     write_density(med, w, "jwst-median-colour-hips", bunit="mag")
     build_hips(med, w, "jwst-median-colour-hips", level, threads)
+
+
+def knn_median(ra, dec, value, grid, cov, k, workers=8, chunk=1 << 18):
+    """(median [ny, nx] float32, reach [ny, nx] float32): at each pixel of
+    `grid` inside `cov`, the median `value` of the `k` nearest sources, and
+    the distance (arcsec) to the k-th of them.  NaN outside `cov`.
+
+    The footprint, not the neighbour distance, decides coverage, so the map
+    covers the same area as the density maps; where stars that pass the cuts
+    are sparse (behind dark clouds) the median reaches further, and `reach`
+    says how far.
+    """
+    from scipy.spatial import cKDTree
+    w, ny, nx = grid
+    med = np.full((ny, nx), np.nan, np.float32)
+    reach = np.full((ny, nx), np.nan, np.float32)
+    if len(value) < k:
+        return med, reach
+    x, y = sky_to_pix(w, ra, dec)
+    tree = cKDTree(np.c_[x, y])
+    yi, xi = np.nonzero(cov)
+    pixel = abs(w.wcs.cdelt[1]) * 3600    # make_grid's square pixels
+    for i0 in range(0, len(yi), chunk):
+        sl = slice(i0, i0 + chunk)
+        d, j = tree.query(np.c_[xi[sl], yi[sl]], k=k, workers=workers)
+        med[yi[sl], xi[sl]] = np.median(value[j], axis=1)
+        reach[yi[sl], xi[sl]] = d[:, -1] * pixel
+    return med, reach
 
 
 # --------------------------------------------------------------------------
