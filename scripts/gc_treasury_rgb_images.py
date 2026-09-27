@@ -29,6 +29,8 @@ Usage
   gc_treasury_rgb_images.py --obs o135           # build one observation
   gc_treasury_rgb_images.py --all                # every observation with i2d
   gc_treasury_rgb_images.py --coadd              # rebuild the combined mosaic
+  gc_treasury_rgb_images.py --mono f212n --obs o105   # one star-subtracted
+                                                      # single-filter layer
 """
 import argparse
 import contextlib
@@ -69,6 +71,10 @@ MIRI_BGMATCH_COADD_NAME = "jwst_gc_treasury_miri_bgmatch_hips"
 # The star-subtracted MIRI mosaic.  Plain only: the background match is solved
 # on the images.
 MIRI_RESIDUAL_COADD_NAME = "jwst_gc_treasury_miri_residual_hips"
+# Star-subtracted NIRCam filters rendered one at a time in grey, so each band's
+# extended emission can be looked at without the other band's colour on top.
+# F770W is not listed: its residual layer is already monochrome.
+MONO_FILTERS = ("f212n", "f480m")
 
 # How far the served tiles may sit from the source FITS before check_orientation
 # calls it a failure.  The HiPS grid is ~0.02"/px at order 14 and reprojection
@@ -667,15 +673,38 @@ def miri_hips_for(obs, bgmatch=False, residual=False):
             f"{miri_suffix(bgmatch, residual)}_hips")
 
 
+# The monochrome star-subtracted layers use the RGB residual layer's fixed
+# cuts, so a given MJy/sr is the same grey in every tile and matches the
+# brightness the colour layer gives it.
+MONO_STRETCH = PRIMARY_STRETCH
+
+
+def mono_png_for(obs, filt):
+    return f"{OUTDIR}/GCTreasury_{obs}_{filt.upper()}_residual.png"
+
+
+def mono_hips_for(obs, filt):
+    return mono_png_for(obs, filt).replace(".png", "_hips")
+
+
+def mono_coadd_name_for(filt):
+    """jwst_gc_treasury_f212n_residual_hips, and likewise for F480M."""
+    return f"jwst_gc_treasury_{filt.lower()}_residual_hips"
+
+
 def layer_tail(miri=False, bgmatch=False, stretch=DEFAULT_STRETCH,
-               residual=False):
+               residual=False, mono=None):
     """The name ending shared by every per-observation layer of one coadd.
 
     cmd_coadd globs GCTreasury_*<tail> and strips the tail to get the key it
     checks against the active inventory -- a layer the glob picks up by mistake
     reads as superseded and is RETIRED, so no two flavours may share a tail or
     have one tail end another.
+
+    `mono` names a MONO_FILTERS band and overrides every other argument.
     """
+    if mono:
+        return f"_{mono.upper()}_residual_hips"
     if miri:
         return f"_MIRI_F770W{miri_suffix(bgmatch, residual)}_hips"
     return (f"_RGB_480-mean-212{residual_suffix(residual)}"
@@ -1097,6 +1126,89 @@ def build_miri_obs(obs, bgmatch=False, hips=True, residual=False):
     return png, hips_dir
 
 
+def build_mono_obs(obs, filt, hips=True):
+    """One tile's star-subtracted mosaic in one NIRCam filter -> grey png + HiPS.
+
+    The source is the final-stage residual (find_residual_i2d), on its own
+    grid: no reprojection, since there is no second channel to align with.
+    """
+    if filt not in MONO_FILTERS:
+        raise ValueError(f"no monochrome layer for {filt!r}; "
+                         f"filters are {MONO_FILTERS}")
+    from astropy.io import fits
+    from astropy.visualization import simple_norm
+    from PIL import Image
+    from reproject import reproject_interp
+    from jwst_rgb.save_rgb import save_rgb as _save_rgb
+    from jwst_rgb.save_rgb import avm_for_saved_png
+    from astropy.wcs import WCS
+    Image.MAX_IMAGE_PIXELS = None
+
+    src = find_residual_i2d(filt).get(obs)
+    if not src:
+        raise RuntimeError(f"{obs}: no final-stage {filt.upper()} residual "
+                           f"mosaic")
+    os.makedirs(OUTDIR, exist_ok=True)
+    hdu = next(h for h in fits.open(src)
+               if h.data is not None and h.data.ndim == 2)
+    d = hdu.data.astype(float)
+    ny, nx = d.shape
+    kw = stretch_kwargs(MONO_STRETCH)
+    print(f"{obs}: {filt.upper()} residual grid {nx}x{ny}, stretch "
+          f"'{MONO_STRETCH}': {kw}", flush=True)
+    g = simple_norm(d, **kw)(d)
+    mono = np.stack([np.nan_to_num(g)] * 3, axis=2)
+    png = mono_png_for(obs, filt)
+    # Same orientation handling as build_obs: the AVM describes the PNG as
+    # save_rgb writes it, after flip=-1 and ROTATE_180.
+    avm = avm_for_saved_png(WCS(hdu.header).celestial, ny, nx,
+                            flip=-1, transpose=Image.ROTATE_180)
+    _save_rgb(np.clip(mono, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
+              alpha_only_edges=True, original_data=np.stack([d] * 3, axis=2),
+              hips=False)
+    print(f"  wrote {png}", flush=True)
+
+    hips_dir = None
+    if hips:
+        from tqdm import tqdm
+        from reproject.hips import reproject_to_hips
+        from jwst_rgb.landing_page import patch_hips_dir
+        hips_dir = mono_hips_for(obs, filt)
+        if os.path.exists(hips_dir):
+            shutil.rmtree(hips_dir)
+        reproject_to_hips(png, coord_system_out="galactic", level=None,
+                          reproject_function=reproject_interp,
+                          output_directory=hips_dir, threads=16,
+                          properties=properties_for(hips_dir),
+                          progress_bar=tqdm)
+        patch_hips_dir(hips_dir)
+        if not os.path.isdir(os.path.join(hips_dir, "Norder3")):
+            raise RuntimeError(f"{obs}: {filt.upper()} build produced no "
+                               f"Norder3")
+        print(f"  wrote {hips_dir}", flush=True)
+    return png, hips_dir
+
+
+def mono_needs_build(obs, filt, src, image_src=None):
+    """miri_needs_build's rules for one monochrome residual layer."""
+    import time
+    t_src = source_mtime(src)
+    if t_src is None:
+        return "VANISHED"
+    if time.time() - t_src < SETTLE_SECONDS:
+        return "SETTLING"
+    if residual_predates_image(src, image_src):
+        return "CHAIN"
+    png = mono_png_for(obs, filt)
+    if not os.path.exists(png):
+        return f"no {filt.upper()} residual png yet"
+    if not os.path.isdir(os.path.join(mono_hips_for(obs, filt), "Norder3")):
+        return "png exists but its HiPS is missing or incomplete"
+    if t_src > os.path.getmtime(png):
+        return f"{filt.upper()} residual is newer than the png"
+    return None
+
+
 def miri_match_is_stale(miri):
     """Has a MIRI field arrived since the background match was last solved?
 
@@ -1308,6 +1420,12 @@ def _pending_summary():
             # miri_needs_build can return NOMATCH.
             if why and why not in ("SETTLING", "NOMATCH", "VANISHED", "CHAIN"):
                 out.append(f"{o} {tag} -- {why}")
+    for filt in MONO_FILTERS:
+        for o, src in sorted(find_residual_i2d(filt).items()):
+            why = mono_needs_build(o, filt, src,
+                                   image_src=image_inv.get(filt, {}).get(o))
+            if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
+                out.append(f"{o} {filt.upper()}+res -- {why}")
     return out
 
 
@@ -1385,6 +1503,7 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
 
         built = {fl: [] for fl in nircam_flavours()}
         miri_built = {fl: [] for fl in MIRI_FLAVOURS}
+        mono_built = {f: [] for f in MONO_FILTERS}
         failed = []
         # Taken by the image passes and read by the residual ones, which run
         # after them, for the residual-older-than-image check.
@@ -1520,11 +1639,56 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                                   f"({type(exc).__name__}: {exc})", flush=True)
                     miri_built[fl].append(o)
 
+        def mono_pass():
+            # One grey layer per NIRCam filter from the same residuals the
+            # colour residual layers use.  Last, since it is the newest view.
+            for filt in MONO_FILTERS:
+                tag = f"{filt.upper()}+res"
+                for o, src in sorted(find_residual_i2d(filt).items()):
+                    why = mono_needs_build(o, filt, src,
+                                           image_src=image_inv.get(filt, {}).get(o))
+                    if why == "VANISHED":
+                        print(f"  {o} {tag}: its mosaic went away while this "
+                              f"tick was running; skipping it this time")
+                        continue
+                    if why == "CHAIN":
+                        print(f"  {o} {tag}: residual predates the image "
+                              f"mosaic; waiting for the chain to rewrite it")
+                        chained.append(f"{o} {tag}")
+                        continue
+                    if why == "SETTLING":
+                        print(f"  {o} {tag}: source written in the last "
+                              f"{SETTLE_SECONDS // 60} min; leaving it to settle")
+                        continue
+                    if not why:
+                        print(f"  {o} {tag}: up to date")
+                        continue
+                    if out_of_time(f"{o} {tag}"):
+                        continue
+                    print(f"  {o} {tag}: building -- {why}", flush=True)
+                    try:
+                        _, hd = build_mono_obs(o, filt)
+                    except (RuntimeError, OSError, ValueError,
+                            TypeError, KeyError) as exc:
+                        print(f"  {o} {tag}: FAILED {type(exc).__name__}: {exc}",
+                              flush=True)
+                        failed.append(f"{o}:{tag}")
+                        continue
+                    if hd:
+                        try:
+                            check_orientation(hd, src)
+                        except (RuntimeError, OSError, ValueError, TypeError,
+                                KeyError) as exc:
+                            print(f"  {o} {tag}: orientation check unavailable "
+                                  f"({type(exc).__name__}: {exc})", flush=True)
+                    mono_built[filt].append(o)
+
         # Every image flavour before any residual one, so a tick that runs out
         # of budget spends it on the layers the viewers show by default.
         for residual in (False, True):
             nircam_pass(residual)
             miri_pass(residual)
+        mono_pass()
         if deferred:
             print(f"build budget of {budget_hours:g} h used up; "
                   f"{len(deferred)} build(s) left for the next tick: "
@@ -1559,6 +1723,17 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
             else:
                 print(f"nothing new for {name}; left alone")
         if any(miri_built.values()) and publish:
+            cmd_publish()
+        for filt in MONO_FILTERS:
+            name = mono_coadd_name_for(filt)
+            if mono_built[filt]:
+                print(f"built {len(mono_built[filt])} for {name}: "
+                      f"{', '.join(mono_built[filt])} -- recoadding")
+                if cmd_coadd(mono=filt):
+                    failed.append(f"coadd:{name}")
+            else:
+                print(f"nothing new for {name}; left alone")
+        if any(mono_built.values()) and publish:
             cmd_publish()
         if failed:
             print(f"FAILED: {', '.join(failed)}")
@@ -1609,6 +1784,7 @@ def cmd_publish():
     src += [f"{OUTDIR}/{coadd_name_for(k, residual=True)}"
             for k in RESIDUAL_STRETCHES]
     src += [f"{OUTDIR}/{MIRI_RESIDUAL_COADD_NAME}"]
+    src += [f"{OUTDIR}/{mono_coadd_name_for(f)}" for f in MONO_FILTERS]
     for s in src:
         if not os.path.isdir(os.path.join(s, "Norder3")):
             print(f"  skipping {os.path.basename(s)}: no Norder3")
@@ -1807,23 +1983,24 @@ def unreadable_layers(layers):
 
 
 def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
-              residual=False):
+              residual=False, mono=None):
     """Coadd every per-observation HiPS into one growing mosaic.
 
     NIRCam and MIRI are coadded separately: the two point at different sky and
     coadd_hips paints last-wins, so mixing them would let whichever came last
     overwrite the other wherever they happen to touch.  Residual layers are
-    coadded into their own mosaics for the same reason.
+    coadded into their own mosaics for the same reason, and each `mono`
+    filter's grey residual layers into one more.
     """
     from reproject.hips import coadd_hips
-    if not miri:
+    if not miri and not mono:
         check_residual_stretch(stretch, residual)
-    tail = layer_tail(miri, bgmatch, stretch, residual)
+    tail = layer_tail(miri, bgmatch, stretch, residual, mono=mono)
     layers = sorted(glob.glob(f"{OUTDIR}/GCTreasury_*{tail}"))
     if miri and not bgmatch:
         # the plain glob also matches the _bgmatch layers; keep them apart
         layers = [L for L in layers if "_bgmatch_hips" not in L]
-    if not miri and stretch == DEFAULT_STRETCH:
+    if not miri and not mono and stretch == DEFAULT_STRETCH:
         # ...and the default NIRCam glob would otherwise swallow every other
         # flavour, since their names only differ by a suffix
         for other in STRETCHES:
@@ -1831,7 +2008,9 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
                 layers = [L for L in layers if f"_{other}_hips" not in L]
     # Retire layers whose source is no longer current -- chiefly the per-module
     # halves once a -merged mosaic supersedes them.  Renamed, never deleted.
-    if miri:
+    if mono:
+        active = set(find_residual_i2d(mono))
+    elif miri:
         active = set((find_residual_i2d if residual else find_i2d)(MIRI_FILTER))
     else:
         active = set(inventory(residual=residual)[1])
@@ -1850,7 +2029,9 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
     if not layers:
         print(f"no per-observation {'MIRI ' if miri else ''}HiPS to coadd")
         return 1
-    if miri:
+    if mono:
+        out = f"{OUTDIR}/{mono_coadd_name_for(mono)}"
+    elif miri:
         out = f"{OUTDIR}/{miri_coadd_name_for(bgmatch, residual)}"
     else:
         # suffix goes BEFORE _hips, matching jwst_gc_treasury_miri_bgmatch_hips
@@ -1983,6 +2164,10 @@ def main():
                     help="build from the star-subtracted DAOPHOT residual "
                          "mosaics instead of the images (--obs/--all/--miri/"
                          "--coadd)")
+    ap.add_argument("--mono", choices=MONO_FILTERS,
+                    help="build (--obs/--all) or coadd (--coadd) the "
+                         "monochrome star-subtracted layers of one NIRCam "
+                         "filter")
     ap.add_argument("--budget-hours", type=float, default=DEFAULT_BUILD_BUDGET_H,
                     help="with --auto, stop starting builds after this many "
                          f"hours (default {DEFAULT_BUILD_BUDGET_H}); the rest "
@@ -1999,6 +2184,9 @@ def main():
             ap.error(str(e))
     if a.residual and a.bgmatch:
         ap.error("--residual has no bgmatch flavour")
+    if a.mono and (a.miri or a.bgmatch or a.residual):
+        ap.error("--mono is always star-subtracted NIRCam; it takes none of "
+                 "--miri, --bgmatch, --residual")
 
     if a.list:
         return cmd_list()
@@ -2011,11 +2199,27 @@ def main():
     if a.coadd:
         # cmd_auto holds the lock around its own recoadds, so this is taken
         # here rather than inside cmd_coadd, which both paths call.
-        what = (f"--coadd {'miri' if a.miri else a.stretch}"
+        what = (f"--coadd mono {a.mono}" if a.mono else
+                f"--coadd {'miri' if a.miri else a.stretch}"
                 f"{' residual' if a.residual else ''}")
         with coadd_lock(what):
             return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
-                             stretch=a.stretch, residual=a.residual)
+                             stretch=a.stretch, residual=a.residual,
+                             mono=a.mono)
+
+    if a.mono:
+        res = find_residual_i2d(a.mono)
+        targets = [a.obs] if a.obs else sorted(res)
+        missing = [o for o in targets if o not in res]
+        if missing:
+            print(f"no final-stage {a.mono.upper()} residual mosaic for: "
+                  f"{', '.join(missing)}")
+            return 1
+        for o in targets:
+            png, hd = build_mono_obs(o, a.mono, hips=not a.no_hips)
+            if hd:
+                check_orientation(hd, res[o])
+        return 0
 
     if a.miri:
         # MIRI is one filter and its own set of layers, so it has its own
