@@ -156,6 +156,10 @@ def test_an_exhausted_budget_defers_every_build(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(G, "miri_needs_build",
                         lambda o, s, bg=False, residual=False, **k:
                         "no MIRI png yet")
+    monkeypatch.setattr(G, "build_mono_obs",
+                        lambda o, f, **k: built.append(o) or (None, None))
+    monkeypatch.setattr(G, "mono_needs_build",
+                        lambda o, f, s, **k: "no png yet")
     monkeypatch.setattr(G, "miri_match_is_stale", lambda m: None)
     monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {"o132": "x"})
     monkeypatch.setattr(G, "find_residual_i2d", lambda *a, **k: {"o132": "x"})
@@ -167,9 +171,10 @@ def test_an_exhausted_budget_defers_every_build(tmp_path, monkeypatch, capsys):
     assert G.cmd_auto(budget_hours=0) == 0
     out = capsys.readouterr().out
     assert built == [] and coadds == []
-    n = len(G.nircam_flavours()) + len(G.MIRI_FLAVOURS)
+    n = len(G.nircam_flavours()) + len(G.MIRI_FLAVOURS) + len(G.MONO_FILTERS)
     assert f"{n} build(s) left for the next tick" in out
     assert "o001 residual/vminmax" in out and "o132 MIRI+res" in out
+    assert "o132 F212N+res" in out and "o132 F480M+res" in out
 
 
 # ---- cmd_auto wiring: which source each flavour reads, in which order ----
@@ -184,7 +189,7 @@ def _auto_fakes(monkeypatch, tmp_path, clock=None):
     With `clock`, each build advances it by an hour.
     """
     monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
-    rec = dict(calls=[], coadds=[], nircam=[], miri=[])
+    rec = dict(calls=[], coadds=[], nircam=[], miri=[], mono=[])
 
     def took_an_hour():
         if clock is not None:
@@ -201,6 +206,15 @@ def _auto_fakes(monkeypatch, tmp_path, clock=None):
                              k.get("residual", False)))
         took_an_hour()
         return None, None
+
+    def build_mono_obs(o, filt, **k):
+        rec["calls"].append(("mono", o, filt, True))
+        took_an_hour()
+        return None, None
+
+    def mono_needs_build(o, filt, src, image_src=None):
+        rec["mono"].append((o, filt, src, image_src))
+        return "no png yet"
 
     def needs_build(o, inv, stretch=G.DEFAULT_STRETCH, residual=False,
                     image_inv=None):
@@ -225,6 +239,8 @@ def _auto_fakes(monkeypatch, tmp_path, clock=None):
     monkeypatch.setattr(G, "build_miri_obs", build_miri_obs)
     monkeypatch.setattr(G, "needs_build", needs_build)
     monkeypatch.setattr(G, "miri_needs_build", miri_needs_build)
+    monkeypatch.setattr(G, "build_mono_obs", build_mono_obs)
+    monkeypatch.setattr(G, "mono_needs_build", mono_needs_build)
     monkeypatch.setattr(G, "miri_match_is_stale", lambda m: None)
     monkeypatch.setattr(G, "cmd_coadd", lambda **k: rec["coadds"].append(k) or 0)
     return rec
@@ -238,11 +254,15 @@ def _expected_calls():
             for r, bg in G.MIRI_FLAVOURS if not r for o in ("o132", "o133")]
     out += [("nircam", "o001", s, True) for s in G.RESIDUAL_STRETCHES]
     out += [("miri", "o132", False, True)]
+    # the fake residual finder answers o132 for every filter
+    out += [("mono", "o132", f, True) for f in G.MONO_FILTERS]
     return out
 
 
 def _tag(call):
     kind, o, x, residual = call
+    if kind == "mono":
+        return f"{o} {x.upper()}+res"
     if kind == "nircam":
         return f"{o} residual/{x}" if residual else f"{o} {x}"
     return f"{o} " + ("MIRI+res" if residual else "MIRI+bg" if x else "MIRI")
@@ -266,11 +286,17 @@ def test_a_full_budget_builds_every_flavour_from_its_own_inventory(
         assert src.startswith("res-" if residual else "img-"), (o, residual)
         if residual:
             assert image_src == f"img-{o}"
+    for o, filt, src, image_src in rec["mono"]:
+        assert src == "res-o132"
+        # the image inventory holds no o132, so there is nothing to age against
+        assert image_src is None
     got = sorted((k.get("miri", False), k.get("bgmatch", False),
-                  "" if k.get("miri") else k["stretch"], k.get("residual", False))
+                  "" if k.get("miri") or k.get("mono") else k["stretch"],
+                  k.get("residual", False), k.get("mono") or "")
                  for k in rec["coadds"])
-    want = sorted([(False, False, s, r) for r, s in G.nircam_flavours()] +
-                  [(True, bg, "", r) for r, bg in G.MIRI_FLAVOURS])
+    want = sorted([(False, False, s, r, "") for r, s in G.nircam_flavours()] +
+                  [(True, bg, "", r, "") for r, bg in G.MIRI_FLAVOURS] +
+                  [(False, False, "", False, f) for f in G.MONO_FILTERS])
     assert got == want
 
 
@@ -299,6 +325,7 @@ def test_a_chain_verdict_is_skipped_not_built_or_deferred(tmp_path, monkeypatch,
     monkeypatch.setattr(G, "miri_needs_build",
                         lambda o, s, bg=False, residual=False, **k:
                         "CHAIN" if residual else None)
+    monkeypatch.setattr(G, "mono_needs_build", lambda o, f, s, **k: "CHAIN")
     assert G.cmd_auto(budget_hours=100) == 0
     assert rec["calls"] == [] and rec["coadds"] == []
     out = capsys.readouterr().out
@@ -307,7 +334,7 @@ def test_a_chain_verdict_is_skipped_not_built_or_deferred(tmp_path, monkeypatch,
     assert "left for the next tick" not in out
     # the one place these waits are counted: the lock report leaves them out
     held = [f"o001 residual/{s}" for s in G.RESIDUAL_STRETCHES] + [
-        "o132 MIRI+res"]
+        "o132 MIRI+res"] + [f"o132 {f.upper()}+res" for f in G.MONO_FILTERS]
     assert (f"{len(held)} residual build(s) waiting for their chain to "
             f"rewrite a residual older than its image: {', '.join(held)}"
             ) in out
@@ -522,3 +549,136 @@ def test_publish_copies_every_residual_coadd(tmp_path, monkeypatch):
     assert G.cmd_publish() == 0
     for n in names:
         assert (tmp_path / "web" / n / "Norder3").is_dir(), n
+
+
+# ---- the monochrome star-subtracted layers, one per NIRCam filter ----
+
+def test_mono_layers_are_named_apart_from_every_other_flavour():
+    others = [_layer(f) for f in _all_flavours()]
+    mono = [os.path.basename(G.mono_hips_for("o112", f)) for f in G.MONO_FILTERS]
+    assert len(set(mono)) == len(G.MONO_FILTERS)
+    for f in G.MONO_FILTERS:
+        tail = G.layer_tail(mono=f)
+        assert os.path.basename(G.mono_hips_for("o112", f)).endswith(tail)
+        # no other flavour, mono or not, is swept up by this glob...
+        for layer in others + mono:
+            hit = fnmatch.fnmatchcase(layer, f"GCTreasury_*{tail}")
+            assert hit == layer.endswith(f"_{f.upper()}_residual_hips"), layer
+    # ...and no other flavour's glob sweeps up a mono layer
+    for fl in _all_flavours():
+        tail = G.layer_tail(fl["miri"], fl["bgmatch"], fl["stretch"],
+                            fl["residual"])
+        assert not any(fnmatch.fnmatchcase(m, f"GCTreasury_*{tail}")
+                       for m in mono), tail
+    coadds = [G.mono_coadd_name_for(f) for f in G.MONO_FILTERS]
+    assert not set(coadds) & {_coadd(f) for f in _all_flavours()}
+
+
+def test_a_mono_build_reads_the_residual_of_its_filter(tmp_path, monkeypatch):
+    from astropy.io import fits
+    base = tmp_path / "base"
+    monkeypatch.setattr(G, "BASE", str(base))
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path / "out"))
+    res = {f: _touch(base, f, NIRCAM.format(obs="o201", filt=f, mod="merged",
+                                            stage="resbgsub_m7"))
+           for f in G.MONO_FILTERS}
+    for f in G.MONO_FILTERS:
+        _touch(base, f, f"jw10678-o201_t001_nircam_clear-{f}-merged_i2d.fits")
+    opened = []
+
+    def fake_open(path, *a, **k):
+        opened.append(str(path))
+        raise _Opened(path)
+    monkeypatch.setattr(fits, "open", fake_open)
+    for f in G.MONO_FILTERS:
+        with pytest.raises(_Opened):
+            G.build_mono_obs("o201", f)
+        assert opened[-1] == res[f]
+    with pytest.raises(ValueError):
+        G.build_mono_obs("o201", G.MIRI_FILTER)
+
+
+def test_mono_needs_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    now = time.time()
+    f = G.MONO_FILTERS[0]
+    img = _aged(tmp_path, "img", now - 2 * 86400)
+    old = _aged(tmp_path, "old", now - 5 * 86400)
+    new = _aged(tmp_path, "new", now - 86400)
+    assert G.mono_needs_build("o201", f, old, image_src=img) == "CHAIN"
+    assert G.mono_needs_build("o201", f, new, image_src=img).startswith("no ")
+    assert G.mono_needs_build("o201", f, str(tmp_path / "gone")) == "VANISHED"
+    assert G.mono_needs_build("o201", f, _aged(tmp_path, "wet", now)) == \
+        "SETTLING"
+    open(G.mono_png_for("o201", f), "wb").close()
+    assert "HiPS" in G.mono_needs_build("o201", f, new, image_src=img)
+    os.makedirs(os.path.join(G.mono_hips_for("o201", f), "Norder3"))
+    assert G.mono_needs_build("o201", f, new, image_src=img) is None
+    # the other filter's layer is its own
+    assert G.mono_needs_build("o201", G.MONO_FILTERS[1], new,
+                              image_src=img) is not None
+    # a residual rewritten after the png was made (png backdated past it)
+    t = now - 3 * 86400
+    os.utime(G.mono_png_for("o201", f), (t, t))
+    assert "newer" in G.mono_needs_build("o201", f, new, image_src=img)
+
+
+def test_a_mono_coadd_retires_on_its_filters_residuals(tmp_path, monkeypatch):
+    import jwst_rgb.incremental_coadd as ic
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+
+    def stop(out, layers):
+        raise _Painted((out, layers))
+    monkeypatch.setattr(ic, "order_layers", stop)
+    have = {"f212n": {"o001": "r"}, "f480m": {"o002": "r"}}
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: have[filt])
+    for o in ("o001", "o002"):
+        for f in G.MONO_FILTERS:
+            os.makedirs(G.mono_hips_for(o, f))
+    with pytest.raises(_Painted) as exc:
+        G.cmd_coadd(mono="f212n")
+    out, layers = exc.value.args[0]
+    assert out.endswith(G.mono_coadd_name_for("f212n"))
+    assert layers == [G.mono_hips_for("o001", "f212n")]
+    assert os.path.isdir(G.mono_hips_for("o002", "f212n") + "_superseded")
+    # the other filter's layers are not touched
+    assert os.path.isdir(G.mono_hips_for("o001", "f480m"))
+
+
+def test_publish_copies_the_mono_coadds(tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path / "out"))
+    monkeypatch.setattr(G, "WEB", str(tmp_path / "web"))
+    os.makedirs(tmp_path / "web")
+    names = [G.mono_coadd_name_for(f) for f in G.MONO_FILTERS]
+    for n in names:
+        os.makedirs(tmp_path / "out" / n / "Norder3")
+    assert G.cmd_publish() == 0
+    for n in names:
+        assert (tmp_path / "web" / n / "Norder3").is_dir(), n
+
+
+def test_the_lock_report_lists_mono_work(monkeypatch):
+    image = {f: {"o001": "i"} for f in G.FILTERS}
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (image, ["o001"]))
+    monkeypatch.setattr(G, "needs_build", lambda o, inv, **k: None)
+    monkeypatch.setattr(G, "find_i2d", lambda filt, **k: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {"o001": "r"})
+    seen = []
+
+    def mono_needs_build(o, filt, src, image_src=None):
+        seen.append((filt, image_src))
+        return "no png yet"
+    monkeypatch.setattr(G, "mono_needs_build", mono_needs_build)
+    lines = G._pending_summary()
+    for f in G.MONO_FILTERS:
+        assert f"o001 {f.upper()}+res -- no png yet" in lines
+    assert seen == [(f, "i") for f in G.MONO_FILTERS]
+
+
+@pytest.mark.parametrize("extra", [["--miri"], ["--residual"], ["--bgmatch"]])
+def test_cli_mono_refuses_other_flavour_flags(monkeypatch, extra):
+    monkeypatch.setattr(sys, "argv", ["gc_treasury_rgb_images.py", "--mono",
+                                      "f212n", "--obs", "o105"] + extra)
+    with pytest.raises(SystemExit) as exc:
+        G.main()
+    assert exc.value.code == 2

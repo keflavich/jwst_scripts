@@ -25,7 +25,8 @@ def calls_in(func_name, module_path):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
 
 
-@pytest.mark.parametrize("func", ["build_obs", "build_miri_obs", "cmd_coadd"])
+@pytest.mark.parametrize("func", ["build_obs", "build_miri_obs",
+                                  "build_mono_obs", "cmd_coadd"])
 def test_every_hips_writer_patches_its_landing_page(func):
     """"Called from all four writers" has to stay true to mean anything.
 

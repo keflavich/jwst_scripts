@@ -122,6 +122,14 @@ SPECIAL = {
         "jwst-gc-treasury-miri-mosaic-residual",
         "JWST GC Treasury: MIRI F770W mosaic of the Galactic Center, "
         "stars subtracted"),
+    "jwst_gc_treasury_f212n_residual_hips": (
+        "jwst-gc-treasury-nircam-f212n-residual",
+        "JWST GC Treasury: NIRCam F212N mosaic of the Galactic Center, "
+        "stars subtracted"),
+    "jwst_gc_treasury_f480m_residual_hips": (
+        "jwst-gc-treasury-nircam-f480m-residual",
+        "JWST GC Treasury: NIRCam F480M mosaic of the Galactic Center, "
+        "stars subtracted"),
     "gctreasury_mosaic_RGB_770-480-212_residual_hips": (
         "jwst-gc-treasury-rgb-f770w-f480m-f212n-residual",
         "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
