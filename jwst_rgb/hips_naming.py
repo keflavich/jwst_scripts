@@ -134,6 +134,14 @@ SPECIAL = {
         "jwst-gc-treasury-rgb-f770w-f480m-f212n-residual",
         "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
         "NIRCam F212N, stars subtracted (F770W covers part of the field)"),
+    "gctreasury_mosaic_RGB_480-mean-212_hips": (
+        "jwst-gc-treasury-rgb-f480m-mean-f212n",
+        "JWST GC Treasury: Galactic Center RGB, NIRCam F480M / mean / "
+        "NIRCam F212N"),
+    "gctreasury_mosaic_RGB_480-mean-212_residual_hips": (
+        "jwst-gc-treasury-rgb-f480m-mean-f212n-residual",
+        "JWST GC Treasury: Galactic Center RGB, NIRCam F480M / mean / "
+        "NIRCam F212N, stars subtracted"),
     "jwst_nir_hips": (
         "jwst-cmz-nircam-niriss-coadd",
         "JWST Central Molecular Zone: NIRCam and NIRISS color coadd"),
