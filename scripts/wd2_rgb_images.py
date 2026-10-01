@@ -16,7 +16,7 @@ from PIL import Image
 
 
 from jwst_rgb.save_rgb import save_rgb
-from jwst_rgb.save_rgb import faithful_avm
+from jwst_rgb.save_rgb import avm_for_saved_png
 
 
 def scale_image(img: np.ndarray, stretch: str = 'asinh', min_percent: int = 1, max_percent: int = 99) -> np.ndarray:
@@ -215,7 +215,9 @@ def main():
 
     # Get target header and AVM metadata
     target_header = fits.getheader(os.path.join(base_path, miri_image_filenames['f770w']), ext=('SCI', 1))
-    avm = faithful_avm(target_header)
+    # save_rgb writes flip=-1 + ROTATE_180; the AVM must describe that PNG.
+    avm = avm_for_saved_png(wcs.WCS(target_header),
+                            target_header['NAXIS2'], target_header['NAXIS1'])
 
     # Reproject images
     repr_filenames = reproject_images(miri_image_filenames, target_header, data_path, repr_suffix='f770w')
@@ -231,7 +233,8 @@ def main():
             save_rgb(rgb_scaled, os.path.join(png_path, output_filename), avm=avm, original_data=rgb_original)
 
     target_header = fits.getheader(os.path.join(base_path, nircam_image_filenames['f182m']), ext=('SCI', 1))
-    avm = faithful_avm(target_header)
+    avm = avm_for_saved_png(wcs.WCS(target_header),
+                            target_header['NAXIS2'], target_header['NAXIS1'])
 
     # Reproject images
     repr_filenames_nircam = reproject_images(nircam_image_filenames, target_header, data_path, repr_suffix='f182m')
