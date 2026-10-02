@@ -159,15 +159,17 @@ def build(trip):
 # pixels were laid out with flip=-1 and no transpose.  The AVM has to describe
 # the pixels as they are; it is still derived from the FITS WCS alone.
 #
-# Check reference for the mixed NIRCam/MIRI layers: the F770W mosaic
-# reprojected onto the same F250M grid (wd2_rgb_images.py output), so the
-# sampled coverage matches.  The native MIRI mosaic covers sky the layer does
-# not, and the unmasked correlation then reads FLIPPED although the masked
-# overlap correlates at r=+0.82 as-is against +0.56 rotated.
+# Check reference for the mixed NIRCam/MIRI layers: F410M.  Both MIRI options
+# fail on these layers.  The native MIRI mosaic covers sky the layer does not,
+# so the unmasked correlation reads FLIPPED although the masked overlap
+# correlates at r=+0.82 as-is against +0.56 rotated.  F770W reprojected onto
+# the F250M grid (data_reprojected/..._reprj_f250m.fits) also read FLIPPED, on
+# weak correlations (+0.10/+0.20 and +0.15/+0.20) with a 0.00" offset.  F410M
+# shares the grid and the NIRCam coverage: r_asis +0.387/+0.348 against
+# r_rot180 -0.243/-0.239, offsets 0.000"/0.025".
 _F250M = f"{WD2}/wd2_F250M_AB_i2d.fits"
 _F770W = f"{WD2}/miri_F770W_pid3523_combined_SF_i2d.fits"
-_F770W_ON_F250M = (f"{WD2}/data_reprojected/"
-                   "miri_F770W_pid3523_combined_SF_i2d_reprj_f250m.fits")
+_F410M = f"{WD2}/wd2_F410M_AB_i2d.fits"
 _ROT180 = "ROTATE_180"
 FIXES = [
     ("wd2_miri_RGB_1130-1000-770_log_max99.9_transparent.png", _F770W, _F770W,
@@ -176,11 +178,11 @@ FIXES = [
     ("wd2_nircam_RGB_212-200-187_asinh_max99_transparent.png", _F250M,
      f"{WD2}/wd2_F200W_AB_i2d.fits", _ROT180),
     ("wd2_nircam_RGB_410-405-335_asinh_max99.5_transparent.png", _F250M,
-     f"{WD2}/wd2_F410M_AB_i2d.fits", _ROT180),
+     _F410M, _ROT180),
     ("wd2_RGB_1000-770-410_asinh_max99.5_transparent.png", _F250M,
-     _F770W_ON_F250M, _ROT180),
+     _F410M, _ROT180),
     ("wd2_RGB_1130-770-164162_sub_asinh_max99.5_transparent.png", _F250M,
-     _F770W_ON_F250M, _ROT180),
+     _F410M, _ROT180),
 ]
 
 
