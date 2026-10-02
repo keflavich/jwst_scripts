@@ -24,8 +24,9 @@ The six wd2 HiPS in avm_images (built 2025-07) embed a raw
 ``pyavm.AVM.from_header`` of the target grid.  save_rgb writes the pixels with
 flip=-1 + ROTATE_180, so that AVM keeps the FITS CRPIX where the reflected one
 is needed (see jwst_rgb.save_rgb.avm_for_saved_png).  ``--fix I`` copies the
-published PNG pixels unchanged, embeds avm_for_saved_png(WCS(grid header)),
-and rebuilds the HiPS.  It adds no shift: the AVM is derived from the FITS
+published PNG pixels unchanged, embeds avm_for_saved_png(WCS(grid header))
+(with the flip/transpose the PNG was actually written with), and rebuilds
+the HiPS.  It adds no shift: the AVM is derived from the FITS
 WCS only.
 
 Every build ends with check_orientation (gc_treasury_rgb_images), which
@@ -145,21 +146,41 @@ def build(trip):
 
 
 # Published layers: (png basename in avm_images, grid FITS the PNG was laid
-# on, matching-band FITS for the tile check).  The NIRCam/mixed layers sit on
-# the 2024 F250M mosaic's grid (4869x2108, identical CRPIX/CRVAL to the
-# embedded AVM); the MIRI ones on the F770W mosaic's grid.
+# on, matching-band FITS for the tile check, PIL transpose of the pixels).
+# The NIRCam/mixed layers sit on the 2024 F250M mosaic's grid (4869x2108,
+# identical CRPIX/CRVAL to the embedded AVM); the MIRI ones on the F770W
+# mosaic's grid.
+#
+# Transpose: all but one PNG were written by save_rgb's defaults (flip=-1,
+# ROTATE_180).  wd2_miri_RGB_1130-1000-770_log.png (and its _transparent copy)
+# holds the same image rotated 180 degrees: its luminance correlates with
+# _log_max99.9.png at r=+0.995 after a 180 degree rotation and r=-0.36 as-is,
+# and its served tiles match F770W only after a 180 degree rotation.  Those
+# pixels were laid out with flip=-1 and no transpose.  The AVM has to describe
+# the pixels as they are; it is still derived from the FITS WCS alone.
+#
+# Check reference for the mixed NIRCam/MIRI layers: the F770W mosaic
+# reprojected onto the same F250M grid (wd2_rgb_images.py output), so the
+# sampled coverage matches.  The native MIRI mosaic covers sky the layer does
+# not, and the unmasked correlation then reads FLIPPED although the masked
+# overlap correlates at r=+0.82 as-is against +0.56 rotated.
 _F250M = f"{WD2}/wd2_F250M_AB_i2d.fits"
 _F770W = f"{WD2}/miri_F770W_pid3523_combined_SF_i2d.fits"
+_F770W_ON_F250M = (f"{WD2}/data_reprojected/"
+                   "miri_F770W_pid3523_combined_SF_i2d_reprj_f250m.fits")
+_ROT180 = "ROTATE_180"
 FIXES = [
-    ("wd2_miri_RGB_1130-1000-770_log_max99.9_transparent.png", _F770W, _F770W),
-    ("wd2_miri_RGB_1130-1000-770_log_transparent.png", _F770W, _F770W),
+    ("wd2_miri_RGB_1130-1000-770_log_max99.9_transparent.png", _F770W, _F770W,
+     _ROT180),
+    ("wd2_miri_RGB_1130-1000-770_log_transparent.png", _F770W, _F770W, None),
     ("wd2_nircam_RGB_212-200-187_asinh_max99_transparent.png", _F250M,
-     f"{WD2}/wd2_F200W_AB_i2d.fits"),
+     f"{WD2}/wd2_F200W_AB_i2d.fits", _ROT180),
     ("wd2_nircam_RGB_410-405-335_asinh_max99.5_transparent.png", _F250M,
-     f"{WD2}/wd2_F410M_AB_i2d.fits"),
-    ("wd2_RGB_1000-770-410_asinh_max99.5_transparent.png", _F250M, _F770W),
+     f"{WD2}/wd2_F410M_AB_i2d.fits", _ROT180),
+    ("wd2_RGB_1000-770-410_asinh_max99.5_transparent.png", _F250M,
+     _F770W_ON_F250M, _ROT180),
     ("wd2_RGB_1130-770-164162_sub_asinh_max99.5_transparent.png", _F250M,
-     f"{WD2}/miri_F1130W_pid3523_combined_SF_i2d.fits"),
+     _F770W_ON_F250M, _ROT180),
 ]
 
 
@@ -175,7 +196,8 @@ def fix(index):
     from gc_treasury_rgb_images import check_orientation
 
     Image.MAX_IMAGE_PIXELS = None
-    base, grid, ref = FIXES[index]
+    base, grid, ref, transpose = FIXES[index]
+    transpose = getattr(Image, transpose) if transpose else None
     header = fits.getheader(grid, ext=("SCI", 1))
     shape = (header["NAXIS2"], header["NAXIS1"])
     src = os.path.join(PUBLISHED, base)
@@ -187,8 +209,8 @@ def fix(index):
     os.makedirs(outdir, exist_ok=True)
     png = os.path.join(outdir, base)
     tmp = os.path.join(outdir, "avm_" + base)
-    # save_rgb's defaults (flip=-1, ROTATE_180), which wd2_rgb_images.py used.
-    avm_for_saved_png(WCS(header), *shape).embed(src, tmp)
+    avm_for_saved_png(WCS(header), *shape, flip=-1,
+                      transpose=transpose).embed(src, tmp)
     shutil.move(tmp, png)
     hips = png.replace(".png", "_hips")
     if os.path.exists(hips):
@@ -240,8 +262,8 @@ def main():
             for w in trip:
                 print(f"    {FILTER[w]}: {mosaic(w)}")
     elif args.fix_list:
-        for i, (base, grid, ref) in enumerate(FIXES):
-            print(i, base, os.path.basename(grid), os.path.basename(ref))
+        for i, (base, grid, ref, tr) in enumerate(FIXES):
+            print(i, base, os.path.basename(grid), os.path.basename(ref), tr)
     elif args.fix is not None:
         fix(args.fix)
     elif args.waypoints:
