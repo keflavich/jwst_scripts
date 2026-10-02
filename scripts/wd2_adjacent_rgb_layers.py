@@ -141,7 +141,9 @@ def build(trip):
         raise RuntimeError(f"{name}: build produced no Norder3")
     ok = check_orientation(hips, grid)
     print(f"done: {hips} orientation_ok={ok}", flush=True)
-    if ok is False:
+    # None means the check could not decide (too little overlap or signal);
+    # a layer that was never verified is not published.
+    if ok is not True:
         raise RuntimeError(f"{name}: orientation/astrometry check failed")
 
 
@@ -223,7 +225,9 @@ def fix(index):
                       properties=properties_for(hips), progress_bar=tqdm)
     ok = check_orientation(hips, ref)
     print(f"done: {hips} orientation_ok={ok}", flush=True)
-    if ok is False:
+    # None means the check could not decide (too little overlap or signal);
+    # a layer that was never verified is not published.
+    if ok is not True:
         raise RuntimeError(f"{base}: orientation/astrometry check failed")
 
 
