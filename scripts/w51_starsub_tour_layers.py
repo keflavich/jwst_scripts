@@ -53,8 +53,8 @@ FILTER_DIR = {w: (f"F{w}W" if w >= 560 else
 # Consecutive triplets, blue end first; R is the reddest.
 TRIPLETS = [tuple(reversed(FILTERS[i:i + 3])) for i in range(len(FILTERS) - 2)]
 
-RESID_RE = re.compile(r"-(?:merged|mirimage)(?:_resbgsub)?(?:_group)?_"
-                      r"(?:resbgsub_)?(?:group_)?m(\d+)"
+RESID_RE = re.compile(r"-(?:merged|mirimage)(?:_resbgsub)?_"
+                      r"(?:resbgsub_)?m(\d+)"
                       r"_daophot_basic_mergedcat_residual_i2d\.fits$")
 
 
@@ -71,17 +71,30 @@ def final_residual(wave):
             continue
         m = RESID_RE.search(os.path.basename(path))
         if m:
-            found.append((int(m.group(1)), os.path.getmtime(path), path))
+            found.append((int(m.group(1)), path))
     if not found:
         raise FileNotFoundError(f"no residual mosaic for {FILTER_DIR[wave]} in {d}")
-    # MIRI has two final-stage mosaics per filter for F770W/F1280W/F2100W,
-    # `_resbgsub_group_m6` (2026-07) and `_resbgsub_m6` (2026-09); the newer
-    # one wins a tie on N.
-    return max(found)[2]
+    # F770W/F1280W/F2100W also have `_group_` variants (`_resbgsub_group_m6`,
+    # 2026-07) beside the per-exposure `_resbgsub_m6` (2026-09).  RESID_RE
+    # excludes them, so the choice does not depend on file mtimes.
+    if len({n for n, _ in found}) != len(found):
+        raise RuntimeError(f"ambiguous residual mosaics in {d}: {found}")
+    return max(found)[1]
 
 
 def label(wave):
     return f"{wave / 100:.2f}μm" if wave < 1000 else f"{wave / 100:.1f}μm"
+
+
+def write_inputs(trip, paths, grid):
+    """Record the residual mosaics a layer was built from, next to its PNG."""
+    name = layer_name(trip)
+    out = f"{OUT}/{name}/{name}_inputs.json"
+    with open(out, "w") as fh:
+        json.dump({"layer": name, "grid": grid,
+                   "inputs": {FILTER_DIR[w]: paths[w] for w in trip}},
+                  fh, indent=2)
+    return out
 
 
 def build(trip):
@@ -108,10 +121,7 @@ def build(trip):
         good = np.isfinite(c) & (c != 0)
         norm = simple_norm(c[good], stretch="asinh", min_percent=5,
                            max_percent=99.5)
-        # simple_norm does not bound its output: above the 99.5th percentile
-        # comes back > 1 and below the 5th < 0, and both wrap when save_rgb
-        # casts to uint8 (bright cores rendered as green/blue/black rings).
-        return np.clip(norm(c).filled(np.nan), 0, 1)
+        return norm(c).filled(np.nan)
 
     scaled = np.dstack([stretch(rgb[:, :, k]) for k in range(3)])
 
@@ -123,10 +133,14 @@ def build(trip):
     hips = f"{OUT}/{name}/{name}_hips"
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         raise RuntimeError(f"{name}: build produced no Norder3")
+    write_inputs(trip, paths, grid)
     ok = check_orientation(hips, grid)
     print(f"done: {hips} orientation_ok={ok}", flush=True)
-    if ok is False:
-        raise RuntimeError(f"{name}: orientation/astrometry check failed")
+    # None means the check could not decide (too little overlap or signal);
+    # a layer that was never verified is not published.
+    if ok is not True:
+        raise RuntimeError(f"{name}: orientation/astrometry check "
+                           f"{'failed' if ok is False else 'was inconclusive'}")
 
 
 def waypoints(out):
