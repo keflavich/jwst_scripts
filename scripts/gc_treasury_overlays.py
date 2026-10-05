@@ -114,8 +114,10 @@ MATCH_ARCSEC = 0.1
 #: A field whose F212N and F480M catalogues sit further apart than this
 #: (bulk offset, see `field_offset`) is left out of the matched products: at
 #: MATCH_ARCSEC most of its matches would be chance pairs.  Its F212N and
-#: F480M sources still count in the density maps.  o063 and o113 (F212N
-#: 0.15-0.27" off F480M, jwst-gc-pipeline #921) trip it until reprocessed.
+#: F480M sources still count in the density maps.  The offset is measured on
+#: every run, so a field rejoins once reprocessed: o063 and o113 sat 0.22-0.27"
+#: apart on 2026-09-25 (jwst-gc-pipeline #921) and measured 1 mas in the
+#: 2026-10-04 build.
 MAX_FIELD_OFFSET_ARCSEC = 0.1
 
 # red + bright density layer
