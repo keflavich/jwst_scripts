@@ -18,7 +18,13 @@ per-channel asinh stretch over that common sky, pinned so each channel's
 median sky maps to the same level (see stretch).
 
 No astrometric correction is applied; the layers show each pipeline's WCS as
-is, so any offset between 2045 and 10678 stays visible.
+is, so any offset between 2045 and 10678 stays visible.  Measured 2026-10-07
+from star matches 5-45" from the cluster centre (10678 minus 2045, mas):
+F212N +2..+4 RA, -7..-15 Dec; F480M vs F323N +0 RA, -10..-12 Dec, i.e. at
+most ~0.5 px on the 0.031"/px grid.
+
+check_orientation validates the PNG -> AVM -> HiPS round trip against this
+layer's own pixels; it does not test astrometry between the two programs.
 
 Usage:
     arches_combined_rgb_layers.py --list
