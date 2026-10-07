@@ -18,7 +18,8 @@ save_rgb with avm_for_saved_png, HiPS, and a content-based orientation and
 astrometry check that must pass.
 
 No astrometric correction is applied here; the layers show the pipeline's
-WCS as is.
+WCS as is.  check_orientation validates the PNG -> AVM -> HiPS round trip
+against the green-channel mosaic; it does not test the mosaic's astrometry.
 
 Usage:
     gc3571_rgb_layers.py --list
