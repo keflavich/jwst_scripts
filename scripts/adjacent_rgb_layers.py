@@ -82,6 +82,23 @@ FIELDS = {
                          (360, "M"), (405, "N"), (470, "N"), (480, "M")]
         },
     },
+    "wd1": {
+        "prefix": "wd1",
+        "title": "Westerlund 1 Wavelength Explorer (Linear)",
+        "mosaics": {
+            **{w: _pipe("wd1", f"F{w}{s}",
+                        f"jw01905-o001_t001_nircam_clear-f{w}{s.lower()}"
+                        "-merged_i2d.fits")
+               for w, s in [(115, "W"), (150, "W"), (164, "N"), (187, "N"),
+                            (200, "W"), (212, "N"), (277, "W"), (323, "N"),
+                            (405, "N"), (444, "W"), (466, "N")]},
+            # MIRI mosaics (program 1905, obs 002) sit at the top of the wd1
+            # dir, not in a filter/pipeline subdir like the NIRCam ones.
+            770: f"{JWST}/wd1/miri_F770W_pid1905_combined_SF_i2d.fits",
+            1000: f"{JWST}/wd1/miri_F1000W_pid1905_combined_SF_i2d.fits",
+            1130: f"{JWST}/wd1/miri_F1130W_pid1905_combined_SF_i2d.fits",
+        },
+    },
     "cloudef": {
         "prefix": "Cloudef",
         "title": "Clouds E/F Wavelength Explorer (Linear)",
