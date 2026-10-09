@@ -109,6 +109,10 @@ SPECIAL = {
         "jwst-gc-treasury-rgb-f770w-f480m-f212n",
         "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
         "NIRCam F212N"),
+    "gctreasury_nbmosaic_RGB_770-480-212_hips": (
+        "jwst-gc-treasury-rgb-nbf770w-f480m-f212n",
+        "JWST GC Treasury: Galactic Center RGB, MIRI F770W (CMZ-wide mosaic "
+        "by N. Budaiev) / NIRCam F480M / NIRCam F212N"),
     # Star-subtracted flavours: built from the DAOPHOT residual mosaics.
     "jwst_gc_treasury_residual_vminmax_hips": (
         "jwst-gc-treasury-nircam-mosaic-residual-minmax",
