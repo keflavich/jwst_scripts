@@ -121,8 +121,9 @@ SHORT_FILTER = "f212n"
 MIRI_FILTER = "f770w"
 
 # Nazar Budaiev's combined F770W mosaic (2026-10-08) of the 10678 MIRI
-# fields; 12.8% of its grid has data.  Used as R by --red nb.  Its saturated cores are NaN and get fill_nan'd for display, as
-# gc_treasury_nb_miri_hips.py does.
+# fields; 12.8% of its grid has data.  Used as R by --red nb.  Its saturated
+# cores are NaN and get fill_nan'd for display, as gc_treasury_nb_miri_hips.py
+# does.
 NB_MIRI = ("/orange/adamginsburg/jwst/sgrb2/NB/gc/claude_MIRI_mosaics/"
            "gc10678_f770w_combined_i2d.fits")
 # Blank islands in NB_MIRI larger than this (pixels) are coverage gaps and go
@@ -486,7 +487,10 @@ def main(argv=None):
     ap.add_argument("--red", choices=["mosaic", "nb"], default="mosaic",
                     help="R channel of the 770 grid: mosaic = mosaics/"
                          "f770w_mosaic.fits; nb = Nazar Budaiev's combined "
-                         "F770W mosaic (NB_MIRI), on its own grid")
+                         "F770W mosaic (NB_MIRI), on its own grid; main "
+                         "only.  Affects only the 770 grid: pass --grids 770 "
+                         "--rgb-only to skip the 480 grid and the plain F770W "
+                         "layer")
     ap.add_argument("--no-hips", action="store_true")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--rgb-only", action="store_true",
@@ -494,6 +498,9 @@ def main(argv=None):
     group.add_argument("--miri-only", action="store_true",
                        help="build only the plain monochrome F770W layer")
     args = ap.parse_args(argv)
+    if args.red == "nb" and args.which != "main":
+        # Fail here, not after a multi-hour main build.
+        ap.error("--red nb has no residual flavour; use --which main")
 
     whichs = ["main", "residual"] if args.which == "both" else [args.which]
     hips = not args.no_hips
