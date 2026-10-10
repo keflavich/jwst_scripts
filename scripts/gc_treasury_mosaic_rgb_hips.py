@@ -14,7 +14,7 @@ each with its own HiPS:
                              on F770W's native grid.
 
   --red nb (build_rgb_trio): as the 770 grid, but R is Nazar Budaiev's
-                             CMZ-wide combined F770W mosaic (NB_MIRI below)
+                             combined F770W mosaic (NB_MIRI below)
                              and the grid is that mosaic's.
 
 Plus a plain monochrome F770W layer (build_miri) with no colour synthesis at
@@ -120,11 +120,17 @@ LONG_FILTER = "f480m"     # target grid; see module docstring
 SHORT_FILTER = "f212n"
 MIRI_FILTER = "f770w"
 
-# Nazar Budaiev's CMZ-wide F770W mosaic (2026-10-08): all 10678 fields plus
-# other CMZ F770W data.  Used as R by --red nb.  Its saturated cores are NaN
-# and get fill_nan'd for display, as gc_treasury_nb_miri_hips.py does.
+# Nazar Budaiev's combined F770W mosaic (2026-10-08) of the 10678 MIRI
+# fields; 12.8% of its grid has data.  Used as R by --red nb.  Its saturated cores are NaN and get fill_nan'd for display, as
+# gc_treasury_nb_miri_hips.py does.
 NB_MIRI = ("/orange/adamginsburg/jwst/sgrb2/NB/gc/claude_MIRI_mosaics/"
            "gc10678_f770w_combined_i2d.fits")
+# Blank islands in NB_MIRI larger than this (pixels) are coverage gaps and go
+# transparent, whether or not they touch the array edge; smaller ones are
+# saturated cores and stay opaque.  On the 2026-10-08 file every gap connects
+# to the outer blank region, so this matches alpha_only_edges there; it also
+# covers an enclosed gap if a later version of the mosaic has one.
+NB_GAP_MIN_PIX = 20000
 
 # simple_norm kwargs, applied to the raw FITS values in MJy/sr.  Mirrors the
 # per-observation script's "pct" and "vminmax" flavours (see
@@ -202,6 +208,23 @@ def _load_nb_miri():
         hdu = (hdul["SCI"] if "SCI" in hdul else
                next(h for h in hdul if h.data is not None and h.data.ndim == 2))
         return hdu.data.astype(np.float32), WCS(hdu.header).celestial
+
+
+def _nb_alpha_source(r_raw):
+    """Stand-in for save_rgb's original_data: NaN on blank islands of r_raw
+    bigger than NB_GAP_MIN_PIX (coverage gaps, edge-touching or enclosed),
+    1 elsewhere.  Use with alpha_only_edges=False."""
+    from scipy.ndimage import label
+    blank = np.isnan(r_raw) | (np.abs(r_raw) < 1e-5)
+    lab, n = label(blank)
+    sizes = np.bincount(lab.ravel(), minlength=n + 1)
+    gap = (sizes > NB_GAP_MIN_PIX)
+    gap[0] = False
+    out = np.where(gap[lab], np.float32(np.nan), np.float32(1))
+    print(f"  NB alpha: {int(gap.sum())} gap islands, "
+          f"{100 * np.isnan(out).mean():.1f}% transparent; "
+          f"{n - int(gap.sum())} small islands kept opaque", flush=True)
+    return out
 
 
 def _mask_mixed_nan(long_, short_):
@@ -354,8 +377,8 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
           flush=True)
     r_raw = r
     if red == "nb":
-        # Fill saturated-core NaN islands for display only; alpha below still
-        # comes from the raw mosaic, so only edge-touching blanks go clear.
+        # Fill saturated-core NaN islands for display only; alpha comes from
+        # _nb_alpha_source(r_raw), which clears coverage gaps of any shape.
         from jwst_rgb.save_rgb import fill_nan
         r = fill_nan(r.copy(), bad_data_min_threshold=None)
 
@@ -383,9 +406,13 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
     # G/B and compute every channel's blank mask from R -- one scipy.ndimage
     # label() pass over a zero-copy view, rather than three redundant passes
     # over a materialized (ny, nx, 3) copy of the same array.
+    if red == "nb":
+        alpha_src, edges_only = _nb_alpha_source(r_raw), False
+    else:
+        alpha_src, edges_only = r_raw, True
     _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
-              alpha_only_edges=True, original_data=r_raw[:, :, np.newaxis],
-              hips=False)
+              alpha_only_edges=edges_only,
+              original_data=alpha_src[:, :, np.newaxis], hips=False)
     print(f"[{which}] wrote {png}", flush=True)
 
     hips_dir = None
