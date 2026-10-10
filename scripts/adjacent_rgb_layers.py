@@ -9,9 +9,11 @@ filters in wavelength.  Inputs are the regular (not star-subtracted)
 mosaics, the astrometry-corrected pipeline mosaic wherever one exists.
 
 Each layer is put on the pixel grid of its bluest filter, the finest one in
-the triplet.  NaN islands inside the field (saturated cores) are filled on the
-native grid with jwst_rgb.fill_nan before reprojection; NaNs touching the
-field edge are left alone and become transparent.  Each channel gets a
+the triplet.  Interior NaN islands are sorted on the native grid before
+reprojection (fill_cores_mark_gaps): saturated cores are filled at the top of
+the channel's range so they render white, and coverage gaps (e.g. the NIRCam
+SW detector-gap strips) stay blank.  Edges and gaps in any channel become
+transparent.  Each channel gets a
 percentile asinh stretch.  Every build ends with check_orientation
 (gc_treasury_rgb_images), which correlates served tiles against the grid FITS
 for a 180 degree flip and measures the translation (tolerance 0.3"); a layer
@@ -21,6 +23,8 @@ Usage:
     adjacent_rgb_layers.py FIELD --list             # resolve inputs only
     adjacent_rgb_layers.py FIELD --index I          # build triplet I (array)
     adjacent_rgb_layers.py FIELD --publish          # copy built HiPS to avm_images
+    adjacent_rgb_layers.py FIELD --publish --replace I [I ...]
+                                     # also replace those published layers
     adjacent_rgb_layers.py FIELD --waypoints OUT    # write the tour's waypoints
 """
 import argparse
@@ -140,22 +144,99 @@ def label(wave):
     return f"{wave / 100:.2f}μm" if wave < 1000 else f"{wave / 100:.1f}μm"
 
 
+def fill_cores_mark_gaps(data, aspect_min=4.0, gap_min_pix=50,
+                         core_border_pct=95.0, big_core_border_pct=99.5,
+                         top_pct=99.5, grow=2):
+    """Split the interior NaN islands of one mosaic into saturated cores and
+    coverage gaps.
+
+    Cores are islands whose surrounding ring is bright (median above the
+    image's ``core_border_pct`` percentile; ``big_core_border_pct`` for
+    islands of ``gap_min_pix`` pixels or more) and which are not long thin
+    strips.  On wd1 the borders of real saturated cores rank above the 99.9th
+    percentile; the F323N ghost patches rank 96.6-98.8, so a big island
+    whose border lies between the two thresholds gets its border median
+    instead of the core value.  They are grown by ``grow`` pixels (the pixels next to a
+    saturated core are corrupted too) and set to a value at or above the
+    channel's ``top_pct`` percentile, so they come out white in every
+    channel after the stretch instead of a flat, mid-level colour.
+
+    Gaps (islands of at least ``gap_min_pix`` pixels that are long thin
+    strips or have a faint border: detector/dither gaps with no data, e.g.
+    the NIRCam SW strips) stay NaN, so they become transparent instead of
+    being painted with the border percentile.  Smaller faint-bordered holes
+    (bad pixels) get their border median.  Islands touching the array edge
+    stay NaN as before.  Exact zeros count as blank: the MIRI combined
+    mosaics mark saturated cores and no-coverage with 0, not NaN.
+
+    Returns (filled data, core mask).
+    """
+    from scipy import ndimage
+    data = np.where(data == 0, np.nan, data)
+    finite = np.isfinite(data)
+    vals = data[finite]
+    bright = np.percentile(vals, core_border_pct)
+    very_bright = np.percentile(vals, big_core_border_pct)
+    top = np.percentile(vals, top_pct)
+    lab, nlab = ndimage.label(~finite)
+    edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+    out = data
+    core = np.zeros(data.shape, dtype=bool)
+    ny, nx = data.shape
+    pad = grow + 3
+    ncore = ngap = nsmall = 0
+    for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+        if sl is None or i in edge:
+            continue
+        h = sl[0].stop - sl[0].start
+        w = sl[1].stop - sl[1].start
+        ex = (slice(max(sl[0].start - pad, 0), min(sl[0].stop + pad, ny)),
+              slice(max(sl[1].start - pad, 0), min(sl[1].stop + pad, nx)))
+        isl = lab[ex] == i
+        ring = ndimage.binary_dilation(isl, iterations=2) & ~isl & finite[ex]
+        npix = int(isl.sum())
+        aspect = max(h, w) / max(min(h, w), 1)
+        bmed = np.median(data[ex][ring]) if ring.any() else -np.inf
+        faint = not bmed > bright
+        big = npix >= gap_min_pix
+        if big and (aspect >= aspect_min or faint):
+            ngap += 1
+            continue
+        if faint or (big and not bmed > very_bright):
+            nsmall += 1
+            if ring.any():
+                sub = out[ex]
+                sub[isl] = bmed
+            continue
+        ncore += 1
+        fillv = max(np.percentile(data[ex][ring], 99), top)
+        grown = ndimage.binary_dilation(isl, iterations=grow)
+        sub = out[ex]
+        # NaN compares False, so NaN pixels in the grown core are filled too
+        sub[grown & ~(sub >= fillv)] = fillv
+        core[ex] |= grown
+    print(f"    {ncore} saturated cores filled, {ngap} gaps left blank, "
+          f"{nsmall} holes filled with border median, "
+          f"{len(edge) - (0 in edge)} edge regions", flush=True)
+    return out, core
+
+
 def load_filled_on(path, header, shape):
-    """SCI data with interior NaN islands filled, on the target grid."""
+    """SCI data on the target grid: saturated cores filled, coverage gaps
+    and edges NaN.  Also returns the core mask on the target grid."""
     from reproject import reproject_interp
-    from jwst_rgb.save_rgb import fill_nan
     with fits.open(path) as hl:
         data = hl["SCI"].data.astype(np.float32)
         hdr = hl["SCI"].header
-    # Only NaNs: the default threshold would also treat every negative
-    # noise pixel as a hole.
-    data = fill_nan(data, bad_data_min_threshold=None)
+    data, core = fill_cores_mark_gaps(data)
     if data.shape == shape and WCS(hdr).celestial.wcs.compare(
             WCS(header).celestial.wcs, tolerance=1e-9):
-        return data
+        return data, core
     out, _ = reproject_interp((data, WCS(hdr).celestial),
                               WCS(header).celestial, shape_out=shape)
-    return out.astype(np.float32)
+    cmask, _ = reproject_interp((core.astype(np.float32), WCS(hdr).celestial),
+                                WCS(header).celestial, shape_out=shape)
+    return out.astype(np.float32), np.nan_to_num(cmask) > 0.25
 
 
 def build(field, trip):
@@ -169,21 +250,30 @@ def build(field, trip):
     grid = paths[min(trip)]                  # bluest = finest pixels
     header = fits.getheader(grid, ext=("SCI", 1))
     shape = (header["NAXIS2"], header["NAXIS1"])
-    rgb = np.dstack([load_filled_on(paths[w], header, shape) for w in trip])
+    loaded = [load_filled_on(paths[w], header, shape) for w in trip]
+    rgb = np.dstack([d for d, _ in loaded])
 
-    def stretch(c):
-        good = np.isfinite(c) & (c != 0)
+    def stretch(c, core):
+        # limits from real pixels only: the filled cores would otherwise
+        # push the top percentile up and dim the whole channel
+        good = np.isfinite(c) & (c != 0) & ~core
         norm = simple_norm(c[good], stretch="asinh", min_percent=1,
                            max_percent=99.5)
-        return norm(c).filled(np.nan)
+        return np.clip(norm(c).filled(np.nan), 0, 1)
 
-    scaled = np.dstack([stretch(rgb[:, :, k]) for k in range(3)])
+    scaled = np.dstack([stretch(rgb[:, :, k], loaded[k][1]) for k in range(3)])
+    # Transparent wherever any channel has no data (array edges and
+    # coverage gaps).  A 1/NaN stand-in keeps save_rgb's |x|<1e-5 test from
+    # punching holes at real near-zero pixels; alpha_only_edges=False is
+    # needed because the gaps are interior.
+    blank = ~np.isfinite(rgb).all(axis=2)
+    alpha_src = np.where(blank, np.nan, 1.0)[:, :, None].repeat(3, axis=2)
 
     os.makedirs(f"{outdir(field)}/{name}", exist_ok=True)
     png = f"{outdir(field)}/{name}/{name}.png"
     avm = avm_for_saved_png(WCS(header), *shape)
-    save_rgb(np.nan_to_num(scaled), png, avm=avm, original_data=rgb,
-             hips=True, overwrite=True)
+    save_rgb(np.nan_to_num(scaled), png, avm=avm, original_data=alpha_src,
+             alpha_only_edges=False, hips=True, overwrite=True)
     hips = f"{outdir(field)}/{name}/{name}_hips"
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         raise RuntimeError(f"{name}: build produced no Norder3")
@@ -197,17 +287,29 @@ def build(field, trip):
         fh.write(f"check_orientation against {grid}\n")
 
 
-def publish(field):
+def publish(field, replace=(), stamp=None):
     """Copy every verified layer into avm_images.  An existing layer of the
-    same name is left alone."""
-    for trip in triplets(field):
+    same name is left alone unless its triplet index is in ``replace``; then
+    the old directory is parked as ``<dst>_stale_<stamp>`` (not deleted) and
+    the new build is copied in its place."""
+    import time
+    stamp = stamp or time.strftime("%Y%m%d")
+    for i, trip in enumerate(triplets(field)):
         name = layer_name(field, trip)
         src = f"{outdir(field)}/{name}/{name}_hips"
         dst = f"{PUBLISHED}/{name}_hips"
         if not os.path.exists(os.path.join(src, "ORIENTATION_OK")):
             print(f"skip {name}: not built or not verified")
-        elif os.path.exists(dst):
+        elif os.path.exists(dst) and i not in replace:
             print(f"skip {name}: {dst} exists")
+        elif os.path.exists(dst):
+            parked = f"{dst}_stale_{stamp}"
+            if os.path.exists(parked):
+                raise FileExistsError(parked)
+            shutil.copytree(src, dst + ".new")
+            os.rename(dst, parked)
+            os.rename(dst + ".new", dst)
+            print(f"replaced {dst} (old layer parked at {parked})")
         else:
             shutil.copytree(src, dst + ".new")
             os.rename(dst + ".new", dst)
@@ -255,6 +357,9 @@ def main():
     g.add_argument("--index", type=int, help="triplet by position (SLURM array)")
     g.add_argument("--publish", action="store_true")
     g.add_argument("--waypoints", metavar="OUT")
+    ap.add_argument("--replace", type=int, nargs="+", default=[],
+                    metavar="I", help="with --publish: triplet indices whose "
+                    "published layer is replaced (old one parked _stale_DATE)")
     args = ap.parse_args()
     if args.list:
         for i, trip in enumerate(triplets(args.field)):
@@ -262,7 +367,7 @@ def main():
             for w in trip:
                 print(f"    {w}: {mosaic(args.field, w)}")
     elif args.publish:
-        publish(args.field)
+        publish(args.field, replace=set(args.replace))
     elif args.waypoints:
         waypoints(args.field, args.waypoints)
     else:
