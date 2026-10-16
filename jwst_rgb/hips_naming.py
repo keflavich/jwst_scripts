@@ -422,6 +422,28 @@ def describe(name):
         return (f"{AUTHORITY}/{slugify(name)}",
                 f"{prog} field o{m.group(2)}: {rest}{suffix}")
 
+    # Cluster layers combining archival program 2045 with the 10678 Treasury
+    # (scripts/arches_combined_rgb_layers.py).  `nirresidual` marks a layer
+    # whose NIRCam channels are star-subtracted and whose MIRI one is not.
+    m = re.match(r"(arches|quintuplet)_(\d{4,5})_(\d{4,5})_(.*)", stem)
+    if m:
+        cluster = {"arches": "Arches cluster",
+                   "quintuplet": "Quintuplet cluster"}[m.group(1)]
+        tail = m.group(4).split("_")
+        nirres = "nirresidual" in tail
+        body, channels, extra, declared = _render(
+            "_".join(t for t in tail if t != "nirresidual"), None)
+        instrument = _instrument(channels, declared)
+        if nirres:
+            miri = [c for c in channels if c in MIRI.values()]
+            extra.insert(0, f"NIRCam stars subtracted, "
+                            f"{' / '.join(miri)} unsubtracted")
+        title = (f"{_facility(instrument)} {cluster} (programs "
+                 f"{m.group(2)} + {m.group(3)}): {body}")
+        if extra:
+            title += f" ({', '.join(extra)})"
+        return f"{AUTHORITY}/{slugify(name)}", title
+
     if stem.startswith("MUBLO_"):
         key = stem[len("MUBLO_"):]
         line = ALMA_LINES.get(key, key)

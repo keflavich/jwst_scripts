@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-Arches cluster RGB + HiPS layers combining archival program 2045 with the
-10678 GC Treasury.
+Arches and Quintuplet cluster RGB + HiPS layers combining archival program
+2045 with the 10678 GC Treasury.
 
 Filters covering the Arches (RA 266.4604, Dec -28.8244):
 
@@ -23,6 +23,12 @@ from star matches 5-45" from the cluster centre (10678 minus 2045, mas):
 F212N +2..+4 RA, -7..-15 Dec; F480M vs F323N +0 RA, -10..-12 Dec, i.e. at
 most ~0.5 px on the 0.031"/px grid.
 
+--field quintuplet builds the same set for the Quintuplet (RA 266.5608, Dec
+-28.8541): F212N/F323N from 2045 o003, F480M from 10678 o068, o075, o076,
+o083, o084 (together 99.9% of the 2045 footprint), F770W from 10678 o060,
+o061, o068, o069 (49.9%: the MIRI layers cover about half the field).
+Coverage measured 2026-10-16 on a 40-px sample of the F212N grid.
+
 check_orientation validates the PNG -> AVM -> HiPS round trip against this
 layer's own pixels; it does not test astrometry between the two programs.
 
@@ -31,13 +37,15 @@ mosaics: the cataloguing chain's last stage, resbgsub_m7 for NIRCam and
 resbgsub_m6 for MIRI.  A filter without a residual mosaic keeps its image
 (F770W o063/o064 have none yet); a layer with every channel star-subtracted
 is named `_residual`, a mixed one `_nirresidual`, and the inputs json records
-which file fed each channel.  Over-subtracted star cores leave a long negative
-tail, so residual channels take their black point at the 5th percentile
-rather than the 1st.
+which file fed each channel.  Only F770W may fall back: a NIRCam filter
+missing any tile's residual is an error, since the fallback would label a
+layer `_nirresidual` with an unsubtracted NIRCam channel.  Over-subtracted
+star cores leave a long negative tail, so residual channels take their black
+point at the 5th percentile rather than the 1st.
 
 Usage:
-    arches_combined_rgb_layers.py --list [--residual]
-    arches_combined_rgb_layers.py --index I [--residual]   # layer I (SLURM array)
+    arches_combined_rgb_layers.py [--field quintuplet] --list [--residual]
+    arches_combined_rgb_layers.py [--field quintuplet] --index I [--residual]
 """
 import argparse
 import itertools
@@ -51,22 +59,43 @@ from astropy.wcs import WCS
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-ARCHES = "/orange/adamginsburg/jwst/arches"
-TREASURY = "/orange/adamginsburg/jwst/gc-treasury"
-OUT = f"{ARCHES}/combined_rgb"
+JWST = "/orange/adamginsburg/jwst"
+TREASURY = f"{JWST}/gc-treasury"
 
-INPUTS = {
-    212: [f"{ARCHES}/F212N/pipeline/"
-          "jw02045-o001_t001_nircam_clear-f212n-merged_i2d.fits"],
-    323: [f"{ARCHES}/F323N/pipeline/"
-          "jw02045-o001_t001_nircam_clear-f323n-merged_i2d.fits"],
-    480: [f"{TREASURY}/F480M/pipeline/"
-          f"jw10678-o{o}_t001_nircam_clear-f480m-merged_i2d.fits"
-          for o in ("078", "079")],
-    770: [f"{TREASURY}/F770W/pipeline/jw10678-o{o}_t001_miri_f770w_i2d.fits"
-          for o in ("063", "064")],
+# field -> (2045 observation, 10678 F480M tiles, 10678 F770W tiles)
+FIELDS = {
+    "arches": ("001", ("078", "079"), ("063", "064")),
+    "quintuplet": ("003", ("068", "075", "076", "083", "084"),
+                   ("060", "061", "068", "069")),
 }
-GRID = INPUTS[212][0]
+
+
+def field_inputs(field):
+    obs, nircam, miri = FIELDS[field]
+    root = f"{JWST}/{field}"
+    return {
+        212: [f"{root}/F212N/pipeline/"
+              f"jw02045-o{obs}_t001_nircam_clear-f212n-merged_i2d.fits"],
+        323: [f"{root}/F323N/pipeline/"
+              f"jw02045-o{obs}_t001_nircam_clear-f323n-merged_i2d.fits"],
+        480: [f"{TREASURY}/F480M/pipeline/"
+              f"jw10678-o{o}_t001_nircam_clear-f480m-merged_i2d.fits"
+              for o in nircam],
+        770: [f"{TREASURY}/F770W/pipeline/jw10678-o{o}_t001_miri_f770w_i2d.fits"
+              for o in miri],
+    }
+
+
+def use_field(field):
+    """Point the module at one field (default: arches)."""
+    global FIELD, OUT, INPUTS, GRID
+    FIELD = field
+    OUT = f"{JWST}/{field}/combined_rgb"
+    INPUTS = field_inputs(field)
+    GRID = INPUTS[212][0]
+
+
+use_field("arches")
 
 RESIDUAL_STAGE = {"nircam": "resbgsub_m7", "miri": "resbgsub_m6"}
 
@@ -94,6 +123,9 @@ def channel_inputs(wave, residual):
         res = [residual_path(p) for p in INPUTS[wave]]
         if all(res):
             return res, True
+        if wave != 770:
+            missing = [p for p, r in zip(INPUTS[wave], res) if r is None]
+            raise FileNotFoundError(f"F{wave}: no residual mosaic for {missing}")
     return INPUTS[wave], False
 
 
@@ -103,7 +135,7 @@ LAYERS = [tuple(sorted(c, reverse=True))
 
 
 def layer_name(trip, residual=False):
-    name = "arches_2045_10678_RGB_{}-{}-{}".format(*trip)
+    name = "{}_2045_10678_RGB_{}-{}-{}".format(FIELD, *trip)
     if residual:
         n = sum(channel_inputs(w, True)[1] for w in trip)
         name += "_residual" if n == 3 else "_nirresidual"
@@ -225,9 +257,11 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--index", type=int, help="layer by position")
+    ap.add_argument("--field", choices=sorted(FIELDS), default="arches")
     ap.add_argument("--residual", action="store_true",
                     help="build from the star-subtracted mosaics")
     args = ap.parse_args()
+    use_field(args.field)
     if args.list:
         for w in INPUTS:
             paths, res = channel_inputs(w, args.residual)

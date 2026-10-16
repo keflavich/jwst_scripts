@@ -130,3 +130,21 @@ def test_a_staged_build_is_identified_by_its_published_name(tmp_path):
     (d / "properties").write_text("creator_did = ivo://reproject/P/x\n")
     assert stamp_properties(str(d), name="jwst_miri_hips") is True
     assert ".new" not in (d / "properties").read_text()
+
+
+@pytest.mark.parametrize("name, title", [
+    # The published Arches titles, which predate this rule.
+    ("arches_2045_10678_RGB_480-323-212_residual_hips",
+     "JWST/NIRCam Arches cluster (programs 2045 + 10678): "
+     "F480M / F323N / F212N (stars subtracted)"),
+    ("arches_2045_10678_RGB_770-480-323_nirresidual_hips",
+     "JWST/NIRCam + MIRI Arches cluster (programs 2045 + 10678): "
+     "F770W / F480M / F323N (NIRCam stars subtracted, F770W unsubtracted)"),
+    ("quintuplet_2045_10678_RGB_770-480-212_hips",
+     "JWST/NIRCam + MIRI Quintuplet cluster (programs 2045 + 10678): "
+     "F770W / F480M / F212N"),
+])
+def test_cluster_layers_name_both_programs(name, title):
+    did, got = describe(name)
+    assert got == title
+    assert did == f"{AUTHORITY}/{slugify(name)}"
