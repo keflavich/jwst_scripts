@@ -5,7 +5,7 @@ import os
 import pyavm
 from PIL import Image
 from jwst_rgb.save_rgb import save_rgb as _save_rgb, fill_nan
-from jwst_rgb.save_rgb import faithful_avm
+from jwst_rgb.save_rgb import avm_for_saved_png
 import subprocess
 import pickle
 import argparse
@@ -355,7 +355,10 @@ def worker_create_rgb(job_spec_file):
     except KeyError:
         tgt_header = fits.getheader(image_filenames_pipe[target_filter], ext=0)
 
-    avm = faithful_avm(tgt_header)
+    # The save_rgb wrapper above always uses transpose=ROTATE_180 (with
+    # flip=-1), so the AVM must describe the PNG as written.
+    avm = avm_for_saved_png(WCS(tgt_header).celestial,
+                            tgt_header['NAXIS2'], tgt_header['NAXIS1'])
     cache = {}
 
     def ensure_reprojected(key):

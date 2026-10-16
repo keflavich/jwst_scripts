@@ -13,6 +13,10 @@ each with its own HiPS:
   770 grid (build_rgb_trio): R=F770W, G=F480M, B=F212N,
                              on F770W's native grid.
 
+  --red nb (build_rgb_trio): as the 770 grid, but R is Nazar Budaiev's
+                             combined F770W mosaic (NB_MIRI below)
+                             and the grid is that mosaic's.
+
 Plus a plain monochrome F770W layer (build_miri) with no colour synthesis at
 all, useful as a diagnostic independent of either RGB's stretch choices.
 
@@ -116,6 +120,19 @@ LONG_FILTER = "f480m"     # target grid; see module docstring
 SHORT_FILTER = "f212n"
 MIRI_FILTER = "f770w"
 
+# Nazar Budaiev's combined F770W mosaic (2026-10-08) of the 10678 MIRI
+# fields; 12.8% of its grid has data.  Used as R by --red nb.  Its saturated
+# cores are NaN and get fill_nan'd for display, as gc_treasury_nb_miri_hips.py
+# does.
+NB_MIRI = ("/orange/adamginsburg/jwst/sgrb2/NB/gc/claude_MIRI_mosaics/"
+           "gc10678_f770w_combined_i2d.fits")
+# Blank islands in NB_MIRI larger than this (pixels) are coverage gaps and go
+# transparent, whether or not they touch the array edge; smaller ones are
+# saturated cores and stay opaque.  On the 2026-10-08 file every gap connects
+# to the outer blank region, so this matches alpha_only_edges there; it also
+# covers an enclosed gap if a later version of the mosaic has one.
+NB_GAP_MIN_PIX = 20000
+
 # simple_norm kwargs, applied to the raw FITS values in MJy/sr.  Mirrors the
 # per-observation script's "pct" and "vminmax" flavours (see
 # gc_treasury_rgb_images.STRETCHES) without importing that script's much
@@ -142,14 +159,15 @@ def rgb_hips_for(which, stretch):
     return rgb_png_for(which, stretch).replace(".png", "_hips")
 
 
-def rgb_trio_png_for(which, stretch):
+def rgb_trio_png_for(which, stretch, red="mosaic"):
     suffix = "_residual" if which == "residual" else ""
     tag = "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
-    return f"{OUTDIR}/gctreasury_mosaic_RGB_770-480-212{suffix}{tag}.png"
+    base = "gctreasury_nbmosaic" if red == "nb" else "gctreasury_mosaic"
+    return f"{OUTDIR}/{base}_RGB_770-480-212{suffix}{tag}.png"
 
 
-def rgb_trio_hips_for(which, stretch):
-    return rgb_trio_png_for(which, stretch).replace(".png", "_hips")
+def rgb_trio_hips_for(which, stretch, red="mosaic"):
+    return rgb_trio_png_for(which, stretch, red).replace(".png", "_hips")
 
 
 def miri_png_for(which):
@@ -180,6 +198,34 @@ def _load_primary(path):
         data = hdul[0].data.astype(np.float32)
         wcs = WCS(hdul[0].header).celestial
     return data, wcs
+
+
+def _load_nb_miri():
+    """Data + celestial WCS of NB_MIRI: SCI if present, else the first 2D HDU
+    (the 2026-10-08 file is a bare PRIMARY image despite its _i2d name)."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    with fits.open(NB_MIRI) as hdul:
+        hdu = (hdul["SCI"] if "SCI" in hdul else
+               next(h for h in hdul if h.data is not None and h.data.ndim == 2))
+        return hdu.data.astype(np.float32), WCS(hdu.header).celestial
+
+
+def _nb_alpha_source(r_raw):
+    """Stand-in for save_rgb's original_data: NaN on blank islands of r_raw
+    bigger than NB_GAP_MIN_PIX (coverage gaps, edge-touching or enclosed),
+    1 elsewhere.  Use with alpha_only_edges=False."""
+    from scipy.ndimage import label
+    blank = np.isnan(r_raw) | (np.abs(r_raw) < 1e-5)
+    lab, n = label(blank)
+    sizes = np.bincount(lab.ravel(), minlength=n + 1)
+    gap = (sizes > NB_GAP_MIN_PIX)
+    gap[0] = False
+    out = np.where(gap[lab], np.float32(np.nan), np.float32(1))
+    print(f"  NB alpha: {int(gap.sum())} gap islands, "
+          f"{100 * np.isnan(out).mean():.1f}% transparent; "
+          f"{n - int(gap.sum())} small islands kept opaque", flush=True)
+    return out
 
 
 def _mask_mixed_nan(long_, short_):
@@ -282,7 +328,8 @@ def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
     return png, hips_dir
 
 
-def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
+def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
+                   red="mosaic"):
     """R = F770W, G = F480M, B = F212N, all on F770W's native grid.
 
     Unlike build_rgb, all three channels are real, independent filters -- no
@@ -315,15 +362,26 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
     from jwst_rgb.save_rgb import avm_for_saved_png
     Image.MAX_IMAGE_PIXELS = None
 
-    r_path = mosaic_path(MIRI_FILTER, which)
-    if not os.path.exists(r_path):
-        raise RuntimeError(f"missing mosaic: {r_path}")
-
-    print(f"[{which}] loading target grid from {r_path}", flush=True)
-    r, twcs = _load_primary(r_path)
+    if red == "nb":
+        if which != "main":
+            raise ValueError("--red nb has no residual flavour")
+        print(f"[{which}] loading target grid from {NB_MIRI}", flush=True)
+        r, twcs = _load_nb_miri()
+    else:
+        r_path = mosaic_path(MIRI_FILTER, which)
+        if not os.path.exists(r_path):
+            raise RuntimeError(f"missing mosaic: {r_path}")
+        print(f"[{which}] loading target grid from {r_path}", flush=True)
+        r, twcs = _load_primary(r_path)
     ny, nx = r.shape
     print(f"[{which}] target grid {nx}x{ny} ({MIRI_FILTER.upper()} native)",
           flush=True)
+    r_raw = r
+    if red == "nb":
+        # Fill saturated-core NaN islands for display only; alpha comes from
+        # _nb_alpha_source(r_raw), which clears coverage gaps of any shape.
+        from jwst_rgb.save_rgb import fill_nan
+        r = fill_nan(r.copy(), bad_data_min_threshold=None)
 
     g = _reproject_onto(LONG_FILTER, which, twcs, ny, nx)
     b = _reproject_onto(SHORT_FILTER, which, twcs, ny, nx)
@@ -333,7 +391,7 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
     print(f"[{which}] stretch '{stretch}': {STRETCHES[stretch]}", flush=True)
     scaled = _stretch_channels(chans, stretch)
 
-    png = rgb_trio_png_for(which, stretch)
+    png = rgb_trio_png_for(which, stretch, red)
     avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
     # save_rgb's alpha is the OR of each channel's OWN blank mask: a pixel is
     # made transparent if ANY of the three is blank there, not only if ALL
@@ -349,14 +407,18 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True):
     # G/B and compute every channel's blank mask from R -- one scipy.ndimage
     # label() pass over a zero-copy view, rather than three redundant passes
     # over a materialized (ny, nx, 3) copy of the same array.
+    if red == "nb":
+        alpha_src, edges_only = _nb_alpha_source(r_raw), False
+    else:
+        alpha_src, edges_only = r_raw, True
     _save_rgb(np.clip(scaled, 0, 1), png, avm=avm, transpose=Image.ROTATE_180,
-              alpha_only_edges=True, original_data=r[:, :, np.newaxis],
-              hips=False)
+              alpha_only_edges=edges_only,
+              original_data=alpha_src[:, :, np.newaxis], hips=False)
     print(f"[{which}] wrote {png}", flush=True)
 
     hips_dir = None
     if hips:
-        hips_dir = _build_hips(png, rgb_trio_hips_for(which, stretch))
+        hips_dir = _build_hips(png, rgb_trio_hips_for(which, stretch, red))
     return png, hips_dir
 
 
@@ -422,6 +484,13 @@ def main(argv=None):
                     help="which RGB grid(s) to build: 480 = R/G/B "
                          "F480M/mean/F212N on F480M's grid, 770 = "
                          "R/G/B F770W/F480M/F212N on F770W's grid")
+    ap.add_argument("--red", choices=["mosaic", "nb"], default="mosaic",
+                    help="R channel of the 770 grid: mosaic = mosaics/"
+                         "f770w_mosaic.fits; nb = Nazar Budaiev's combined "
+                         "F770W mosaic (NB_MIRI), on its own grid; main "
+                         "only.  Affects only the 770 grid: pass --grids 770 "
+                         "--rgb-only to skip the 480 grid and the plain F770W "
+                         "layer")
     ap.add_argument("--no-hips", action="store_true")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--rgb-only", action="store_true",
@@ -429,6 +498,9 @@ def main(argv=None):
     group.add_argument("--miri-only", action="store_true",
                        help="build only the plain monochrome F770W layer")
     args = ap.parse_args(argv)
+    if args.red == "nb" and args.which != "main":
+        # Fail here, not after a multi-hour main build.
+        ap.error("--red nb has no residual flavour; use --which main")
 
     whichs = ["main", "residual"] if args.which == "both" else [args.which]
     hips = not args.no_hips
@@ -437,7 +509,8 @@ def main(argv=None):
             if args.grids in ("480", "both"):
                 build_rgb(which, stretch=args.stretch, hips=hips)
             if args.grids in ("770", "both"):
-                build_rgb_trio(which, stretch=args.stretch, hips=hips)
+                build_rgb_trio(which, stretch=args.stretch, hips=hips,
+                               red=args.red)
         if not args.rgb_only:
             build_miri(which, hips=hips)
     return 0
