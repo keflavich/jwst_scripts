@@ -16,6 +16,9 @@ regenerated together whenever those catalogues change:
   jwst-star-density-colour-cube-hips
                                cube: F212N-F480M in 0.5-mag colour bins
                                (star counts by reddening: pseudo-extinction)
+  jwst-star-density-colour-cumulative-cube-hips
+                               cube: cumulative n(<x), stars bluer than each
+                               F212N-F480M edge x
   jwst-median-colour-hips      median F212N-F480M of the nearest stars (pseudo-extinction)
   jwst-stars-colour-hips       F212N-F480M at every pixel: the inverse-distance
                                weighted mean colour of the nearest stars
@@ -49,8 +52,10 @@ Photometry
 using each catalogue's OWN PIXSCALE -- 0.0312" for the short-wave F212N
 detectors and 0.0629" for the long-wave F480M ones.  That is a factor of 4 in
 solid angle, so 1.5 mag if taken from the wrong table.  AB magnitudes use the
-3631 Jy definition rather than the SVO Vega zeropoint merge_catalogs.py uses,
-because every selection here is specified in AB.
+3631 Jy definition, and every selection here is specified in AB EXCEPT the
+three density cubes, which are binned in Vega magnitudes (the system of the
+released catalogues' mag_vega columns) using the same SVO zeropoints as
+merge_catalogs.py: `vegamag` converts with VEGA_ZP_JY.
 
 Red-clump selection
 -------------------
@@ -104,12 +109,20 @@ REMOTE = ("starformation:/h/cnswww-starformation.astro/"
 LAYERS = ["jwst-red-stars-hips", "jwst-rc-blue-hips", "jwst-rc-red-hips",
           "jwst-star-density-hips", "jwst-star-density-f480m-hips",
           "jwst-star-density-f212n-cube-hips",
-          "jwst-star-density-colour-cube-hips", "jwst-median-colour-hips",
+          "jwst-star-density-colour-cube-hips",
+          "jwst-star-density-colour-cumulative-cube-hips",
+          "jwst-median-colour-hips",
           "jwst-stars-colour-hips", "jwst-stars-catalog-hips"]
 CATALOGUE_FILES = ["jwst_ultrared_stars.ecsv", "jwst_ultrared_stars.fits",
                    "jwst_ultrared_stars.json"]
 
 AB_ZP_JY = 3631.0
+#: SVO Vega zeropoints (Jy; astroquery SvoFps, filterID JWST/NIRCam.*), the
+#: source merge_catalogs.py uses for mag_vega.  Hardcoded so a build does not
+#: depend on the SVO service.  AB - Vega = 2.5 log10(AB_ZP_JY / VEGA_ZP_JY):
+#: 1.827 (F212N), 3.437 (F480M), so an F212N-F480M colour is 1.610 mag
+#: redder in Vega than in AB.
+VEGA_ZP_JY = {"f212n": 674.83167374035, "f480m": 153.22388044927}
 MATCH_ARCSEC = 0.1
 #: A field whose F212N and F480M catalogues sit further apart than this
 #: (bulk offset, see `field_offset`) is left out of the matched products: at
@@ -150,18 +163,25 @@ DEDUPE_ARCSEC = 0.1
 #: F212N-F480M offset over MAX_FIELD_OFFSET_ARCSEC are left out of matched.
 CACHE_VERSION = 4
 
+# The three density cubes are binned in VEGA magnitudes (see Photometry).
 # F212N magnitude cube.  Saturation: the faint end of the saturated rows and
-# the bright end of the unsaturated ones meet near 17-18 AB.  Confusion: the
-# turnover of the unsaturated luminosity function, ~22 AB in the o135 test
-# field.  Held fixed so frames mean the same thing between releases; every
-# build reports the measured values next to them (`report_limits`).
-F212N_SAT_LIMIT, F212N_CONFUSION_LIMIT = 17.0, 22.0
-# Colour cube: 0.5-mag bins over the 0.5-99.5 percentile range of the
-# 2026-09-23 matched set (-1.5 .. 2.6).  Restricted to F480M brighter than
-# COLOUR_MAGLIMIT so the counts are not dominated by completeness, which
-# itself varies with extinction.
-COLOUR_EDGES = np.arange(-1.5, 3.01, 0.5)
-COLOUR_MAGLIMIT = 20.0
+# the bright end of the unsaturated ones meet near 15-16 Vega (17-18 AB).
+# Confusion: the turnover of the unsaturated luminosity function, ~20 Vega
+# (~22 AB) in the o135 test field.  Held fixed so frames mean the same thing
+# between releases; every build reports the measured values next to them
+# (`report_limits`).
+F212N_SAT_LIMIT, F212N_CONFUSION_LIMIT = 15.0, 20.0
+# Colour cubes: 0.5-mag bins of F212N-F480M (Vega) covering the 0.5-99.5
+# percentile range of the 2026-09-23 matched set (0.1 .. 4.2 Vega; -1.5 .. 2.6
+# AB).  Restricted to F480M brighter than COLOUR_MAGLIMIT (Vega; 19.94 AB) so
+# the counts are not dominated by completeness, which itself varies with
+# extinction.  The cumulative cube's frame x counts every star bluer than x,
+# with no blue limit, at each upper edge COLOUR_EDGES[1:].
+COLOUR_EDGES = np.arange(0.0, 4.51, 0.5)
+COLOUR_MAGLIMIT = 16.5
+#: the median-colour map's F480M limit, still in AB (= COLOUR_MAGLIMIT before
+#: the cubes moved to Vega)
+MEDIAN_MAGLIMIT_AB = 20.0
 # median-colour map: stars per median, on the density grid (PIXEL_ARCSEC)
 MEDIAN_NEIGHBORS = 15
 # star rendering
@@ -207,22 +227,32 @@ LAYER_DESCRIPTIONS = {
     "jwst-star-density-f212n-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of F212N sources in "
         f"1-mag bins from F212N = {F212N_SAT_LIMIT:g} (saturation) to "
-        f"{F212N_CONFUSION_LIMIT:g} (confusion) AB, {_GRID}; the cube axis "
-        f"is the bin center in F212N AB mag. em_min/em_max give the F212N "
+        f"{F212N_CONFUSION_LIMIT:g} (confusion) Vega, {_GRID}; the cube axis "
+        f"is the bin center in F212N Vega mag. em_min/em_max give the F212N "
         f"band. {_SOURCE}",
     "jwst-star-density-colour-cube-hips":
         "Pixel value: surface density in stars/arcmin^2 of stars with F480M "
-        f"< {COLOUR_MAGLIMIT:g} AB in {COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
+        f"< {COLOUR_MAGLIMIT:g} Vega in "
+        f"{COLOUR_EDGES[1] - COLOUR_EDGES[0]:g}-mag "
         f"bins of F212N-F480M from {COLOUR_EDGES[0]:g} to "
         f"{COLOUR_EDGES[-1]:g}, {_GRID}; the cube axis is the bin center in "
-        "AB mag. Redder bins trace higher extinction (a pseudo-extinction "
+        "Vega mag. Redder bins trace higher extinction (a pseudo-extinction "
         f"map, not calibrated to A_V). em_min/em_max give the F480M band "
         "alone, which lets Aladin Lite's cube slider reach every frame. "
         f"{_SOURCE}",
+    "jwst-star-density-colour-cumulative-cube-hips":
+        "Pixel value: cumulative surface density n(<x) in stars/arcmin^2 of "
+        f"stars with F480M < {COLOUR_MAGLIMIT:g} Vega and F212N-F480M < x, "
+        f"for x from {COLOUR_EDGES[1]:g} to {COLOUR_EDGES[-1]:g} in steps of "
+        f"{COLOUR_EDGES[1] - COLOUR_EDGES[0]:g} Vega mag, {_GRID}; the cube "
+        "axis is x, and frame x includes every star bluer than x. Where "
+        "extinction is high, n(<x) stays low until x is red. em_min/em_max "
+        "give the F480M band alone, which lets Aladin Lite's cube slider "
+        f"reach every frame. {_SOURCE}",
     "jwst-median-colour-hips":
         "Pixel value: median F212N-F480M in AB mag of the "
         f"{MEDIAN_NEIGHBORS} unsaturated stars with F480M < "
-        f"{COLOUR_MAGLIMIT:g} AB nearest each {PIXEL_ARCSEC:g}\" pixel, over "
+        f"{MEDIAN_MAGLIMIT_AB:g} AB nearest each {PIXEL_ARCSEC:g}\" pixel, over "
         "the same footprint as the density maps. Higher "
         "values mean more reddening (a pseudo-extinction map, not calibrated "
         f"to A_V). {_CATALOGUES}.",
@@ -415,6 +445,17 @@ def abmag(t):
     fjy = (np.asarray(t["flux"]) * u.MJy / u.sr * (ps ** 2).to(u.sr)).to(u.Jy).value
     with np.errstate(invalid="ignore", divide="ignore"):
         return -2.5 * np.log10(fjy / AB_ZP_JY)
+
+
+def vegamag(abm, band):
+    """AB magnitude -> Vega magnitude in `band` ('f212n' or 'f480m')."""
+    return np.asarray(abm) - 2.5 * np.log10(AB_ZP_JY / VEGA_ZP_JY[band])
+
+
+def vegacolour(ab_colour):
+    """AB F212N-F480M -> Vega F212N-F480M."""
+    return (vegamag(ab_colour, "f212n")
+            - vegamag(np.zeros_like(np.asarray(ab_colour)), "f480m"))
 
 
 def saturated(t):
@@ -907,7 +948,7 @@ def report_limits(F):
     Both vary field to field with crowding; the survey-wide values are what
     the cube's fixed edges should be compared against.
     """
-    m, sat = F["m212"], F["sat"]
+    m, sat = vegamag(F["m212"], "f212n"), F["sat"]
     un = m[~sat & np.isfinite(m)]
     if len(un) == 0:
         return None, None
@@ -916,19 +957,26 @@ def report_limits(F):
     peak = float(0.5 * (e[h.argmax()] + e[h.argmax() + 1]))
     print(f"F212N limits now: saturation ~{bright:.2f} (brightest 0.1% "
           f"unsaturated; {sat.sum():,} saturated rows), confusion ~{peak:.2f} "
-          f"(LF turnover); cube holds {F212N_SAT_LIMIT}-{F212N_CONFUSION_LIMIT}")
+          f"(LF turnover), Vega; cube holds "
+          f"{F212N_SAT_LIMIT}-{F212N_CONFUSION_LIMIT}")
     return bright, peak
 
 
 def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
-                 threads=8, bunit3="", em_range=None):
+                 threads=8, bunit3="", em_range=None, cumulative=False):
     """One density frame per [edges[i], edges[i+1]) of `value`, as a HiPS
     cube plus a FITS cube of the same frames.  All frames share one grid,
-    which `assemble_hips_cube` needs and checks."""
+    which `assemble_hips_cube` needs and checks.
+
+    With `cumulative`, frame i holds every source with value < edges[i+1]
+    (no lower limit: n(<x)), and the cube axis is that upper edge rather
+    than the bin centre."""
     from jwst_rgb.hips_formats import assemble_hips_cube
     grid = make_grid(allra, alldec, PIXEL_ARCSEC)
     frames, planes = [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
+        if cumulative:
+            lo = -np.inf
         sel = (value >= lo) & (value < hi)
         arr, w, cov = density(ra[sel], dec[sel], allra, alldec, grid=grid)
         print(f"  [{lo:+.2f}, {hi:+.2f}): {sel.sum():,} stars, median-in-"
@@ -943,11 +991,13 @@ def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
     step = float(edges[1] - edges[0])
     hdr = w.to_header()
     hdr["NAXIS"] = 3
-    hdr["CTYPE3"], hdr["CRPIX3"] = "BINCENTR", 1.0
-    hdr["CRVAL3"] = float(edges[0]) + step / 2
+    hdr["CTYPE3"], hdr["CRPIX3"] = ("UPPEREDG" if cumulative
+                                    else "BINCENTR"), 1.0
+    hdr["CRVAL3"] = float(edges[1]) if cumulative else float(edges[0]) + step / 2
     hdr["CDELT3"] = step
     hdr["BUNIT"] = "stars/arcmin2"
     hdr["BINAXIS"] = bunit3
+    hdr["CUMULATV"] = (bool(cumulative), "frame i counts value < edge i+1")
     fits.PrimaryHDU(cube, hdr).writeto(f"{OUT}/{name}.fits", overwrite=True)
     vmax = float(np.nanpercentile(cube, 99.5))
     assemble_hips_cube(frames, f"{OUT}/{name}", crval3=hdr["CRVAL3"],
@@ -961,7 +1011,7 @@ def density_cube(ra, dec, value, edges, allra, alldec, name, level=None,
 def build_star_density(F, L, level=None, threads=8):
     """Total F212N and F480M star densities (saturated included) and the
     F212N 1-mag cube."""
-    ra, dec, m = F["ra"], F["dec"], F["m212"]
+    ra, dec, m = F["ra"], F["dec"], vegamag(F["m212"], "f212n")
     report_limits(F)
     arr, w, cov = density(ra, dec, ra, dec)
     print(f"all stars: {len(ra):,}; grid {arr.shape}, coverage "
@@ -981,12 +1031,13 @@ def build_star_density(F, L, level=None, threads=8):
     print(f"F212N magnitude cube, {len(edges) - 1} frames:")
     density_cube(ra, dec, m, edges, ra, dec,
                  "jwst-star-density-f212n-cube-hips", level, threads,
-                 bunit3="mag (F212N, AB)", em_range=F212N_EM_RANGE)
+                 bunit3="mag (F212N, Vega)", em_range=F212N_EM_RANGE)
 
 
 def build_colour(M, level=None, threads=8):
-    """Star counts in colour bins, and the median colour: the two
-    pseudo-extinction products.
+    """Star counts in colour bins (differential and cumulative), and the
+    median colour: the pseudo-extinction products.  The cubes are in Vega
+    magnitudes; the median-colour map stays in AB.
 
     Stars behind more dust are redder, so counts move from blue bins to red
     ones as extinction rises; the median colour of a cell tracks the typical
@@ -996,13 +1047,22 @@ def build_colour(M, level=None, threads=8):
     colours are the least reliable ones.
     """
     col, m480, ra, dec, sat = M["col"], M["m480"], M["ra"], M["dec"], M["sat"]
-    bright = np.isfinite(col) & (m480 < COLOUR_MAGLIMIT)
-    print(f"colour products: {bright.sum():,} of {len(col):,} matched stars "
-          f"with F480M < {COLOUR_MAGLIMIT}")
-    density_cube(ra[bright], dec[bright], col[bright], COLOUR_EDGES, ra, dec,
-                 "jwst-star-density-colour-cube-hips", level, threads,
-                 bunit3="mag (F212N-F480M, AB)",
+    vcol = vegacolour(col)
+    v480 = vegamag(m480, "f480m")
+    vbright = np.isfinite(vcol) & (v480 < COLOUR_MAGLIMIT)
+    print(f"colour cubes: {vbright.sum():,} of {len(col):,} matched stars "
+          f"with F480M < {COLOUR_MAGLIMIT} Vega")
+    density_cube(ra[vbright], dec[vbright], vcol[vbright], COLOUR_EDGES,
+                 ra, dec, "jwst-star-density-colour-cube-hips", level, threads,
+                 bunit3="mag (F212N-F480M, Vega)",
                  em_range=F480M_EM_RANGE)
+    print("cumulative colour cube n(<x):")
+    density_cube(ra[vbright], dec[vbright], vcol[vbright], COLOUR_EDGES,
+                 ra, dec, "jwst-star-density-colour-cumulative-cube-hips",
+                 level, threads, bunit3="mag (F212N-F480M < x, Vega)",
+                 em_range=F480M_EM_RANGE, cumulative=True)
+    # the median-colour map keeps its AB selection
+    bright = np.isfinite(col) & (m480 < MEDIAN_MAGLIMIT_AB)
 
     grid = make_grid(ra, dec, PIXEL_ARCSEC)
     use = bright & ~sat

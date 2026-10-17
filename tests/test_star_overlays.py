@@ -362,7 +362,8 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
 
     def fake_cube(*args, em_range=None, **kw):
         got[args[6]] = em_range
-        raise StopIteration  # the median-colour half of build_colour is not under test
+        if "cumulative" in args[6] or "f212n" in args[6]:
+            raise StopIteration  # the rest of each builder is not under test
 
     for fn in ("report_limits", "write_density", "build_hips"):
         monkeypatch.setattr(overlays, fn, lambda *a, **k: None)
@@ -378,6 +379,8 @@ def test_both_density_cubes_carry_a_wavelength_range(monkeypatch):
                                "sat": np.zeros(2, bool)})
     assert got["jwst-star-density-f212n-cube-hips"] == overlays.F212N_EM_RANGE
     assert (got["jwst-star-density-colour-cube-hips"]
+            == overlays.F480M_EM_RANGE)
+    assert (got["jwst-star-density-colour-cumulative-cube-hips"]
             == overlays.F480M_EM_RANGE)
     for lo, hi in got.values():
         assert 1e-6 < lo < hi < 6e-6
@@ -767,3 +770,62 @@ def test_rc_maps_take_their_coverage_from_every_matched_star(monkeypatch):
     x = np.zeros(n)
     overlays.build_rc(col, m480, x, x)
     assert calls == [n, n]
+
+
+def test_density_cubes_are_binned_in_vega(monkeypatch):
+    seen = {}
+
+    def fake_cube(ra, dec, value, edges, *args, cumulative=False, **kw):
+        seen[args[2]] = (value.copy(), kw.get("bunit3"), cumulative)
+        if "cumulative" in args[2] or "f212n" in args[2]:
+            raise StopIteration
+
+    for fn in ("report_limits", "write_density", "build_hips"):
+        monkeypatch.setattr(overlays, fn, lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "density",
+                        lambda *a, **k: (np.ones((2, 2)), None, np.ones((2, 2), bool)))
+    monkeypatch.setattr(overlays, "density_cube", fake_cube)
+    x = np.array([0.0, 1.0])
+    with pytest.raises(StopIteration):
+        overlays.build_star_density({"ra": x, "dec": x, "m212": x + 18},
+                                    {"ra": x, "dec": x, "m480": x + 15})
+    # F480M 20.5 AB = 17.06 Vega is past the 16.5 Vega limit; 19.5 AB is not
+    with pytest.raises(StopIteration):
+        overlays.build_colour({"ra": x, "dec": x, "col": np.array([0.0, 0.0]),
+                               "m480": np.array([19.5, 20.5]),
+                               "sat": np.zeros(2, bool)})
+    m212, unit, _ = seen["jwst-star-density-f212n-cube-hips"]
+    np.testing.assert_allclose(m212, x + 18 - 1.8268, atol=1e-3)
+    assert "Vega" in unit
+    for name, cumul in (("jwst-star-density-colour-cube-hips", False),
+                        ("jwst-star-density-colour-cumulative-cube-hips", True)):
+        col, unit, c = seen[name]
+        np.testing.assert_allclose(col, [1.6103], atol=1e-3)
+        assert "Vega" in unit and c is cumul
+    assert "jwst-star-density-colour-cumulative-cube-hips" in overlays.LAYERS
+
+
+def test_cumulative_cube_counts_everything_bluer(monkeypatch, tmp_path):
+    counts = []
+
+    def fake_density(ra, dec, allra, alldec, grid=None, **kw):
+        counts.append(len(ra))
+        return np.ones((2, 2)), overlays.WCS(naxis=2), np.ones((2, 2), bool)
+
+    monkeypatch.setattr(overlays, "OUT", str(tmp_path))
+    monkeypatch.setattr(overlays, "make_grid", lambda *a, **k: None)
+    monkeypatch.setattr(overlays, "density", fake_density)
+    monkeypatch.setattr(overlays, "build_hips", lambda *a, **k: None)
+    import jwst_rgb.hips_formats as hf
+    monkeypatch.setattr(hf, "assemble_hips_cube", lambda *a, **k: None)
+    v = np.array([-5.0, 0.2, 0.7, 1.2, 9.0])
+    z = np.zeros_like(v)
+    edges = np.array([0.0, 0.5, 1.0, 1.5])
+    overlays.density_cube(z, z, v, edges, z, z, "c", cumulative=True)
+    assert counts == [2, 3, 4]
+    hdr = overlays.fits.getheader(tmp_path / "c.fits")
+    assert hdr["CRVAL3"] == 0.5 and hdr["CTYPE3"] == "UPPEREDG"
+    counts.clear()
+    overlays.density_cube(z, z, v, edges, z, z, "d")
+    assert counts == [1, 1, 1]
+    assert overlays.fits.getheader(tmp_path / "d.fits")["CRVAL3"] == 0.25

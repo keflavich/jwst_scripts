@@ -216,6 +216,10 @@ SPECIAL = {
         "jwst-gc-treasury-star-density-colour-cube",
         "JWST GC Treasury: stellar surface density in F212N-F480M color "
         "bins, a pseudo-extinction map (cube)"),
+    "jwst-star-density-colour-cumulative-cube-hips": (
+        "jwst-gc-treasury-star-density-colour-cumulative-cube",
+        "JWST GC Treasury: cumulative stellar surface density n(<x) bluer "
+        "than F212N-F480M = x, a pseudo-extinction map (cube)"),
     "jwst-median-colour-hips": (
         "jwst-gc-treasury-median-colour",
         "JWST GC Treasury: median F212N-F480M stellar color, a "
