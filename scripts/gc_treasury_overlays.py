@@ -173,7 +173,7 @@ CACHE_VERSION = 4
 F212N_SAT_LIMIT, F212N_CONFUSION_LIMIT = 15.0, 20.0
 # Colour cubes: 0.5-mag bins of F212N-F480M (Vega) covering the 0.5-99.5
 # percentile range of the 2026-09-23 matched set (0.1 .. 4.2 Vega; -1.5 .. 2.6
-# AB).  Restricted to F480M brighter than COLOUR_MAGLIMIT (Vega; 20.06 AB) so
+# AB).  Restricted to F480M brighter than COLOUR_MAGLIMIT (Vega; 19.94 AB) so
 # the counts are not dominated by completeness, which itself varies with
 # extinction.  The cumulative cube's frame x counts every star bluer than x,
 # with no blue limit, at each upper edge COLOUR_EDGES[1:].
