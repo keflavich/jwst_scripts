@@ -128,12 +128,54 @@ def fill_holes(d, percent=2, size=9):
     return out
 
 
-def write_inputs(name, paths, grid):
+def write_inputs(layer_dir, name, paths, grid, orientation_ok):
     """Record the residual mosaics a layer was built from, next to its PNG."""
-    out = f"{OUT}/{name}/{name}_inputs.json"
+    out = f"{layer_dir}/{name}_inputs.json"
     with open(out, "w") as fh:
-        json.dump({"layer": name, "grid": grid, "inputs": paths}, fh, indent=2)
+        json.dump({"layer": name, "grid": grid, "inputs": paths,
+                   "orientation_ok": orientation_ok}, fh, indent=2)
     return out
+
+
+def stage_verify_promote(name, write, check, paths, grid, out=None):
+    """Build a layer into ``<out>/<name>.new/``, verify it, then swap it in.
+
+    ``write(stage_dir)`` writes ``<name>.png`` and ``<name>_hips`` into
+    ``stage_dir``; ``check(hips_dir, grid)`` returns True / False / None.  Only
+    a True verdict replaces ``<out>/<name>/``, so a failed or inconclusive
+    rebuild never reaches the path ``coadd()`` reads, and the last verified
+    build stays in place.  The failed stage is left for inspection.
+    """
+    out = OUT if out is None else out
+    import shutil
+    final = f"{out}/{name}"
+    stage = f"{final}.new"
+    if os.path.exists(stage):
+        shutil.rmtree(stage)
+    os.makedirs(stage)
+    write(stage)
+    hips = f"{stage}/{name}_hips"
+    if not os.path.isdir(os.path.join(hips, "Norder3")):
+        raise RuntimeError(f"{name}: build produced no Norder3 in {stage}")
+    ok = check(hips, grid)
+    write_inputs(stage, name, paths, grid, ok)
+    print(f"{name}: orientation_ok={ok}", flush=True)
+    # None means the check could not decide (too little overlap or signal);
+    # a layer that was never verified is not published.
+    if ok is not True:
+        raise RuntimeError(f"{name}: orientation/astrometry check "
+                           f"{'failed' if ok is False else 'was inconclusive'}"
+                           f"; unverified build left in {stage}, "
+                           f"{final} unchanged")
+    old = f"{final}.old"
+    if os.path.exists(old):
+        shutil.rmtree(old)
+    if os.path.exists(final):
+        os.rename(final, old)
+    os.rename(stage, final)
+    if os.path.exists(old):
+        shutil.rmtree(old)
+    return final
 
 
 def build(name):
@@ -166,22 +208,17 @@ def build(name):
 
     scaled = np.dstack([stretch(rgb[:, :, k]) for k in range(3)])
 
-    os.makedirs(f"{OUT}/{name}", exist_ok=True)
-    png = f"{OUT}/{name}/{name}.png"
     avm = avm_for_saved_png(WCS(header), *shape)
-    save_rgb(np.nan_to_num(scaled), png, avm=avm, original_data=rgb,
-             hips=True, overwrite=True)
-    hips = f"{OUT}/{name}/{name}_hips"
-    if not os.path.isdir(os.path.join(hips, "Norder3")):
-        raise RuntimeError(f"{name}: build produced no Norder3")
-    write_inputs(name, paths, paths[fR])
-    ok = check_orientation(hips, paths[fR])
-    print(f"done: {png} orientation_ok={ok}", flush=True)
-    # None means the check could not decide (too little overlap or signal);
-    # a layer that was never verified is not published.
-    if ok is not True:
-        raise RuntimeError(f"{name}: orientation/astrometry check "
-                           f"{'failed' if ok is False else 'was inconclusive'}")
+
+    def write(stage):
+        # The stage dir is <name>.new/, so the HiPS dir is still named
+        # <name>_hips and properties_for() resolves the published identity.
+        save_rgb(np.nan_to_num(scaled), f"{stage}/{name}.png", avm=avm,
+                 original_data=rgb, hips=True, overwrite=True)
+
+    final = stage_verify_promote(name, write, check_orientation, paths,
+                                 paths[fR])
+    print(f"done: {final}", flush=True)
 
 
 def coadd():
