@@ -25,6 +25,7 @@ Usage:
 """
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -33,6 +34,9 @@ import numpy as np
 from astropy.io import fits
 from astropy.visualization import simple_norm
 from astropy.wcs import WCS
+
+# gc_treasury_rgb_images (check_orientation) sits next to this script.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 JWST = "/orange/adamginsburg/jwst"
 OUT = f"{JWST}/starsub_rgb"
@@ -124,8 +128,17 @@ def fill_holes(d, percent=2, size=9):
     return out
 
 
+def write_inputs(name, paths, grid):
+    """Record the residual mosaics a layer was built from, next to its PNG."""
+    out = f"{OUT}/{name}/{name}_inputs.json"
+    with open(out, "w") as fh:
+        json.dump({"layer": name, "grid": grid, "inputs": paths}, fh, indent=2)
+    return out
+
+
 def build(name):
-    from jwst_rgb.save_rgb import save_rgb, avm_for_saved_png
+    from jwst_rgb.save_rgb import save_rgb, avm_for_saved_png, fill_nan
+    from gc_treasury_rgb_images import check_orientation
 
     paths = inputs(name)
     fR, fG, fB = LAYERS[name][3]
@@ -139,6 +152,12 @@ def build(name):
     rgb = np.dstack([R, G, B])
 
     def stretch(c):
+        # Saturated cores are NaN in the residual mosaics; unfilled they render
+        # as nested coloured rings (seen in the W51 builder).  fill_nan fills
+        # interior islands from their border and leaves edge-touching ones NaN,
+        # which save_rgb makes transparent.  Same order as
+        # w51_starsub_tour_layers.py.
+        c = fill_nan(c.copy(), bad_data_min_threshold=None)
         c = fill_holes(c)
         good = np.isfinite(c) & (c != 0)
         norm = simple_norm(c[good], stretch="asinh", min_percent=5,
@@ -152,7 +171,17 @@ def build(name):
     avm = avm_for_saved_png(WCS(header), *shape)
     save_rgb(np.nan_to_num(scaled), png, avm=avm, original_data=rgb,
              hips=True, overwrite=True)
-    print(f"done: {png}")
+    hips = f"{OUT}/{name}/{name}_hips"
+    if not os.path.isdir(os.path.join(hips, "Norder3")):
+        raise RuntimeError(f"{name}: build produced no Norder3")
+    write_inputs(name, paths, paths[fR])
+    ok = check_orientation(hips, paths[fR])
+    print(f"done: {png} orientation_ok={ok}", flush=True)
+    # None means the check could not decide (too little overlap or signal);
+    # a layer that was never verified is not published.
+    if ok is not True:
+        raise RuntimeError(f"{name}: orientation/astrometry check "
+                           f"{'failed' if ok is False else 'was inconclusive'}")
 
 
 def coadd():
