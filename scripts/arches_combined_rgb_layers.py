@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-Arches cluster RGB + HiPS layers combining archival program 2045 with the
-10678 GC Treasury.
+Arches and Quintuplet cluster RGB + HiPS layers combining archival program
+2045 with the 10678 GC Treasury.
 
 Filters covering the Arches (RA 266.4604, Dec -28.8244):
 
@@ -23,12 +23,29 @@ from star matches 5-45" from the cluster centre (10678 minus 2045, mas):
 F212N +2..+4 RA, -7..-15 Dec; F480M vs F323N +0 RA, -10..-12 Dec, i.e. at
 most ~0.5 px on the 0.031"/px grid.
 
+--field quintuplet builds the same set for the Quintuplet (RA 266.5608, Dec
+-28.8541): F212N/F323N from 2045 o003, F480M from 10678 o068, o075, o076,
+o083, o084 (together 99.9% of the 2045 footprint), F770W from 10678 o060,
+o061, o068, o069 (49.9%: the MIRI layers cover about half the field).
+Coverage measured 2026-10-16 on a 40-px sample of the F212N grid.
+
 check_orientation validates the PNG -> AVM -> HiPS round trip against this
 layer's own pixels; it does not test astrometry between the two programs.
 
+--residual builds the same layers from the star-subtracted (DAOPHOT residual)
+mosaics: the cataloguing chain's last stage, resbgsub_m7 for NIRCam and
+resbgsub_m6 for MIRI.  A filter without a residual mosaic keeps its image
+(F770W o063/o064 have none yet); a layer with every channel star-subtracted
+is named `_residual`, a mixed one `_nirresidual`, and the inputs json records
+which file fed each channel.  Only F770W may fall back: a NIRCam filter
+missing any tile's residual is an error, since the fallback would label a
+layer `_nirresidual` with an unsubtracted NIRCam channel.  Over-subtracted
+star cores leave a long negative tail, so residual channels take their black
+point at the 5th percentile rather than the 1st.
+
 Usage:
-    arches_combined_rgb_layers.py --list
-    arches_combined_rgb_layers.py --index I     # layer I (SLURM array)
+    arches_combined_rgb_layers.py [--field quintuplet] --list [--residual]
+    arches_combined_rgb_layers.py [--field quintuplet] --index I [--residual]
 """
 import argparse
 import itertools
@@ -42,41 +59,103 @@ from astropy.wcs import WCS
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-ARCHES = "/orange/adamginsburg/jwst/arches"
-TREASURY = "/orange/adamginsburg/jwst/gc-treasury"
-OUT = f"{ARCHES}/combined_rgb"
+JWST = "/orange/adamginsburg/jwst"
+TREASURY = f"{JWST}/gc-treasury"
 
-INPUTS = {
-    212: [f"{ARCHES}/F212N/pipeline/"
-          "jw02045-o001_t001_nircam_clear-f212n-merged_i2d.fits"],
-    323: [f"{ARCHES}/F323N/pipeline/"
-          "jw02045-o001_t001_nircam_clear-f323n-merged_i2d.fits"],
-    480: [f"{TREASURY}/F480M/pipeline/"
-          f"jw10678-o{o}_t001_nircam_clear-f480m-merged_i2d.fits"
-          for o in ("078", "079")],
-    770: [f"{TREASURY}/F770W/pipeline/jw10678-o{o}_t001_miri_f770w_i2d.fits"
-          for o in ("063", "064")],
+# field -> (2045 observation, 10678 F480M tiles, 10678 F770W tiles)
+FIELDS = {
+    "arches": ("001", ("078", "079"), ("063", "064")),
+    "quintuplet": ("003", ("068", "075", "076", "083", "084"),
+                   ("060", "061", "068", "069")),
 }
-GRID = INPUTS[212][0]
+
+
+def field_inputs(field):
+    obs, nircam, miri = FIELDS[field]
+    root = f"{JWST}/{field}"
+    return {
+        212: [f"{root}/F212N/pipeline/"
+              f"jw02045-o{obs}_t001_nircam_clear-f212n-merged_i2d.fits"],
+        323: [f"{root}/F323N/pipeline/"
+              f"jw02045-o{obs}_t001_nircam_clear-f323n-merged_i2d.fits"],
+        480: [f"{TREASURY}/F480M/pipeline/"
+              f"jw10678-o{o}_t001_nircam_clear-f480m-merged_i2d.fits"
+              for o in nircam],
+        770: [f"{TREASURY}/F770W/pipeline/jw10678-o{o}_t001_miri_f770w_i2d.fits"
+              for o in miri],
+    }
+
+
+def use_field(field):
+    """Point the module at one field (default: arches)."""
+    global FIELD, OUT, INPUTS, GRID
+    FIELD = field
+    OUT = f"{JWST}/{field}/combined_rgb"
+    INPUTS = field_inputs(field)
+    GRID = INPUTS[212][0]
+
+
+use_field("arches")
+
+RESIDUAL_STAGE = {"nircam": "resbgsub_m7", "miri": "resbgsub_m6"}
+
+
+def residual_path(p):
+    """The final-stage residual mosaic next to image mosaic `p`, or None."""
+    base = os.path.basename(p)
+    if "_miri_" in base:
+        # jw10678-o063_t001_miri_f770w_i2d.fits ->
+        # jw10678-o063_t001_miri_clear-f770w-mirimage_resbgsub_m6_...
+        pre, filt = base.split("_miri_")[0], base.split("_miri_")[1][:-9]
+        name = (f"{pre}_miri_clear-{filt}-mirimage_{RESIDUAL_STAGE['miri']}"
+                "_daophot_basic_mergedcat_residual_i2d.fits")
+    else:
+        name = base.replace(
+            "_i2d.fits", f"_{RESIDUAL_STAGE['nircam']}"
+            "_daophot_basic_mergedcat_residual_i2d.fits")
+    r = os.path.join(os.path.dirname(p), name)
+    return r if os.path.exists(r) else None
+
+
+def channel_inputs(wave, residual):
+    """(paths, is_residual) for one filter."""
+    if residual:
+        res = [residual_path(p) for p in INPUTS[wave]]
+        if all(res):
+            return res, True
+        if wave != 770:
+            missing = [p for p, r in zip(INPUTS[wave], res) if r is None]
+            raise FileNotFoundError(f"F{wave}: no residual mosaic for {missing}")
+    return INPUTS[wave], False
+
 
 # All 3-of-4 combinations, reddest first.
 LAYERS = [tuple(sorted(c, reverse=True))
           for c in itertools.combinations(sorted(INPUTS), 3)]
 
 
-def layer_name(trip):
-    return "arches_2045_10678_RGB_{}-{}-{}".format(*trip)
+def layer_name(trip, residual=False):
+    name = "{}_2045_10678_RGB_{}-{}-{}".format(FIELD, *trip)
+    if residual:
+        n = sum(channel_inputs(w, True)[1] for w in trip)
+        name += "_residual" if n == 3 else "_nirresidual"
+    return name
 
 
-def load_on(wave, header, shape):
+def load_on(paths, header, shape):
     from reproject import reproject_interp
     from reproject.mosaicking import reproject_and_coadd
     wcs = WCS(header)
     inputs = []
-    for p in INPUTS[wave]:
+    for p in paths:
         with fits.open(p) as hl:
             inputs.append((hl["SCI"].data.astype(float), WCS(hl["SCI"].header)))
-    if len(inputs) == 1 and INPUTS[wave][0] == GRID:
+    # The grid file itself, or a residual written on the same pixel grid.
+    if (len(inputs) == 1 and inputs[0][0].shape == shape
+            and np.allclose(inputs[0][1].wcs.crval, wcs.wcs.crval)
+            and np.allclose(inputs[0][1].wcs.crpix, wcs.wcs.crpix)
+            and np.allclose(inputs[0][1].pixel_scale_matrix,
+                            wcs.pixel_scale_matrix)):
         return inputs[0][0]
     data, foot = reproject_and_coadd(inputs, wcs, shape_out=shape,
                                      reproject_function=reproject_interp,
@@ -92,7 +171,7 @@ def fill(c):
     return fill_nan(c.copy(), bad_data_min_threshold=None)
 
 
-def stretch(c, common, target=0.15, top_pct=99.9):
+def stretch(c, common, target=0.15, top_pct=99.9, lo_pct=1):
     """asinh stretch pinned so the median sky lands at `target`.
 
     The four filters span very different dynamic ranges over the common sky:
@@ -102,11 +181,12 @@ def stretch(c, common, target=0.15, top_pct=99.9):
     leaves it dim and the stars cyan.  Here each channel runs from its 1st to
     its 99.9th percentile and gets its own asinh softening, solved so that the
     median maps to `target`; a channel whose median already sits above
-    `target` stays linear.  Percentiles use only the common sky.
+    `target` stays linear.  Percentiles use only the common sky.  `lo_pct`
+    is the black point (5 for residuals, see the module docstring).
     """
     from scipy.optimize import brentq
     v = c[common & (c != 0)]
-    p1, p50, ptop = np.percentile(v, [1, 50, top_pct])
+    p1, p50, ptop = np.percentile(v, [lo_pct, 50, top_pct])
     y = np.clip((c - p1) / (ptop - p1), 0, 1)
     m = (p50 - p1) / (ptop - p1)
     if m >= target:
@@ -134,20 +214,22 @@ def write_check_reference(name, scaled, header):
     return path
 
 
-def build(trip):
+def build(trip, residual=False):
     from jwst_rgb.save_rgb import save_rgb, avm_for_saved_png
     from gc_treasury_rgb_images import check_orientation
 
-    name = layer_name(trip)
+    name = layer_name(trip, residual)
     header = fits.getheader(GRID, ext=("SCI", 1))
     shape = (header["NAXIS2"], header["NAXIS1"])
-    rgb = np.dstack([load_on(w, header, shape) for w in trip])
+    chans = {w: channel_inputs(w, residual) for w in trip}
+    rgb = np.dstack([load_on(chans[w][0], header, shape) for w in trip])
     filled = [fill(rgb[:, :, k]) for k in range(3)]
     # Show only sky all three filters cover: elsewhere one or two channels
     # are empty and the layer paints false single-colour zones.  The NaN
     # outside touches the image edge, so save_rgb makes it transparent.
     common = np.logical_and.reduce([np.isfinite(c) for c in filled])
-    scaled = np.dstack([stretch(c, common) for c in filled])
+    scaled = np.dstack([stretch(c, common, lo_pct=5 if chans[w][1] else 1)
+                        for c, w in zip(filled, trip)])
 
     os.makedirs(f"{OUT}/{name}", exist_ok=True)
     png = f"{OUT}/{name}/{name}.png"
@@ -160,7 +242,9 @@ def build(trip):
         raise RuntimeError(f"{name}: build produced no Norder3")
     with open(f"{OUT}/{name}/{name}_inputs.json", "w") as fh:
         json.dump({"layer": name, "grid": GRID,
-                   "inputs": {str(w): INPUTS[w] for w in trip}}, fh, indent=2)
+                   "inputs": {str(w): chans[w][0] for w in trip},
+                   "star_subtracted": {str(w): chans[w][1] for w in trip}},
+                  fh, indent=2)
     ok = check_orientation(hips, write_check_reference(name, scaled, header))
     print(f"done: {hips} orientation_ok={ok}", flush=True)
     if ok is not True:
@@ -173,15 +257,20 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--index", type=int, help="layer by position")
+    ap.add_argument("--field", choices=sorted(FIELDS), default="arches")
+    ap.add_argument("--residual", action="store_true",
+                    help="build from the star-subtracted mosaics")
     args = ap.parse_args()
+    use_field(args.field)
     if args.list:
-        for w, paths in INPUTS.items():
+        for w in INPUTS:
+            paths, res = channel_inputs(w, args.residual)
             for p in paths:
-                print(f"F{w}: exists={os.path.exists(p)} {p}")
+                print(f"F{w}: residual={res} exists={os.path.exists(p)} {p}")
         for i, trip in enumerate(LAYERS):
-            print(f"layer {i}: {layer_name(trip)}")
+            print(f"layer {i}: {layer_name(trip, args.residual)}")
     else:
-        build(LAYERS[args.index])
+        build(LAYERS[args.index], args.residual)
 
 
 if __name__ == "__main__":
