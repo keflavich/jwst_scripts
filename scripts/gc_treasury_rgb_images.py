@@ -132,10 +132,15 @@ MAST_I2D = re.compile(
 RESIDUAL_STAGES = ("m2", "m3", "m4", "resbgsub_m5", "resbgsub_m6",
                    "resbgsub_m7")
 RESIDUAL_FINAL_STAGE = {"nircam": "resbgsub_m7", "miri": "resbgsub_m6"}
+# A PSF-model qualifier can sit between the background token and the stage:
+# runs with the hybrid ePSF write ..._resbgsub_hybpsf_m7_..., and the earlier
+# STPSF runs of the same tile, ..._resbgsub_m7_..., stay beside them.  Without
+# the optional group the hybrid-PSF residuals never matched, and every tile
+# was built from whichever older STPSF residual was left on disk.
 RESIDUAL_I2D = re.compile(
     r"^jw\d+-(o\d+)_t001_"
     r"(?:nircam_clear-[a-z0-9]+-(merged|nrca|nrcb)|miri_clear-[a-z0-9]+-mirimage)"
-    r"_(" + "|".join(RESIDUAL_STAGES) + r")"
+    r"_(resbgsub_)?(?:[a-z]+psf_)?(m[2-7])"
     r"_daophot_basic_mergedcat_residual_i2d\.fits$")
 
 
@@ -159,15 +164,25 @@ def find_residual_i2d(filt, final_only=True):
         m = RESIDUAL_I2D.match(os.path.basename(p))
         if not m:
             continue
-        obs, mod, stage = m.groups()
+        obs, mod, bgsub, mstage = m.groups()
+        stage = (bgsub or "") + mstage
+        if stage not in RESIDUAL_STAGES:
+            continue
         key = f"{obs}_{mod}" if mod in ("nrca", "nrcb") else obs
         rank = RESIDUAL_STAGES.index(stage)
         inst = "nircam" if mod else "miri"
         if final_only and rank < RESIDUAL_STAGES.index(RESIDUAL_FINAL_STAGE[inst]):
             continue
-        if key not in best or rank > best[key][0]:
-            best[key] = (rank, p)
-    out = {k: p for k, (_, p) in best.items()}
+        if key in best and rank < best[key][0]:
+            continue
+        # Two residuals at the same stage are two runs of the chain (e.g. the
+        # STPSF and hybrid-PSF runs); the newer one is the current catalogue.
+        mtime = source_mtime(p)
+        if mtime is None:
+            continue
+        if key not in best or rank > best[key][0] or mtime > best[key][1]:
+            best[key] = (rank, mtime, p)
+    out = {k: p for k, (_, _, p) in best.items()}
     for key in [k for k in out if "_nrc" not in k]:
         for mod in ("nrca", "nrcb"):
             out.pop(f"{key}_{mod}", None)

@@ -75,6 +75,57 @@ def test_miri_final_stage_is_m6(residual_tree):
         "o132": made[("o132", "miri", "resbgsub_m6")]}
 
 
+def test_a_hybrid_psf_residual_is_found(tmp_path, monkeypatch):
+    """..._resbgsub_hybpsf_m7_... is the final stage too, not an unknown name."""
+    monkeypatch.setattr(G, "BASE", str(tmp_path))
+    filt = G.FILTERS[0]
+    hyb = _touch(tmp_path, filt, NIRCAM.format(
+        obs="o106", filt=filt, mod="merged", stage="resbgsub_hybpsf_m7"))
+    _touch(tmp_path, filt, NIRCAM.format(
+        obs="o107", filt=filt, mod="merged", stage="resbgsub_hybpsf_m6"))
+    assert G.find_residual_i2d(filt) == {"o106": hyb}
+
+
+@pytest.mark.parametrize("newer", ["stpsf", "hybpsf"])
+def test_the_newer_run_wins_at_the_same_stage(tmp_path, monkeypatch, newer):
+    """Two runs of the chain leave two final residuals; take the newer one."""
+    monkeypatch.setattr(G, "BASE", str(tmp_path))
+    filt = G.FILTERS[0]
+    paths = {
+        "stpsf": _touch(tmp_path, filt, NIRCAM.format(
+            obs="o108", filt=filt, mod="merged", stage="resbgsub_m7")),
+        "hybpsf": _touch(tmp_path, filt, NIRCAM.format(
+            obs="o108", filt=filt, mod="merged", stage="resbgsub_hybpsf_m7")),
+    }
+    older = "stpsf" if newer == "hybpsf" else "hybpsf"
+    now = time.time()
+    os.utime(paths[older], (now - 3600, now - 3600))
+    os.utime(paths[newer], (now, now))
+    assert G.find_residual_i2d(filt) == {"o108": paths[newer]}
+
+
+def test_a_later_stage_beats_a_newer_earlier_stage(tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "BASE", str(tmp_path))
+    filt = G.FILTERS[0]
+    m7 = _touch(tmp_path, filt, NIRCAM.format(
+        obs="o109", filt=filt, mod="merged", stage="resbgsub_m7"))
+    m6 = _touch(tmp_path, filt, NIRCAM.format(
+        obs="o109", filt=filt, mod="merged", stage="resbgsub_hybpsf_m6"))
+    now = time.time()
+    os.utime(m7, (now - 3600, now - 3600))
+    os.utime(m6, (now, now))
+    assert G.find_residual_i2d(filt, final_only=False) == {"o109": m7}
+
+
+def test_a_stale_tagged_hybrid_residual_is_not_used(tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "BASE", str(tmp_path))
+    filt = G.FILTERS[0]
+    _touch(tmp_path, filt, NIRCAM.format(
+        obs="o110", filt=filt, mod="merged",
+        stage="resbgsub_hybpsf_m7").replace(".fits", "_im0_badastrom.fits"))
+    assert G.find_residual_i2d(filt) == {}
+
+
 def _all_flavours():
     out = [dict(miri=False, bgmatch=False, stretch=s, residual=r)
            for r, s in G.nircam_flavours()]
