@@ -169,11 +169,13 @@ def test_a_coadd_glob_matches_only_its_own_flavour(fl):
     assert _layer(fl).endswith(tail)
 
 
-def test_residual_has_no_pct_or_bgmatch_flavour():
-    for bad in ("pct", "bgmatch"):
-        with pytest.raises(ValueError):
-            G.check_residual_stretch(bad, True)
-        G.check_residual_stretch(bad, False)       # images keep them
+def test_residual_has_no_pct_flavour():
+    with pytest.raises(ValueError):
+        G.check_residual_stretch("pct", True)
+    G.check_residual_stretch("pct", False)         # images keep it
+    # NIRCam residual bgmatch exists, with offsets solved on the residuals;
+    # MIRI still has no residual bgmatch
+    G.check_residual_stretch("bgmatch", True)
     with pytest.raises(ValueError):
         G.build_miri_obs("o132", bgmatch=True, residual=True)
 

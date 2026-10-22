@@ -173,3 +173,160 @@ def test_background_match_binning_stays_off():
     corrupting every field's correction.  Re-run the comparison first.
     """
     assert G.BG_MATCH_BIN == 1
+
+
+# ---- the residual bgmatch flavour: its own table, residual vminmax's cuts ----
+#
+# The residuals keep the diffuse background, so the image layers' seams show
+# in them too, and they get a bgmatch flavour of their own.  Its offsets are
+# solved on the residual mosaics into a separate table; residual vminmax and
+# log stay uncorrected.  These pin that neither table stands in for the other.
+
+def _tables(tmp_path, monkeypatch, image=None, residual=None):
+    """Point both match tables at tmp files; write the ones given."""
+    paths = {}
+    for attr, doc in (("NIRCAM_MATCH_JSON", image),
+                      ("NIRCAM_RESIDUAL_MATCH_JSON", residual)):
+        p = tmp_path / f"{attr.lower()}.json"
+        if doc is not None:
+            p.write_text(json.dumps(doc))
+        monkeypatch.setattr(G, attr, str(p))
+        paths[attr] = p
+    return paths
+
+
+def _offsets(obs):
+    return {"filters": {f: {"offsets": {obs: 0.25}} for f in G.FILTERS}}
+
+
+def test_residual_bgmatch_takes_residual_vminmax_cuts():
+    assert G.stretch_match("bgmatch", residual=True) == "nircam_residual"
+    assert G.stretch_kwargs("bgmatch", residual=True) == \
+        G.stretch_kwargs("vminmax", residual=True)
+    assert not G.stretch_cuts_from_match("bgmatch", residual=True)
+    # the image flavour keeps taking its cuts from its own table
+    assert G.stretch_match("bgmatch") == "nircam"
+    assert G.stretch_cuts_from_match("bgmatch")
+
+
+def test_residual_bgmatch_names():
+    assert G.png_for("o105", "bgmatch", True).endswith(
+        "GCTreasury_o105_RGB_480-mean-212_residual_bgmatch.png")
+    assert G.hips_for("o105", "bgmatch", True).endswith(
+        "GCTreasury_o105_RGB_480-mean-212_residual_bgmatch_hips")
+    assert G.coadd_name_for("bgmatch", residual=True) == \
+        "jwst_gc_treasury_residual_bgmatch_hips"
+    assert G.nircam_match_json("nircam_residual") != G.nircam_match_json()
+
+
+@pytest.mark.parametrize("covered_by", ["image", "residual"])
+def test_each_bgmatch_flavour_reads_only_its_own_table(
+        tmp_path, monkeypatch, covered_by):
+    """A field covered by the other flavour's table is still NOMATCH."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    _tables(tmp_path, monkeypatch,
+            image=_offsets("o127") if covered_by == "image" else None,
+            residual=_offsets("o127") if covered_by == "residual" else None)
+    inv = _inv(tmp_path, "o127")
+    image = G.needs_build("o127", inv, stretch="bgmatch")
+    resid = G.needs_build("o127", inv, stretch="bgmatch", residual=True)
+    if covered_by == "image":
+        assert (image, resid) == ("no RGB yet", "NOMATCH")
+    else:
+        assert (image, resid) == ("NOMATCH", "no RGB yet")
+
+
+def test_a_refreshed_residual_match_rebuilds_only_the_residual_flavour(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    paths = _tables(tmp_path, monkeypatch, image=_offsets("o127"),
+                    residual=_offsets("o127"))
+    inv = _inv(tmp_path, "o127")
+    old = time.time() - 500
+    for residual, stretch in ((False, "bgmatch"), (True, "bgmatch"),
+                              (True, "vminmax")):
+        png = G.png_for("o127", stretch, residual)
+        open(png, "wb").close()
+        os.utime(png, (old, old))
+        os.makedirs(os.path.join(G.hips_for("o127", stretch, residual),
+                                 "Norder3"))
+    for p in paths.values():
+        os.utime(p, (old - 100, old - 100))
+    assert G.needs_build("o127", inv, stretch="bgmatch") is None
+    assert G.needs_build("o127", inv, stretch="bgmatch", residual=True) is None
+
+    now = time.time()
+    os.utime(paths["NIRCAM_RESIDUAL_MATCH_JSON"], (now, now))
+    assert G.needs_build("o127", inv, stretch="bgmatch", residual=True) == \
+        "background match is newer than the png"
+    assert G.needs_build("o127", inv, stretch="bgmatch") is None
+    # the uncorrected residual layer reads neither table
+    assert G.needs_build("o127", inv, stretch="vminmax", residual=True) is None
+
+    os.utime(paths["NIRCAM_RESIDUAL_MATCH_JSON"], (old - 100, old - 100))
+    os.utime(paths["NIRCAM_MATCH_JSON"], (now, now))
+    assert G.needs_build("o127", inv, stretch="bgmatch") == \
+        "background match is newer than the png"
+    assert G.needs_build("o127", inv, stretch="bgmatch", residual=True) is None
+
+
+def test_residual_match_writes_offsets_to_its_own_table(tmp_path, monkeypatch):
+    """Offsets and pairs only, never the image table, and a residual older
+    than its image left out of the solve."""
+    paths = _tables(tmp_path, monkeypatch)
+    old = time.time() - 86400
+
+    def aged(name, t):
+        p = tmp_path / name
+        p.write_bytes(b"0")
+        os.utime(p, (t, t))
+        return str(p)
+    obs = ("o1", "o2", "o3")
+    res = {f: {o: aged(f"res_{f}_{o}", old) for o in obs} for f in G.FILTERS}
+    img = {f: {o: aged(f"img_{f}_{o}", old - 3600) for o in obs}
+           for f in G.FILTERS}
+    # o3's F480M image was re-reduced after its residual was written
+    os.utime(img["f480m"]["o3"], (old + 3600, old + 3600))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        (res if residual else img), list(obs)))
+    calls = []
+
+    def measure(p):
+        keys = sorted(p)
+        calls.append(keys)
+        return keys, [(a, b, 0.5, 1000) for a, b in zip(keys, keys[1:])]
+    monkeypatch.setattr(G, "miri_measure_pairs", measure)
+    assert G.cmd_nircam_residual_match() == 0
+    assert calls == [["o1", "o2"], ["o1", "o2", "o3"]]       # f480m, f212n
+    doc = json.loads(paths["NIRCAM_RESIDUAL_MATCH_JSON"].read_text())
+    assert set(doc) == {"filters"}
+    for f in G.FILTERS:
+        assert set(doc["filters"][f]) == {"offsets", "pairs"}
+    assert set(doc["filters"]["f480m"]["offsets"]) == {"o1", "o2"}
+    assert not paths["NIRCAM_MATCH_JSON"].exists()
+    assert G.load_nircam_match("nircam_residual") == doc
+    assert G.load_nircam_match() is None
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_cli_nircam_match_picks_the_table(monkeypatch, residual):
+    import sys
+    called = []
+    monkeypatch.setattr(G, "cmd_nircam_match",
+                        lambda: called.append("image") or 0)
+    monkeypatch.setattr(G, "cmd_nircam_residual_match",
+                        lambda: called.append("residual") or 0)
+    monkeypatch.setattr(sys, "argv", ["gc_treasury_rgb_images.py",
+                                      "--nircam-match"] +
+                        (["--residual"] if residual else []))
+    assert G.main() == 0
+    assert called == (["residual"] if residual else ["image"])
+
+
+def test_cli_refuses_a_residual_miri_match(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "argv", ["gc_treasury_rgb_images.py",
+                                      "--miri-match", "--residual"])
+    with pytest.raises(SystemExit) as exc:
+        G.main()
+    assert exc.value.code == 2

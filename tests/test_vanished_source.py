@@ -72,7 +72,7 @@ def test_needs_build_still_settles_and_builds_when_the_file_is_there(settled,
     monkeypatch.setattr(G, "png_for",
                         lambda obs, stretch=None, residual=False:
                         str(tmp_path / "none.png"))
-    monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
+    monkeypatch.setattr(G, "stretch_match", lambda stretch, residual=False: False)
     assert G.needs_build(OBS, settled) == "no RGB yet"
     now = time.time()
     os.utime(settled[G.FILTERS[0]][OBS], (now, now))
@@ -92,7 +92,7 @@ def test_a_source_newer_than_the_rgb_still_rebuilds(settled, tmp_path,
     monkeypatch.setattr(G, "hips_for",
                         lambda obs, stretch=None, residual=False:
                         str(tmp_path / "hips"))
-    monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
+    monkeypatch.setattr(G, "stretch_match", lambda stretch, residual=False: False)
     why = G.needs_build(OBS, settled)
     assert why and "newer than the RGB" in why
 
@@ -108,7 +108,7 @@ def test_the_second_stat_site_also_reports_vanished(settled, tmp_path,
     monkeypatch.setattr(G, "hips_for",
                         lambda obs, stretch=None, residual=False:
                         str(tmp_path / "hips"))
-    monkeypatch.setattr(G, "stretch_match", lambda stretch: False)
+    monkeypatch.setattr(G, "stretch_match", lambda stretch, residual=False: False)
 
     real = G.source_mtime
     calls = []
