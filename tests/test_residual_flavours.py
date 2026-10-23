@@ -412,7 +412,7 @@ def test_the_lock_report_reads_each_flavour_from_its_own_inventory(monkeypatch):
     monkeypatch.setattr(G, "miri_needs_build",
                         lambda o, s, bg=False, residual=False, **k:
                         "no MIRI png yet")
-    lines = G._pending_summary()
+    lines, _ = G._pending_summary()
     assert "o002 NIRCam/vminmax -- no RGB yet" in lines
     assert "o001 NIRCam/residual/vminmax -- no RGB yet" in lines
     assert not [ln for ln in lines if ln.startswith("o002 NIRCam/residual")]
@@ -442,7 +442,7 @@ def test_the_lock_report_gives_residual_verdicts_their_image(monkeypatch):
 
     monkeypatch.setattr(G, "needs_build", needs_build)
     monkeypatch.setattr(G, "miri_needs_build", miri_needs_build)
-    lines = G._pending_summary()
+    lines, _ = G._pending_summary()
     assert not [ln for ln in lines if "residual" in ln or "MIRI+res" in ln]
     held = [(kind, img) for kind, residual, img in seen if residual]
     assert held and all(img is image if kind == "nircam" else img == "i"
@@ -722,7 +722,7 @@ def test_the_lock_report_lists_mono_work(monkeypatch):
         seen.append((filt, image_src))
         return "no png yet"
     monkeypatch.setattr(G, "mono_needs_build", mono_needs_build)
-    lines = G._pending_summary()
+    lines, _ = G._pending_summary()
     for f in G.MONO_FILTERS:
         assert f"o001 {f.upper()}+res -- no png yet" in lines
     assert seen == [(f, "i") for f in G.MONO_FILTERS]

@@ -142,4 +142,4 @@ def test_pending_summary_does_not_list_a_vanished_tile_as_work(monkeypatch):
                                       for f in G.FILTERS}, [OBS]))
     monkeypatch.setattr(G, "find_i2d", lambda filt, **kw: {})
     monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **kw: {})
-    assert G._pending_summary() == []
+    assert G._pending_summary() == ([], [])

@@ -330,3 +330,146 @@ def test_cli_refuses_a_residual_miri_match(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         G.main()
     assert exc.value.code == 2
+
+
+# ---- partial coverage, the lock report, and the exit-1 retry ----------------
+#
+# The per-filter CHAIN skip in cmd_nircam_residual_match can leave a tile with
+# an offset in one filter only.  needs_build calls that NOMATCH, the same bare
+# string callers compare; --list says which filter is missing, and the lock
+# report counts NOMATCH fields per flavour without calling them pending work.
+
+def _fields(tmp_path, obs):
+    """One settled inventory holding every field in `obs`."""
+    inv = {f: {} for f in G.FILTERS}
+    for o in obs:
+        for f, paths in _inv(tmp_path, o).items():
+            inv[f].update(paths)
+    return inv
+
+
+PARTIAL = {"filters": {"f480m": {"offsets": {"o127": 0.1}},
+                       "f212n": {"offsets": {"o127": 0.1, "o128": 0.2}}}}
+
+
+def test_partial_coverage_is_still_the_bare_nomatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    _tables(tmp_path, monkeypatch, image=PARTIAL, residual=PARTIAL)
+    inv = _fields(tmp_path, ("o127", "o128", "o129"))
+    for residual in (False, True):
+        kw = dict(stretch="bgmatch", residual=residual,
+                  image_inv=inv if residual else None)
+        assert G.needs_build("o127", inv, **kw) == "no RGB yet"
+        assert G.needs_build("o128", inv, **kw) == "NOMATCH"
+        assert G.needs_build("o129", inv, **kw) == "NOMATCH"
+    assert G.missing_offsets("o128", PARTIAL) == ["f480m"]
+    assert G.missing_offsets("o129", PARTIAL) == list(G.FILTERS)
+    assert G.missing_offsets("o127", PARTIAL) == []
+    assert G.missing_offsets("o127", None) == list(G.FILTERS)
+
+
+def test_list_names_the_filter_a_partial_match_is_missing(tmp_path,
+                                                          monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    _tables(tmp_path, monkeypatch, image=PARTIAL, residual=PARTIAL)
+    inv = _fields(tmp_path, ("o127", "o128", "o129"))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        inv, ["o127", "o128", "o129"]))
+    lines = G._match_status_lines(inv)
+    # once for the image flavour, once for the residual one
+    assert lines.count("    NOMATCH (no F480M offset) (1): o128") == 2
+    assert lines.count("    NOMATCH (not in the table) (1): o129") == 2
+    assert lines.count("    no RGB yet (1): o127") == 2
+
+
+def test_list_keeps_the_bare_nomatch_without_a_table(tmp_path, monkeypatch):
+    """The header line already says the table is not on disk."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    _tables(tmp_path, monkeypatch)
+    inv = _fields(tmp_path, ("o127",))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (inv, ["o127"]))
+    lines = G._match_status_lines(inv)
+    assert lines.count("    NOMATCH (1): o127") == 2
+    assert sum("not on disk" in ln for ln in lines) == 2
+
+
+def test_list_output_keeps_the_line_the_cron_greps_for(tmp_path, monkeypatch,
+                                                       capsys):
+    """gc_treasury_cron.sh submits only when --list prints "complete in all 2
+    filters: o..."; the match block must neither drop nor imitate it."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    monkeypatch.setattr(G, "BASE", str(tmp_path))
+    _tables(tmp_path, monkeypatch, image=PARTIAL, residual=PARTIAL)
+    inv = _fields(tmp_path, ("o127", "o128"))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        inv, ["o127", "o128"]))
+    monkeypatch.setattr(G, "find_i2d", lambda f, exposure_level=False: {})
+    assert G.cmd_list() == 0
+    out = capsys.readouterr().out.splitlines()
+    grepped = [ln for ln in out if "complete in all 2 filters: o" in ln]
+    assert grepped == ["  complete in all 2 filters: o127, o128"]
+    assert "    NOMATCH (no F480M offset) (1): o128" in out
+
+
+def test_lock_report_counts_nomatch_per_flavour_outside_pending(
+        tmp_path, monkeypatch):
+    """#55 dropped NOMATCH from the pending list, which also hid the image
+    bgmatch fields; they come back as one waiting line per flavour."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    image = {"filters": {f: {"offsets": {"o127": 0.1}} for f in G.FILTERS}}
+    _tables(tmp_path, monkeypatch, image=image, residual=PARTIAL)
+    inv = _fields(tmp_path, ("o127", "o128", "o129"))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        inv, ["o127", "o128", "o129"]))
+    monkeypatch.setattr(G, "find_i2d", lambda filt, **k: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {})
+    pending, waiting = G._pending_summary()
+    assert waiting == [
+        "2 field(s) waiting on --nircam-match (NIRCam/bgmatch)",
+        "2 field(s) waiting on --nircam-match --residual "
+        "(NIRCam/residual/bgmatch)"]
+    assert "o127 NIRCam/bgmatch -- no RGB yet" in pending
+    assert "o127 NIRCam/residual/bgmatch -- no RGB yet" in pending
+    assert not [ln for ln in pending
+                if "bgmatch" in ln and not ln.startswith("o127 ")]
+    # the uncorrected flavours of the same fields are ordinary pending work
+    assert "o129 NIRCam/vminmax -- no RGB yet" in pending
+
+
+def test_lock_report_has_no_waiting_line_when_every_field_is_matched(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    _tables(tmp_path, monkeypatch, image=_offsets("o127"),
+            residual=_offsets("o127"))
+    inv = _fields(tmp_path, ("o127",))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (inv, ["o127"]))
+    monkeypatch.setattr(G, "find_i2d", lambda filt, **k: {})
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {})
+    pending, waiting = G._pending_summary()
+    assert waiting == []
+    assert "o127 NIRCam/bgmatch -- no RGB yet" in pending
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_an_unsolvable_match_exits_1_and_writes_nothing(
+        tmp_path, monkeypatch, capsys, residual):
+    """Exit 1 is the retry signal for a SLURM solve job: nothing written, the
+    table on disk unchanged, and the log says to rerun later."""
+    before = {"filters": {f: {"offsets": {"o1": 0.5}} for f in G.FILTERS}}
+    paths = _tables(tmp_path, monkeypatch, image=before, residual=before)
+    inv = _fields(tmp_path, ("o1",))            # one mosaic: nothing to tie
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (inv, ["o1"]))
+
+    def measure(p):
+        raise AssertionError("measured with fewer than two mosaics")
+    monkeypatch.setattr(G, "miri_measure_pairs", measure)
+    texts = {k: p.read_text() for k, p in paths.items()}
+    run = G.cmd_nircam_residual_match if residual else G.cmd_nircam_match
+    assert run() == 1
+    assert {k: p.read_text() for k, p in paths.items()} == texts
+    out = capsys.readouterr().out
+    cli = "--nircam-match --residual" if residual else "--nircam-match"
+    fn = paths["NIRCAM_RESIDUAL_MATCH_JSON" if residual
+               else "NIRCAM_MATCH_JSON"]
+    assert f"nothing written; {fn.name} is unchanged" in out
+    assert f"Exit 1 means rerun {cli} later" in out
