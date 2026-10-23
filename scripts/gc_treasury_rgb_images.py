@@ -338,7 +338,53 @@ def cmd_list():
     for o in ready:
         for f in FILTERS:
             print(f"    {o} {f.upper():7s} {inv[f][o]}")
+    # The background-matched flavours wait on a solve that no tick runs, so
+    # say which fields each one's table leaves out.  Caught narrowly and
+    # reported rather than raised: the cron reads a non-zero --list as "--list
+    # FAILED; not submitting", and a bad match table must not stop every
+    # other flavour from building.
+    try:
+        lines = _match_status_lines(inv)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        lines = [f"\n  (could not report the background-matched flavours: "
+                 f"{type(exc).__name__}: {exc})"]
+    for ln in lines:
+        print(ln)
     return 0
+
+
+def _match_status_lines(image_inv):
+    """--list lines for each background-matched NIRCam flavour.
+
+    Names the flavour's own match table and whether it is on disk, then
+    groups every field complete in both filters by its needs_build verdict --
+    NOMATCH for each field the table does not cover.
+    """
+    out = []
+    invs = {False: image_inv}
+    for residual, stretch in nircam_flavours():
+        table = stretch_match(stretch, residual)
+        if not table:
+            continue
+        if residual not in invs:
+            invs[residual] = inventory(residual=residual)[0]
+        inv = invs[residual]
+        ready = sorted(o for o in set().union(*inv.values())
+                       if all(o in inv[f] for f in FILTERS))
+        fn = nircam_match_json(table)
+        tag = f"residual/{stretch}" if residual else stretch
+        out.append(f"\n  {tag}: {os.path.basename(fn)} "
+                   f"{'on disk' if os.path.exists(fn) else 'not on disk'}; "
+                   f"{len(ready)} field(s) complete in all {len(FILTERS)} "
+                   f"filters")
+        verdicts = {}
+        for o in ready:
+            why = needs_build(o, inv, stretch=stretch, residual=residual,
+                              image_inv=image_inv if residual else None)
+            verdicts.setdefault(why or "up to date", []).append(o)
+        for why, obs in sorted(verdicts.items()):
+            out.append(f"    {why} ({len(obs)}): {', '.join(obs)}")
+    return out
 
 
 def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
@@ -350,7 +396,10 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     without rebuilding -- and risking -- the ones already verified.
 
     `residual` builds from the star-subtracted mosaics (find_residual_i2d)
-    instead of the images, with the RESIDUAL_STRETCHES cuts.
+    instead of the images, with the RESIDUAL_STRETCHES cuts.  Residual
+    bgmatch removes the offsets solved on the residuals
+    (nircam_residual_background_match.json) and then applies the residual
+    vminmax cuts; it never reads the image table.
     """
     check_residual_stretch(stretch, residual)
     from astropy.io import fits
@@ -390,16 +439,21 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
             twcs, shape_out=(ny, nx))
 
     match = None
-    if stretch_match(stretch):
-        match = load_nircam_match()
+    table = stretch_match(stretch, residual)
+    if table:
+        # Each flavour reads its own table and nothing else; see
+        # nircam_match_json.
+        match = load_nircam_match(table)
+        res = " residual" if residual else ""
+        cli = f"--nircam-match{' --residual' if residual else ''}"
         if not match:
-            raise RuntimeError(f"{obs}: no background match on disk; "
-                               f"run --nircam-match first")
+            raise RuntimeError(f"{obs}: no{res} background match on disk; "
+                               f"run {cli} first")
         missing = [f for f in FILTERS
                    if obs not in match["filters"].get(f, {}).get("offsets", {})]
         if missing:
-            raise RuntimeError(f"{obs}: no background offset for "
-                               f"{', '.join(missing)}; re-run --nircam-match")
+            raise RuntimeError(f"{obs}: no{res} background offset for "
+                               f"{', '.join(missing)}; re-run {cli}")
         # Subtract BEFORE the green channel is formed: green is the pixelwise
         # mean of the two filters, so correcting it separately afterwards would
         # not be the mean of the corrected pair.
@@ -426,9 +480,11 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     # simple_norm call -- function and cuts -- applied to the RAW FITS values
     # in MJy/sr --
     # long_/short_ come off the i2d untouched and mid is their pixelwise mean,
-    # so vmin/vmax are in MJy/sr as intended.
-    kw = stretch_kwargs(stretch)
-    if stretch_match(stretch):
+    # so vmin/vmax are in MJy/sr as intended.  Residual bgmatch goes down the
+    # second branch: its offsets are already removed above, and its entry
+    # carries vminmax's cuts, applied exactly as residual vminmax applies them.
+    kw = stretch_kwargs(stretch, residual)
+    if stretch_cuts_from_match(stretch, residual):
         # Cuts come from the match table, one pair per channel, so a given
         # MJy/sr is one colour across the whole mosaic.  Green is the pixelwise
         # mean of the two filters, so its limits are the mean of theirs: a
@@ -591,6 +647,12 @@ def check_orientation(hips_dir, src_fits):
 #            this one ties the levels together first.  Its cuts live in
 #            nircam_background_match.json rather than in this table, which is
 #            what the "match" key says.
+#
+# "match" names the table the per-field offsets come from (nircam_match_json).
+# An entry that names no vmin/vmax of its own takes its cuts from that table
+# too; one that does keeps them.  The residual bgmatch flavour is the second
+# kind.  It is defined with RESIDUAL_STRETCHES, because this table holds the
+# image flavours and every key in it is built from the images.
 STRETCHES = {
     "pct": dict(stretch="asinh", min_percent=1, max_percent=99.5),
     "vminmax": dict(stretch="asinh", vmin=-0.5, vmax=100),
@@ -602,15 +664,33 @@ STRETCHES = {
 _STRETCH_META = ("match",)
 
 
-def stretch_kwargs(stretch):
+def _stretch_entry(stretch, residual=False):
+    """A flavour's STRETCHES entry, or its RESIDUAL_STRETCH_OVERRIDES one."""
+    if residual and stretch in RESIDUAL_STRETCH_OVERRIDES:
+        return RESIDUAL_STRETCH_OVERRIDES[stretch]
+    return STRETCHES[stretch]
+
+
+def stretch_kwargs(stretch, residual=False):
     """The simple_norm call for a flavour, with our own keys removed."""
-    return {k: v for k, v in STRETCHES[stretch].items()
+    return {k: v for k, v in _stretch_entry(stretch, residual).items()
             if k not in _STRETCH_META}
 
 
-def stretch_match(stretch):
+def stretch_match(stretch, residual=False):
     """Which match table this flavour needs, or None when it needs none."""
-    return STRETCHES[stretch].get("match")
+    return _stretch_entry(stretch, residual).get("match")
+
+
+def stretch_cuts_from_match(stretch, residual=False):
+    """Does this flavour take its cuts from its match table?
+
+    Only the image bgmatch flavour does: its entry names no vmin/vmax, and
+    cmd_nircam_match solves shared cuts for it.  The residual bgmatch entry
+    names the residual vminmax cuts itself, and its table holds offsets only.
+    """
+    return bool(stretch_match(stretch, residual)) and \
+        "vmin" not in stretch_kwargs(stretch, residual)
 # The flavour that keeps the historical un-suffixed filename.  Changing this
 # would rename products that are already published and listed in two viewers,
 # so it stays put.
@@ -631,9 +711,40 @@ PRIMARY_STRETCH = "vminmax"
 # pct is left out.  Per-image percentiles on a residual are set by the star
 # remnants: the negative over-subtraction craters put the 1% floor below the
 # sky in F212N and not in F480M, which renders every tile washed out with a
-# blue cast (o105, 2026-09-24).  bgmatch is left out because its offsets and
-# cuts are solved on the images.
-RESIDUAL_STRETCHES = ("vminmax", "log")
+# blue cast (o105, 2026-09-24).
+#
+# bgmatch is the residual vminmax layer with a per-tile, per-filter offset
+# removed first.  Keeping the diffuse background keeps its seams too: the crf
+# frames were never sky-matched, so each tile sits on its own sky pedestal --
+# up to +-2 MJy/sr apart in F480M and +-1 in F212N -- and residual vminmax
+# shows the differences as tile-edged steps.  It differs from the image
+# bgmatch flavour in two ways:
+#
+#   * The offsets are solved on the RESIDUAL mosaics (--nircam-match
+#     --residual, written to nircam_residual_background_match.json), never
+#     taken from the image table.  The PSF model carries no sky term, and on
+#     o105 F480M against its four neighbours the residual pair offsets equal
+#     the image ones to <= 0.16 MJy/sr, so both solves measure the same
+#     pedestals.  Solving on the residuals makes the offsets describe the
+#     pixels this layer renders, and lets the table cover the fields the
+#     residual layers cover rather than whichever fields the image solve was
+#     last run over.  The two tables are never substituted for each other.
+#   * The cuts are vminmax's fixed ones (RESIDUAL_STRETCH_OVERRIDES).
+#     The image bgmatch cuts are percentiles of the images, and the residual
+#     table carries none, so this layer and residual vminmax differ only by
+#     the offsets and can be toggled against each other to see them.
+#
+# vminmax and log stay uncorrected.  The AVM-HiPS layers are last-line QA, and
+# a seam in them is a finding about the reduction, so the correction lives in
+# this separately named flavour only.
+RESIDUAL_STRETCHES = ("vminmax", "log", "bgmatch")
+
+# Residual flavours whose entry differs from the image flavour of the same
+# name.  Built from vminmax's entry rather than restating its numbers, so the
+# two residual layers keep the same cuts if vminmax's ever change.
+RESIDUAL_STRETCH_OVERRIDES = {
+    "bgmatch": dict(STRETCHES["vminmax"], match="nircam_residual"),
+}
 
 
 def check_residual_stretch(stretch, residual):
@@ -761,6 +872,26 @@ BG_MATCH_BIN = 1
 
 MIRI_MATCH_JSON = f"{OUTDIR}/miri_background_match.json"
 NIRCAM_MATCH_JSON = f"{OUTDIR}/nircam_background_match.json"
+# Offsets solved on the star-subtracted mosaics, for the residual bgmatch
+# flavour only (see RESIDUAL_STRETCHES).
+NIRCAM_RESIDUAL_MATCH_JSON = f"{OUTDIR}/nircam_residual_background_match.json"
+
+
+def nircam_match_json(table="nircam"):
+    """The file a NIRCam match table lives in, by its STRETCHES "match" name.
+
+    Every reader goes through this, and there is no fallback between the two:
+    a residual tile is never rendered or judged with the image offsets, nor an
+    image tile with the residual ones, whichever file happens to exist.
+
+    Resolved at call time rather than held in a module-level dict, so the two
+    paths stay patchable.
+    """
+    if table == "nircam":
+        return NIRCAM_MATCH_JSON
+    if table == "nircam_residual":
+        return NIRCAM_RESIDUAL_MATCH_JSON
+    raise KeyError(f"no NIRCam match table {table!r}")
 
 
 def miri_measure_pairs(paths):
@@ -963,12 +1094,53 @@ def cmd_miri_match():
     return 0
 
 
-def load_nircam_match():
+def load_nircam_match(table="nircam"):
+    """One NIRCam match table (see nircam_match_json), or None if absent."""
     import json
-    if not os.path.exists(NIRCAM_MATCH_JSON):
+    fn = nircam_match_json(table)
+    if not os.path.exists(fn):
         return None
-    with open(NIRCAM_MATCH_JSON) as fh:
+    with open(fn) as fh:
         return json.load(fh)
+
+
+def _nircam_match_filter(filt, paths, what=""):
+    """Settle-check, measure and solve one filter's mosaics.
+
+    The part of a NIRCam match that does not care what the mosaics are,
+    shared by cmd_nircam_match (images) and cmd_nircam_residual_match
+    (star-subtracted).  `what` goes into the progress line: "" for the images,
+    " residual" for the residuals.
+
+    Returns (paths, keys, pairs, offsets) over the settled mosaics, or None,
+    having printed why, when there is nothing to solve.
+    """
+    import time
+    paths = dict(paths)
+    mtimes = {k: source_mtime(v) for k, v in paths.items()}
+    for k, t in sorted(mtimes.items()):
+        if t is None:
+            print(f"  skipping {k} ({filt}): its mosaic vanished "
+                  f"(being regenerated?)")
+            paths.pop(k)
+        elif time.time() - t < SETTLE_SECONDS:
+            print(f"  skipping {k} ({filt}): written in the last "
+                  f"{SETTLE_SECONDS // 60} min")
+            paths.pop(k)
+    if len(paths) < 2:
+        print(f"{filt}: need at least two settled mosaics to match")
+        return None
+    print(f"\nmatching backgrounds across {len(paths)} {filt.upper()}{what} "
+          f"mosaics", flush=True)
+    keys, pairs = miri_measure_pairs(paths)
+    if not pairs:
+        print(f"{filt}: no overlapping pairs; nothing to tie together")
+        return None
+    off = miri_solve_offsets(keys, pairs)
+    print(f"\n{filt.upper()} offsets (subtracted from each tile):")
+    for k in keys:
+        print(f"  {k}: {off[k]:+.6f}")
+    return paths, keys, pairs, off
 
 
 def cmd_nircam_match():
@@ -992,38 +1164,20 @@ def cmd_nircam_match():
     The green channel is the pixelwise mean of the two, so its shared limits
     are the mean of theirs: a pixel sitting at both filters' vmin lands exactly
     at the green vmin.
+
+    This is the image table only.  The residual bgmatch flavour has its own,
+    solved on the residuals by cmd_nircam_residual_match.
     """
     import json
-    import time
     from astropy.io import fits
 
     inv, _ = inventory()
     out = {"filters": {}}
     for filt in FILTERS:
-        paths = dict(inv.get(filt, {}))
-        mtimes = {k: source_mtime(v) for k, v in paths.items()}
-        for k, t in sorted(mtimes.items()):
-            if t is None:
-                print(f"  skipping {k} ({filt}): its mosaic vanished "
-                      f"(being regenerated?)")
-                paths.pop(k)
-            elif time.time() - t < SETTLE_SECONDS:
-                print(f"  skipping {k} ({filt}): written in the last "
-                      f"{SETTLE_SECONDS // 60} min")
-                paths.pop(k)
-        if len(paths) < 2:
-            print(f"{filt}: need at least two settled mosaics to match")
+        solved = _nircam_match_filter(filt, inv.get(filt, {}))
+        if solved is None:
             return 1
-        print(f"\nmatching backgrounds across {len(paths)} {filt.upper()} mosaics",
-              flush=True)
-        keys, pairs = miri_measure_pairs(paths)
-        if not pairs:
-            print(f"{filt}: no overlapping pairs; nothing to tie together")
-            return 1
-        off = miri_solve_offsets(keys, pairs)
-        print(f"\n{filt.upper()} offsets (subtracted from each tile):")
-        for k in keys:
-            print(f"  {k}: {off[k]:+.6f}")
+        paths, keys, pairs, off = solved
         pooled = []
         for k in keys:
             with fits.open(paths[k]) as hl:
@@ -1046,6 +1200,59 @@ def cmd_nircam_match():
     print(f"\ngreen (pixelwise mean) shared stretch: {lo_g:.6f} .. {hi_g:.6f}")
     json.dump(out, open(NIRCAM_MATCH_JSON, "w"), indent=1)
     print(f"wrote {NIRCAM_MATCH_JSON}")
+    return 0
+
+
+def cmd_nircam_residual_match():
+    """Measure NIRCam background offsets per filter on the RESIDUAL mosaics.
+
+    For the residual bgmatch flavour; RESIDUAL_STRETCHES says why it solves
+    its own offsets rather than borrowing the image ones.  The settle rule,
+    the pair measurement and the solve are cmd_nircam_match's, run over the
+    final-stage residuals the residual layers are built from (inventory with
+    residual=True), and the result goes to NIRCAM_RESIDUAL_MATCH_JSON, never
+    to the image table.
+
+    Two differences from the image match:
+
+    No shared cuts.  The flavour renders with the residual vminmax cuts, so a
+    pooled percentile here would be a number nothing reads, and getting it
+    means reading every frame a second time.  The table holds offsets and the
+    pairs they were solved from.
+
+    A residual older than its image mosaic is left out of the solve, as the
+    builds leave it out (the CHAIN verdict): it is a residual of the previous
+    reduction, and tying its neighbours to it would carry that reduction's sky
+    level into tiles that are current.  It comes back as NOMATCH until the
+    chain rewrites it and this is run again.
+    """
+    import json
+
+    inv, _ = inventory(residual=True)
+    image_inv, _ = inventory()
+    out = {"filters": {}}
+    for filt in FILTERS:
+        paths = dict(inv.get(filt, {}))
+        for k in sorted(paths):
+            if residual_predates_image(paths[k],
+                                       image_inv.get(filt, {}).get(k)):
+                print(f"  skipping {k} ({filt}): residual predates the image "
+                      f"mosaic; waiting for the chain to rewrite it")
+                paths.pop(k)
+        solved = _nircam_match_filter(filt, paths, what=" residual")
+        if solved is None:
+            return 1
+        _, _, pairs, off = solved
+        out["filters"][filt] = {
+            "offsets": off,
+            "pairs": [[a, b, d, n] for a, b, d, n in pairs]}
+    # Written whole and renamed into place: --list and every --auto tick read
+    # this file through needs_build, and a half-written one would raise there.
+    tmp = f"{NIRCAM_RESIDUAL_MATCH_JSON}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(out, fh, indent=1)
+    os.replace(tmp, NIRCAM_RESIDUAL_MATCH_JSON)
+    print(f"wrote {NIRCAM_RESIDUAL_MATCH_JSON}")
     return 0
 
 
@@ -1321,6 +1528,11 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
     For a residual flavour, `image_inv` is the image inventory; a residual
     older than its image returns CHAIN (see residual_predates_image) and is
     left for the chain to rewrite.
+
+    A background-matched flavour is judged against its own table only
+    (stretch_match / nircam_match_json): image bgmatch against the image
+    match, residual bgmatch against the residual one.  A field the table does
+    not cover is NOMATCH, and a table newer than the png is a rebuild.
     """
     import time
     # A mosaic that changed in the last few minutes may still be being written;
@@ -1339,11 +1551,12 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
                                     (image_inv.get(f) or {}).get(obs))
             for f in FILTERS):
         return "CHAIN"
-    if stretch_match(stretch):
+    table = stretch_match(stretch, residual)
+    if table:
         # Same rule as MIRI: the table existing is not enough, because
         # build_obs raises on a field the table does not cover.  Reporting it
         # as NOMATCH keeps those fields out of the FAILED list on every tick.
-        match = load_nircam_match()
+        match = load_nircam_match(table)
         if not match or any(
                 obs not in match["filters"].get(f, {}).get("offsets", {})
                 for f in FILTERS):
@@ -1362,10 +1575,11 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
     hips = hips_for(obs, stretch=stretch, residual=residual)
     if not os.path.isdir(os.path.join(hips, "Norder3")):
         return "RGB exists but its HiPS is missing or incomplete"
-    if stretch_match(stretch) and os.path.exists(NIRCAM_MATCH_JSON) and \
-            os.path.getmtime(NIRCAM_MATCH_JSON) > os.path.getmtime(png):
-        # A new solution changes the offset AND the shared cuts for every
-        # field, not only for the ones whose data moved.
+    if table and os.path.exists(nircam_match_json(table)) and \
+            os.path.getmtime(nircam_match_json(table)) > os.path.getmtime(png):
+        # A new solution changes the offset (and, for the image flavour, the
+        # shared cuts) for every field, not only for the ones whose data
+        # moved.
         return "background match is newer than the png"
     t_png = os.path.getmtime(png)
     for f in FILTERS:
@@ -1421,8 +1635,11 @@ def _pending_summary():
                 # VANISHED joins SETTLING as a not-buildable-right-now verdict
                 # rather than pending work: nothing is waiting on it, the tile
                 # is mid-regeneration and comes back on a later tick.  CHAIN
-                # waits on the cataloguing chain, not on this lock.
-                if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
+                # waits on the cataloguing chain, not on this lock, and
+                # NOMATCH on a --nircam-match run (image or --residual) that
+                # no tick makes.
+                if why and why not in ("SETTLING", "VANISHED", "CHAIN",
+                                       "NOMATCH"):
                     out.append(f"{o} NIRCam/{tag} -- {why}")
     miri_images = find_i2d(MIRI_FILTER)
     for residual, bgmatch in MIRI_FLAVOURS:
@@ -1431,8 +1648,7 @@ def _pending_summary():
         for o, src in sorted(miri.items()):
             why = miri_needs_build(o, src, bgmatch, residual,
                                    image_src=miri_images.get(o))
-            # One exclusion more than the NIRCam loop above, because only
-            # miri_needs_build can return NOMATCH.
+            # The same exclusions as the NIRCam loop above.
             if why and why not in ("SETTLING", "NOMATCH", "VANISHED", "CHAIN"):
                 out.append(f"{o} {tag} -- {why}")
     for filt in MONO_FILTERS:
@@ -1554,8 +1770,13 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                               f"{SETTLE_SECONDS // 60} min; leaving it to settle")
                         continue
                     if why == "NOMATCH":
+                        # Not solved here: a NIRCam match reprojects every
+                        # overlapping pair at full resolution, about ten hours
+                        # by the BG_MATCH_BIN comment, against this job's 8 h
+                        # wall.
                         print(f"  {o} {tag}: no background match for this "
-                              f"field; run --nircam-match")
+                              f"field; run --nircam-match"
+                              f"{' --residual' if residual else ''}")
                         continue
                     if not why:
                         print(f"  {o} {tag}: up to date")
@@ -2157,7 +2378,11 @@ def main():
                          "MIRI mosaic instead of the plain one")
     ap.add_argument("--nircam-match", action="store_true",
                     help="measure NIRCam background offsets and shared cuts "
-                         "per filter, for the bgmatch flavour")
+                         "per filter, for the bgmatch flavour.  With "
+                         "--residual, measure offsets only, on the "
+                         "star-subtracted mosaics, into "
+                         f"{os.path.basename(NIRCAM_RESIDUAL_MATCH_JSON)} "
+                         "for the residual bgmatch flavour")
     ap.add_argument("--miri-match", action="store_true",
                     help="measure MIRI background offsets + shared stretch")
     ap.add_argument("--auto", action="store_true",
@@ -2174,11 +2399,14 @@ def main():
                          "(default, historical name), vminmax = one fixed pair "
                          "of cuts in MJy/sr for every image.  With --residual "
                          f"the default is {RESIDUAL_STRETCHES[0]} and only "
-                         f"{', '.join(RESIDUAL_STRETCHES)} are allowed")
+                         f"{', '.join(RESIDUAL_STRETCHES)} are allowed; "
+                         "--residual --stretch bgmatch needs "
+                         "--nircam-match --residual first")
     ap.add_argument("--residual", action="store_true",
                     help="build from the star-subtracted DAOPHOT residual "
                          "mosaics instead of the images (--obs/--all/--miri/"
-                         "--coadd)")
+                         "--coadd), or with --nircam-match solve the "
+                         "residual bgmatch offsets")
     ap.add_argument("--mono", choices=MONO_FILTERS,
                     help="build (--obs/--all) or coadd (--coadd) the "
                          "monochrome star-subtracted layers of one NIRCam "
@@ -2198,7 +2426,12 @@ def main():
         except ValueError as e:
             ap.error(str(e))
     if a.residual and a.bgmatch:
-        ap.error("--residual has no bgmatch flavour")
+        # --bgmatch picks the MIRI flavour; the NIRCam one is a --stretch
+        ap.error("--residual has no MIRI bgmatch flavour; the NIRCam "
+                 "residual bgmatch layer is --residual --stretch bgmatch")
+    if a.residual and a.miri_match:
+        ap.error("--miri-match solves on the images only; the residual "
+                 "match is --nircam-match --residual")
     if a.mono and (a.miri or a.bgmatch or a.residual):
         ap.error("--mono is always star-subtracted NIRCam; it takes none of "
                  "--miri, --bgmatch, --residual")
@@ -2206,7 +2439,8 @@ def main():
     if a.list:
         return cmd_list()
     if a.nircam_match:
-        return cmd_nircam_match()
+        # two tables, never one written in place of the other
+        return cmd_nircam_residual_match() if a.residual else cmd_nircam_match()
     if a.miri_match:
         return cmd_miri_match()
     if a.auto:
