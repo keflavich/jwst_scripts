@@ -68,7 +68,7 @@ def test_pending_summary_excludes_unbuildable_bgmatch(env, monkeypatch):
     monkeypatch.setattr(G, "inventory", lambda **k: ({f: {} for f in G.FILTERS}, []))
     monkeypatch.setattr(G, "find_i2d", lambda filt: {UNCOVERED: src, COVERED: src})
     monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: {})
-    lines = G._pending_summary()
+    lines, _ = G._pending_summary()
     assert not any(f"{UNCOVERED} MIRI+bg" in ln for ln in lines), lines
     assert any(f"{COVERED} MIRI+bg" in ln for ln in lines), lines
 

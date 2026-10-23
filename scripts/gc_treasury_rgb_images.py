@@ -358,7 +358,9 @@ def _match_status_lines(image_inv):
 
     Names the flavour's own match table and whether it is on disk, then
     groups every field complete in both filters by its needs_build verdict --
-    NOMATCH for each field the table does not cover.
+    NOMATCH for each field the table does not cover.  NOMATCH is split by
+    what the table lacks (_nomatch_label), so a field with an offset in one
+    filter only is told apart from one the table never saw.
     """
     out = []
     invs = {False: image_inv}
@@ -377,14 +379,36 @@ def _match_status_lines(image_inv):
                    f"{'on disk' if os.path.exists(fn) else 'not on disk'}; "
                    f"{len(ready)} field(s) complete in all {len(FILTERS)} "
                    f"filters")
+        match = load_nircam_match(table)
         verdicts = {}
         for o in ready:
             why = needs_build(o, inv, stretch=stretch, residual=residual,
                               image_inv=image_inv if residual else None)
+            if why == "NOMATCH":
+                why = _nomatch_label(o, match)
             verdicts.setdefault(why or "up to date", []).append(o)
         for why, obs in sorted(verdicts.items()):
             out.append(f"    {why} ({len(obs)}): {', '.join(obs)}")
     return out
+
+
+def _nomatch_label(obs, match):
+    """The --list label for a NOMATCH field: which offsets the table lacks.
+
+    "NOMATCH (no F480M offset)" for a field the table covers in the other
+    filter only, "NOMATCH (not in the table)" for one it has no offset for
+    at all, and the bare verdict when there is no table (the flavour's
+    header line already says so) or when `match` covers the field in every
+    filter.  The last happens when the table is rewritten after
+    _match_status_lines loads `match` and before needs_build reads it.
+    Display only; needs_build keeps returning the bare string.
+    """
+    missing = missing_offsets(obs, match)
+    if not match or not missing:
+        return "NOMATCH"
+    if len(missing) == len(FILTERS):
+        return "NOMATCH (not in the table)"
+    return f"NOMATCH (no {' or '.join(f.upper() for f in missing)} offset)"
 
 
 def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
@@ -449,8 +473,7 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
         if not match:
             raise RuntimeError(f"{obs}: no{res} background match on disk; "
                                f"run {cli} first")
-        missing = [f for f in FILTERS
-                   if obs not in match["filters"].get(f, {}).get("offsets", {})]
+        missing = missing_offsets(obs, match)
         if missing:
             raise RuntimeError(f"{obs}: no{res} background offset for "
                                f"{', '.join(missing)}; re-run {cli}")
@@ -721,14 +744,40 @@ PRIMARY_STRETCH = "vminmax"
 # bgmatch flavour in two ways:
 #
 #   * The offsets are solved on the RESIDUAL mosaics (--nircam-match
-#     --residual, written to nircam_residual_background_match.json), never
-#     taken from the image table.  The PSF model carries no sky term, and on
-#     o105 F480M against its four neighbours the residual pair offsets equal
-#     the image ones to <= 0.16 MJy/sr, so both solves measure the same
-#     pedestals.  Solving on the residuals makes the offsets describe the
-#     pixels this layer renders, and lets the table cover the fields the
-#     residual layers cover rather than whichever fields the image solve was
-#     last run over.  The two tables are never substituted for each other.
+#     --residual, written to nircam_residual_background_match.json), and the
+#     image table is never read for them.  The two solves differ by a few
+#     tenths of a MJy/sr on many tiles.  From the 2026-10-23 solves, 68 tiles
+#     per filter, taking each tile's residual offset minus its image offset
+#     and removing the median of that difference:
+#
+#         filter   rms     max              tiles, |difference| over 0.2
+#         F480M    0.250   +0.555 (o071)    34 of 68
+#         F212N    0.209   +0.494 (o067)    23 of 68
+#
+#     Subtracting the image offsets leaves 4% (F480M) and 14% (F212N) of the
+#     residual offsets' variance, so the image solve accounts for most of
+#     the pedestal spread, and the table above is the per-tile remainder.
+#     14 tiles have |difference| over 0.2 MJy/sr in both filters, 13 of them
+#     with the same sign.  An earlier check compared only the o105 F480M
+#     pairs with its four neighbours and found them within 0.16 MJy/sr; in
+#     the survey-wide solve o105 F480M differs by +0.205, near the middle of
+#     the 68.
+#
+#     Cause, measured 2026-10-23.  Every image3 mosaic's HDRTAB records
+#     per-exposure SkyMatch levels (BKGMETH='match', one BKGLEVEL per
+#     exposure), and those levels were subtracted from the image mosaics.
+#     The crf frames feeding the residual chain carry no such subtraction,
+#     so each tile's median of data_i2d (the chain's mosaic of those frames)
+#     minus image equals the mean of its HDRTAB levels (Pearson 1.000).  That
+#     per-exposure sky term explains about 48% (F480M) and 38% (F212N) of
+#     the per-pair residual-minus-image difference.  Most of the rest tracks
+#     tile-to-tile differences in the subtracted model level within
+#     overlaps, shared between the filters (r 0.80; cause untested).
+#
+#     The per-tile remainder is the reason the layer has its own solve: its
+#     offsets describe the pixels it renders, and its table is solved over
+#     the fields the residual layers are built from.  The two tables are
+#     never substituted for each other.
 #   * The cuts are vminmax's fixed ones (RESIDUAL_STRETCH_OVERRIDES).
 #     The image bgmatch cuts are percentiles of the images, and the residual
 #     table carries none, so this layer and residual vminmax differ only by
@@ -846,9 +895,11 @@ def miri_coadd_name_for(bgmatch=False, residual=False):
 # Block-averaging factor for background matching.  MEASURE AT 1.
 #
 # Binning looks like it should be free: a pairwise median over shared sky is a
-# large-scale quantity, and binning by 8 cuts the reprojected area by 64, which
-# turns a ten-hour NIRCam match into ten minutes.  It is not free.  Measured
-# against values the unbinned path had already produced:
+# large-scale quantity, and binning by 8 cuts the reprojected area by 64, in a
+# solve that takes over two hours unbinned (image match 2 h 22 min, job
+# 47187150; residual match 2 h 19 min, job 47211795; 68 tiles per filter on 4
+# CPUs / 32 GB, 2026-10-23).  It is not free.  Measured against values the
+# unbinned path had already produced:
 #
 #     pair          unbinned     bin=8      error
 #     o098-o105       0.1317   -0.6077    -0.7394
@@ -1104,6 +1155,19 @@ def load_nircam_match(table="nircam"):
         return json.load(fh)
 
 
+def missing_offsets(obs, match):
+    """The FILTERS a NIRCam match table has no offset for at `obs`.
+
+    Every filter when there is no table.  An empty list means the field is
+    covered; anything else is a NOMATCH in needs_build and a refusal in
+    build_obs, and --list names the filters.
+    """
+    if not match:
+        return list(FILTERS)
+    return [f for f in FILTERS
+            if obs not in match["filters"].get(f, {}).get("offsets", {})]
+
+
 def _nircam_match_filter(filt, paths, what=""):
     """Settle-check, measure and solve one filter's mosaics.
 
@@ -1113,7 +1177,14 @@ def _nircam_match_filter(filt, paths, what=""):
     " residual" for the residuals.
 
     Returns (paths, keys, pairs, offsets) over the settled mosaics, or None,
-    having printed why, when there is nothing to solve.
+    having printed why, when there is nothing to solve: fewer than two
+    settled mosaics, or no overlapping pair among them.  Both callers then
+    return 1 having written nothing (_nircam_match_unsolved), which a solve
+    job's log reads as "rerun later".
+
+    A mosaic written in the last SETTLE_SECONDS or vanished is dropped from
+    this filter only, so a tile settling in one filter gets an offset in the
+    other alone, in either table.
     """
     import time
     paths = dict(paths)
@@ -1143,6 +1214,36 @@ def _nircam_match_filter(filt, paths, what=""):
     return paths, keys, pairs, off
 
 
+def _nircam_match_unsolved(fn, cli):
+    """Say that a NIRCam match wrote nothing, and return its exit status, 1.
+
+    The tables are written only after every filter has solved, so the one
+    already on disk, if any, is left exactly as it was.  This log line is
+    what marks the exit 1 as a retry; an uncaught exception also exits 1,
+    with a traceback in place of this line.
+    """
+    print(f"nothing written; {os.path.basename(fn)} is unchanged.  This "
+          f"exit 1 means rerun {cli} later, once each filter has at least two "
+          f"settled mosaics that overlap", flush=True)
+    return 1
+
+
+def _write_nircam_match(fn, out):
+    """Write a NIRCam match table whole and rename it into place.
+
+    --list and every --auto tick read these tables through needs_build, and a
+    half-written one would raise there.  A run that dies mid-write (killed,
+    out of memory, disk full) leaves `fn` as it was and a stray `fn`.tmp,
+    which the next run overwrites; nothing reads the .tmp name.
+    """
+    import json
+    tmp = f"{fn}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(out, fh, indent=1)
+    os.replace(tmp, fn)
+    print(f"wrote {fn}")
+
+
 def cmd_nircam_match():
     """Measure NIRCam background offsets and shared stretch, per filter.
 
@@ -1167,8 +1268,20 @@ def cmd_nircam_match():
 
     This is the image table only.  The residual bgmatch flavour has its own,
     solved on the residuals by cmd_nircam_residual_match.
+
+    Exit status: 0 means NIRCAM_MATCH_JSON was written.  1 after the log line
+    "nothing written; nircam_background_match.json is unchanged" means a
+    filter had fewer than two settled mosaics (one written in the last
+    SETTLE_SECONDS, or vanished mid-regeneration) or no overlapping pair.
+    That exit is a retry: submit the SLURM solve job again once the mosaics
+    have settled.  Python also exits 1 on an uncaught exception (an
+    unreadable FITS file, a mosaic with no 2-D HDU, MemoryError); the log
+    then ends in a traceback in place of that line, and the error needs
+    reading before a resubmit.  Either way the table on disk is the old one
+    or the new one, whole (_write_nircam_match).  The solve is long -- 2 h
+    22 min for 68 tiles per filter on 4 CPUs / 32 GB (job 47187150,
+    2026-10-23) -- so it runs as its own job and --auto never starts it.
     """
-    import json
     from astropy.io import fits
 
     inv, _ = inventory()
@@ -1176,7 +1289,7 @@ def cmd_nircam_match():
     for filt in FILTERS:
         solved = _nircam_match_filter(filt, inv.get(filt, {}))
         if solved is None:
-            return 1
+            return _nircam_match_unsolved(NIRCAM_MATCH_JSON, "--nircam-match")
         paths, keys, pairs, off = solved
         pooled = []
         for k in keys:
@@ -1198,8 +1311,7 @@ def cmd_nircam_match():
     hi_g = np.mean([out["filters"][f]["vmax"] for f in FILTERS])
     out["green"] = {"vmin": float(lo_g), "vmax": float(hi_g)}
     print(f"\ngreen (pixelwise mean) shared stretch: {lo_g:.6f} .. {hi_g:.6f}")
-    json.dump(out, open(NIRCAM_MATCH_JSON, "w"), indent=1)
-    print(f"wrote {NIRCAM_MATCH_JSON}")
+    _write_nircam_match(NIRCAM_MATCH_JSON, out)
     return 0
 
 
@@ -1224,10 +1336,18 @@ def cmd_nircam_residual_match():
     builds leave it out (the CHAIN verdict): it is a residual of the previous
     reduction, and tying its neighbours to it would carry that reduction's sky
     level into tiles that are current.  It comes back as NOMATCH until the
-    chain rewrites it and this is run again.
-    """
-    import json
+    chain rewrites it and this is run again.  The skip is per filter, as are
+    the SETTLING and VANISHED skips in _nircam_match_filter that both solves
+    share, so a tile can end up with an offset in one filter only; needs_build
+    calls that NOMATCH too, and --list names the filter it is missing.
 
+    Exit status as cmd_nircam_match: 0 means NIRCAM_RESIDUAL_MATCH_JSON was
+    written; 1 after the "nothing written; ... is unchanged" log line is a
+    retry, and 1 after a traceback is an error to read first.  Here a filter
+    can also fall below two mosaics through the CHAIN skip, which a partial
+    chain rerun does, so that retry waits for the chain to catch up.  2 h 19
+    min for 68 tiles per filter on 4 CPUs / 32 GB (job 47211795, 2026-10-23).
+    """
     inv, _ = inventory(residual=True)
     image_inv, _ = inventory()
     out = {"filters": {}}
@@ -1241,18 +1361,13 @@ def cmd_nircam_residual_match():
                 paths.pop(k)
         solved = _nircam_match_filter(filt, paths, what=" residual")
         if solved is None:
-            return 1
+            return _nircam_match_unsolved(NIRCAM_RESIDUAL_MATCH_JSON,
+                                          "--nircam-match --residual")
         _, _, pairs, off = solved
         out["filters"][filt] = {
             "offsets": off,
             "pairs": [[a, b, d, n] for a, b, d, n in pairs]}
-    # Written whole and renamed into place: --list and every --auto tick read
-    # this file through needs_build, and a half-written one would raise there.
-    tmp = f"{NIRCAM_RESIDUAL_MATCH_JSON}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump(out, fh, indent=1)
-    os.replace(tmp, NIRCAM_RESIDUAL_MATCH_JSON)
-    print(f"wrote {NIRCAM_RESIDUAL_MATCH_JSON}")
+    _write_nircam_match(NIRCAM_RESIDUAL_MATCH_JSON, out)
     return 0
 
 
@@ -1556,10 +1671,13 @@ def needs_build(obs, inv, stretch=DEFAULT_STRETCH, residual=False,
         # Same rule as MIRI: the table existing is not enough, because
         # build_obs raises on a field the table does not cover.  Reporting it
         # as NOMATCH keeps those fields out of the FAILED list on every tick.
-        match = load_nircam_match(table)
-        if not match or any(
-                obs not in match["filters"].get(f, {}).get("offsets", {})
-                for f in FILTERS):
+        # Partial coverage is NOMATCH too.  Both solves drop a SETTLING or
+        # VANISHED mosaic per filter (_nircam_match_filter), and the residual
+        # solve also drops a CHAIN one per filter, so either table can hold
+        # a tile's offset in one filter only.  The verdict stays the bare
+        # string, which callers compare; _match_status_lines says which
+        # filter is missing.
+        if missing_offsets(obs, load_nircam_match(table)):
             return "NOMATCH"
     # `inv` has to be the inventory of the same kind -- inventory(residual) --
     # since the source mtimes below are read from it.  A regenerated chain
@@ -1616,9 +1734,15 @@ DEFAULT_BUILD_BUDGET_H = 6.0
 def _pending_summary():
     """What an unblocked --auto tick would build right now, as display lines.
 
-    Read-only: used to report work stuck behind a held lock.
+    Read-only: used to report work stuck behind a held lock.  Returns
+    (pending, waiting).  `pending` has one line per build the lock is
+    holding back, and cmd_auto counts those.  `waiting` has one line per
+    background-matched NIRCam flavour with NOMATCH fields, which wait on a
+    --nircam-match run that no tick makes; they are listed apart so they
+    stay visible without being counted as builds.
     """
     out = []
+    nomatch = {}
     image_inv = None
     for residual in (False, True):
         inv, obs_all = inventory(residual=residual)
@@ -1632,15 +1756,18 @@ def _pending_summary():
             for o in ready:
                 why = needs_build(o, inv, stretch=stretch, residual=residual,
                                   image_inv=image_inv if residual else None)
+                if why == "NOMATCH":
+                    nomatch.setdefault((residual, tag), []).append(o)
+                    continue
                 # VANISHED joins SETTLING as a not-buildable-right-now verdict
                 # rather than pending work: nothing is waiting on it, the tile
                 # is mid-regeneration and comes back on a later tick.  CHAIN
-                # waits on the cataloguing chain, not on this lock, and
-                # NOMATCH on a --nircam-match run (image or --residual) that
-                # no tick makes.
-                if why and why not in ("SETTLING", "VANISHED", "CHAIN",
-                                       "NOMATCH"):
+                # waits on the cataloguing chain to rewrite the residual.
+                if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
                     out.append(f"{o} NIRCam/{tag} -- {why}")
+    waiting = [f"{len(obs)} field(s) waiting on --nircam-match"
+               f"{' --residual' if residual else ''} (NIRCam/{tag})"
+               for (residual, tag), obs in nomatch.items()]
     miri_images = find_i2d(MIRI_FILTER)
     for residual, bgmatch in MIRI_FLAVOURS:
         miri = find_residual_i2d(MIRI_FILTER) if residual else miri_images
@@ -1648,7 +1775,11 @@ def _pending_summary():
         for o, src in sorted(miri.items()):
             why = miri_needs_build(o, src, bgmatch, residual,
                                    image_src=miri_images.get(o))
-            # The same exclusions as the NIRCam loop above.
+            # The same exclusions as the NIRCam loop above, and NOMATCH goes
+            # in neither list: a field the MIRI table does not cover fails
+            # if built (jwst_scripts#13), and an unblocked tick refreshes
+            # that table itself (miri_match_is_stale), so there is no
+            # hand-run solve to report.
             if why and why not in ("SETTLING", "NOMATCH", "VANISHED", "CHAIN"):
                 out.append(f"{o} {tag} -- {why}")
     for filt in MONO_FILTERS:
@@ -1657,7 +1788,7 @@ def _pending_summary():
                                    image_src=image_inv.get(filt, {}).get(o))
             if why and why not in ("SETTLING", "VANISHED", "CHAIN"):
                 out.append(f"{o} {filt.upper()}+res -- {why}")
-    return out
+    return out, waiting
 
 
 def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
@@ -1694,7 +1825,7 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                 print(f"  (could not read the lock file: "
                       f"{type(exc).__name__}: {exc})")
             try:
-                pending = _pending_summary()
+                pending, waiting = _pending_summary()
             except (OSError, KeyError, ValueError, TypeError) as exc:
                 print(f"  (could not summarise pending work: "
                       f"{type(exc).__name__}: {exc})")
@@ -1705,6 +1836,10 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                         print(f"    {line}")
                 else:
                     print("  nothing pending behind it")
+                # After the count and outside it: these wait on a hand-run
+                # --nircam-match, and releasing the lock builds none of them.
+                for line in waiting:
+                    print(f"  {line}")
             return 0
         print(f"stale lock ({age / 3600:.1f} h old); taking it")
         try:
@@ -1770,10 +1905,15 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
                               f"{SETTLE_SECONDS // 60} min; leaving it to settle")
                         continue
                     if why == "NOMATCH":
-                        # Not solved here: a NIRCam match reprojects every
-                        # overlapping pair at full resolution, about ten hours
-                        # by the BG_MATCH_BIN comment, against this job's 8 h
-                        # wall.
+                        # Not solved here.  A NIRCam match reprojects every
+                        # overlapping pair at full resolution: on 2026-10-23,
+                        # with 68 tiles per filter on 4 CPUs / 32 GB, the
+                        # image solve took 2 h 22 min (job 47187150) and the
+                        # residual solve 2 h 19 min (47211795).  At that pace
+                        # the two solves would take most of a tick's 6 h build
+                        # budget, so each runs as its own SLURM job, and one
+                        # that exits 1 after logging "nothing written" is
+                        # rerun later (cmd_nircam_match).
                         print(f"  {o} {tag}: no background match for this "
                               f"field; run --nircam-match"
                               f"{' --residual' if residual else ''}")
@@ -2382,7 +2522,12 @@ def main():
                          "--residual, measure offsets only, on the "
                          "star-subtracted mosaics, into "
                          f"{os.path.basename(NIRCAM_RESIDUAL_MATCH_JSON)} "
-                         "for the residual bgmatch flavour")
+                         "for the residual bgmatch flavour.  Exit 1 after "
+                         "the log line \"nothing written; <table> is "
+                         "unchanged\" means a filter had fewer than two "
+                         "settled mosaics, or none that overlap; rerun "
+                         "later.  Exit 1 after a traceback is an error; "
+                         "read it before rerunning")
     ap.add_argument("--miri-match", action="store_true",
                     help="measure MIRI background offsets + shared stretch")
     ap.add_argument("--auto", action="store_true",
