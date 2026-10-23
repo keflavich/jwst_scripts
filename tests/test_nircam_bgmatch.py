@@ -154,9 +154,10 @@ def test_plain_and_bgmatch_have_distinct_names():
 def test_background_match_binning_stays_off():
     """The comment says do not re-enable; this makes that a check.
 
-    Block-averaging by 8 cuts the reprojected area by 64 and turns a ten-hour
-    match into ten minutes, which is why someone will try it.  Measured against
-    values the unbinned path had already produced:
+    Block-averaging by 8 cuts the reprojected area by 64 in a solve that takes
+    over two hours unbinned (2 h 22 min image, 2 h 19 min residual, 68 tiles
+    per filter, 2026-10-23), which is why someone will try it.  Measured
+    against values the unbinned path had already produced:
 
         pair          unbinned     bin=8      error
         o098-o105       0.1317   -0.6077    -0.7394
@@ -334,10 +335,12 @@ def test_cli_refuses_a_residual_miri_match(monkeypatch):
 
 # ---- partial coverage, the lock report, and the exit-1 retry ----------------
 #
-# The per-filter CHAIN skip in cmd_nircam_residual_match can leave a tile with
-# an offset in one filter only.  needs_build calls that NOMATCH, the same bare
-# string callers compare; --list says which filter is missing, and the lock
-# report counts NOMATCH fields per flavour without calling them pending work.
+# Both solves drop a SETTLING or VANISHED mosaic per filter, and the residual
+# solve a CHAIN one, so either table can hold a tile's offset in one filter
+# only.  needs_build calls that NOMATCH, the same bare string callers compare;
+# --list says which filter is missing, build_obs refuses the field, and the
+# lock report counts NOMATCH fields per flavour without calling them pending
+# work.
 
 def _fields(tmp_path, obs):
     """One settled inventory holding every field in `obs`."""
@@ -453,8 +456,10 @@ def test_lock_report_has_no_waiting_line_when_every_field_is_matched(
 @pytest.mark.parametrize("residual", [False, True])
 def test_an_unsolvable_match_exits_1_and_writes_nothing(
         tmp_path, monkeypatch, capsys, residual):
-    """Exit 1 is the retry signal for a SLURM solve job: nothing written, the
-    table on disk unchanged, and the log says to rerun later."""
+    """Exit 1 with the "nothing written" line is the retry signal for a SLURM
+    solve job: the table on disk unchanged, and the log says to rerun later.
+    (An uncaught exception also exits 1, with a traceback in place of that
+    line.)"""
     before = {"filters": {f: {"offsets": {"o1": 0.5}} for f in G.FILTERS}}
     paths = _tables(tmp_path, monkeypatch, image=before, residual=before)
     inv = _fields(tmp_path, ("o1",))            # one mosaic: nothing to tie
@@ -472,4 +477,142 @@ def test_an_unsolvable_match_exits_1_and_writes_nothing(
     fn = paths["NIRCAM_RESIDUAL_MATCH_JSON" if residual
                else "NIRCAM_MATCH_JSON"]
     assert f"nothing written; {fn.name} is unchanged" in out
-    assert f"Exit 1 means rerun {cli} later" in out
+    assert f"This exit 1 means rerun {cli} later" in out
+
+
+def _mosaics(directory, layout, age=10000):
+    """Settled FITS mosaics, {filter: [obs, ...]} -> an inventory.
+
+    Real files, since the image solve reads each one back for its pooled cuts
+    and build_obs reprojects one filter onto the other.  Every mosaic sits on
+    the same small TAN grid.
+    """
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = [266.4, -28.9]
+    w.wcs.crpix = [4.5, 4.5]
+    w.wcs.cdelt = [-1e-5, 1e-5]
+    os.makedirs(directory, exist_ok=True)
+    inv = {f: {} for f in G.FILTERS}
+    old = time.time() - age
+    for f, obs in layout.items():
+        for o in obs:
+            p = os.path.join(directory, f"{o}_{f}_i2d.fits")
+            fits.PrimaryHDU(np.full((8, 8), 10.0), w.to_header()).writeto(p)
+            os.utime(p, (old, old))
+            inv[f][o] = p
+    return inv
+
+
+def _solve_setup(tmp_path, monkeypatch, layout, on_disk=True):
+    """Both tables (with `before` in them when on_disk), the mosaics in a
+    subdirectory, and inventory() serving them for both kinds.  Returns the
+    table paths and their text, plus a listing of tmp_path to compare after."""
+    before = {"filters": {f: {"offsets": {"o1": 0.5}} for f in G.FILTERS}}
+    doc = before if on_disk else None
+    paths = _tables(tmp_path, monkeypatch, image=doc, residual=doc)
+    inv = _mosaics(tmp_path / "mosaics", layout)
+    obs = sorted(set().union(*inv.values()))
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (inv, obs))
+    texts = {k: p.read_text() if p.exists() else None
+             for k, p in paths.items()}
+    return paths, texts, sorted(os.listdir(tmp_path))
+
+
+def _unchanged(tmp_path, paths, texts, listing):
+    assert {k: p.read_text() if p.exists() else None
+            for k, p in paths.items()} == texts
+    assert sorted(os.listdir(tmp_path)) == listing      # no stray .tmp either
+
+
+@pytest.mark.parametrize("on_disk", [True, False])
+@pytest.mark.parametrize("residual", [False, True])
+def test_a_later_filter_failing_writes_neither_table(
+        tmp_path, monkeypatch, capsys, residual, on_disk):
+    """F480M solves, then F212N has one mosaic: exit 1, nothing written.
+
+    The test above fails in the first filter.  This one gets a whole filter
+    solved first, so a table written per filter, or one holding the solved
+    F480M alone, shows up as a changed or new file.
+    """
+    assert G.FILTERS == ["f480m", "f212n"]
+    paths, texts, listing = _solve_setup(
+        tmp_path, monkeypatch, {"f480m": ["o1", "o2"], "f212n": ["o1"]},
+        on_disk)
+    measured = []
+
+    def measure(p):
+        measured.append(sorted(p))
+        return sorted(p), [("o1", "o2", 0.5, 1000)]
+    monkeypatch.setattr(G, "miri_measure_pairs", measure)
+    run = G.cmd_nircam_residual_match if residual else G.cmd_nircam_match
+    assert run() == 1
+    assert measured == [["o1", "o2"]]               # F480M only
+    _unchanged(tmp_path, paths, texts, listing)
+    out = capsys.readouterr().out
+    assert "F480M offsets (subtracted from each tile)" in out
+    assert "f212n: need at least two settled mosaics to match" in out
+    assert "nothing written; " in out
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_no_overlapping_pair_exits_1_and_writes_nothing(
+        tmp_path, monkeypatch, capsys, residual):
+    """Two settled mosaics per filter that share no sky leave nothing to tie
+    them together, which is the other exit-1 retry."""
+    paths, texts, listing = _solve_setup(
+        tmp_path, monkeypatch, {f: ["o1", "o2"] for f in G.FILTERS})
+    monkeypatch.setattr(G, "miri_measure_pairs", lambda p: (sorted(p), []))
+    run = G.cmd_nircam_residual_match if residual else G.cmd_nircam_match
+    assert run() == 1
+    _unchanged(tmp_path, paths, texts, listing)
+    out = capsys.readouterr().out
+    assert "f480m: no overlapping pairs; nothing to tie together" in out
+    assert "nothing written; " in out
+    inv, _ = G.inventory()
+    assert G._nircam_match_filter("f480m", inv["f480m"]) is None
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_a_write_that_dies_midway_leaves_the_table_whole(
+        tmp_path, monkeypatch, residual):
+    """Both tables go through a .tmp and os.replace.  Written straight into
+    place, a dump that raised partway would leave a truncated table, which
+    needs_build then raises on in every --list and --auto tick."""
+    paths, texts, _ = _solve_setup(
+        tmp_path, monkeypatch, {f: ["o1", "o2"] for f in G.FILTERS})
+    # json cannot encode a complex pair difference, so json.dump raises after
+    # it has written the start of the document
+    monkeypatch.setattr(G, "miri_measure_pairs", lambda p: (
+        sorted(p), [("o1", "o2", complex(0.5, 0), 1000)]))
+    monkeypatch.setattr(G, "miri_solve_offsets",
+                        lambda keys, pairs: {k: 0.0 for k in keys})
+    run = G.cmd_nircam_residual_match if residual else G.cmd_nircam_match
+    with pytest.raises(TypeError):
+        run()
+    assert {k: p.read_text() for k, p in paths.items()} == texts
+    assert G.load_nircam_match(
+        "nircam_residual" if residual else "nircam") is not None
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_build_obs_refuses_a_field_with_an_offset_in_one_filter(
+        tmp_path, monkeypatch, residual):
+    """PARTIAL covers o128 in F212N only.  build_obs stops with its own
+    "no background offset" error before rendering anything, naming the
+    missing filter and the solve to rerun."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path / "out"))
+    _tables(tmp_path, monkeypatch, image=PARTIAL, residual=PARTIAL)
+    inv = _mosaics(tmp_path / "mosaics",
+                   {f: ["o127", "o128"] for f in G.FILTERS})
+    monkeypatch.setattr(G, "inventory", lambda residual=False: (
+        inv, ["o127", "o128"]))
+    res = " residual" if residual else ""
+    cli = "--nircam-match --residual" if residual else "--nircam-match"
+    with pytest.raises(RuntimeError) as exc:
+        G.build_obs("o128", stretch="bgmatch", residual=residual)
+    assert str(exc.value) == \
+        f"o128: no{res} background offset for f480m; re-run {cli}"
+    assert not os.path.exists(G.png_for("o128", "bgmatch", residual))
