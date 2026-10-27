@@ -278,9 +278,12 @@ def _stretch_channels(chans, stretch):
 
 
 def _pct_levels(v):
-    """The "pct" stretch's (vmin, vmax) for one sample."""
+    """The "pct" stretch's (vmin, vmax) for one sample, None if the sample
+    is flat (the two percentiles are equal)."""
     lo, hi = np.percentile(v, [STRETCHES["pct"]["min_percent"],
                                STRETCHES["pct"]["max_percent"]])
+    if not hi > lo:
+        return None
     return float(lo), float(hi)
 
 

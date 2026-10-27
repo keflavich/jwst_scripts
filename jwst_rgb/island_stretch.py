@@ -88,9 +88,10 @@ def apply_per_island(out, data, labels, slices, levels_fn, stretch_fn,
 
     ``levels_fn`` receives a 1D sample (every ``sample``-th finite, nonzero
     pixel of the island) and returns the level tuple that ``stretch_fn``
-    takes after the data.  Pixels outside every island, and islands with
-    fewer than ``min_count`` sampled pixels, keep what ``out`` already holds
-    (normally the global stretch).  ``out`` and ``data`` are 2D and may be
+    takes after the data, or None when the sample cannot set levels (a flat
+    island).  Pixels outside every island, islands with fewer than
+    ``min_count`` sampled pixels, and islands whose ``levels_fn`` returns
+    None keep what ``out`` already holds (normally the global stretch).  ``out`` and ``data`` are 2D and may be
     strided views.  Returns one dict per island: label, bounding box,
     sampled pixel count and levels (None if skipped).
     """
@@ -105,8 +106,8 @@ def apply_per_island(out, data, labels, slices, levels_fn, stretch_fn,
         rec = {"label": k,
                "bbox": [[sl[0].start, sl[0].stop], [sl[1].start, sl[1].stop]],
                "n_sampled": int(vals.size), "levels": None}
-        if vals.size >= min_count:
-            lv = levels_fn(vals)
+        lv = levels_fn(vals) if vals.size >= min_count else None
+        if lv is not None:
             o = out[sl]
             o[m] = np.nan_to_num(stretch_fn(sub[m], *lv))
             rec["levels"] = [float(x) for x in lv]

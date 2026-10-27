@@ -94,9 +94,13 @@ def levels_from(v):
     its 99.9th percentile, then asinh with the softening that puts the
     median at TARGET.  asinh cannot lift the median ABOVE its linear
     position, so a sample whose median already sits at or above TARGET
-    (a bright, flat island) gets softening 1e3, which is linear to <1e-6."""
+    (a bright, flat island) gets softening 1e3, which is linear to <1e-6.
+    A sample whose 1st and 99.9th percentiles are equal has no range to
+    stretch and returns None."""
     from scipy.optimize import brentq
     lo, med, top = np.percentile(v, [LO_PCT, 50, TOP_PCT])
+    if not top > lo:
+        return None
     m = (med - lo) / (top - lo)
     if m >= TARGET:
         return float(lo), float(top), 1e3, float(med)
@@ -110,7 +114,16 @@ def levels():
     7th px."""
     data = image_hdu(os.path.join(SRC, REFERENCE)).data
     v = np.asarray(data[::7, ::7], dtype=np.float32).ravel()
-    return levels_from(v[np.isfinite(v) & (v != 0)])
+    lv = levels_from(v[np.isfinite(v) & (v != 0)])
+    if lv is None:
+        raise ValueError(f"{REFERENCE}: flat sample, no stretch levels")
+    return lv
+
+
+def island_levels(v):
+    """levels_from's (lo, top, softening) for one island, None if flat."""
+    lv = levels_from(v)
+    return None if lv is None else lv[:3]
 
 
 def stretch(c, lo, top, a):
@@ -148,7 +161,7 @@ def build(index, islands=False):
                                   min_area_pix=ISLAND_MIN_PIX)
         island_records = apply_per_island(
             grey, filled, labels, island_slices(labels, n),
-            lambda v: levels_from(v)[:3], stretch)
+            island_levels, stretch)
         del labels
         island_centres_galactic(island_records, WCS(header).celestial)
         for r in island_records:
@@ -180,7 +193,7 @@ def build(index, islands=False):
         raise RuntimeError(f"{name}: orientation/astrometry check {why}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
@@ -189,7 +202,7 @@ def main():
     ap.add_argument("--islands", action="store_true",
                     help="give each coverage island its own stretch; "
                          "writes <layer>_islands")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.islands and args.index is None:
         ap.error("--islands needs --index")
     if args.list:
