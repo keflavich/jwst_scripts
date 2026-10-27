@@ -1,0 +1,132 @@
+"""jwst_rgb.island_stretch and the --islands / --red nbfull callers."""
+import numpy as np
+import pytest
+from astropy.visualization import simple_norm
+from astropy.wcs import WCS
+
+from jwst_rgb.island_stretch import (apply_per_island, island_centres_galactic,
+                                     island_labels, island_slices)
+
+
+def _two_islands(ny=120, nx=200):
+    """A faint island on the left, a bright one on the right, blank between;
+    the faint one has a 3-px seam down its middle and a saturated-core hole."""
+    rng = np.random.default_rng(0)
+    data = np.full((ny, nx), np.nan, np.float32)
+    data[10:110, 10:80] = rng.normal(20, 2, (100, 70))
+    data[10:110, 120:190] = rng.normal(200, 20, (100, 70))
+    data[10:110, 44:47] = np.nan          # seam inside the faint island
+    data[50:60, 20:30] = np.nan           # saturated core
+    return data
+
+
+def test_islands_join_across_a_seam_and_keep_their_holes():
+    data = _two_islands()
+    labels, n = island_labels(np.isfinite(data), step=4, min_area_pix=100)
+    assert n == 2
+    left, right = labels[60, 15], labels[60, 150]
+    assert left != right and 0 not in (left, right)
+    assert labels[60, 45] == left         # the seam
+    assert labels[55, 25] == left         # the saturated core
+    assert labels[60, 100] == 0           # blank sky between the islands
+
+
+def test_a_small_island_borrows_the_nearest_large_islands_label():
+    data = _two_islands()
+    data[2:6, 180:184] = 5                # a 16-px sliver near the right island
+    labels, n = island_labels(np.isfinite(data), step=2, min_area_pix=100)
+    assert n == 2
+    assert labels[3, 181] == labels[60, 150]
+
+
+def test_each_island_reaches_the_full_range():
+    """The point of the flavour: a faint island stretched alone fills 0..1
+    instead of sitting at the bottom of the global range."""
+    data = _two_islands()
+    lo, hi = np.nanpercentile(data, [1, 99.5])
+    out = np.nan_to_num(np.clip((data - lo) / (hi - lo), 0, 1))
+    labels, n = island_labels(np.isfinite(data), step=4, min_area_pix=100)
+    faint = np.isfinite(data) & (labels == labels[60, 15])
+    assert np.median(out[faint]) < 0.05
+    recs = apply_per_island(
+        out, data, labels, island_slices(labels, n),
+        lambda v: tuple(np.percentile(v, [1, 99.5])),
+        lambda c, a, b: np.clip((c - a) / (b - a), 0, 1), sample=1,
+        min_count=10)
+    assert len(recs) == 2 and all(r["levels"] for r in recs)
+    assert 0.3 < np.median(out[faint]) < 0.7
+    assert np.all(out[~np.isfinite(data) & (labels == 0)] == 0)
+
+
+def test_an_island_with_too_little_data_keeps_the_global_value():
+    data = _two_islands()
+    labels, n = island_labels(np.isfinite(data), step=4, min_area_pix=100)
+    out = np.full(data.shape, 0.25, np.float32)
+    chan = np.where(labels == labels[60, 150], data, np.nan)  # left has none
+    recs = apply_per_island(out, chan, labels, island_slices(labels, n),
+                            lambda v: (0.0, 1.0), lambda c, a, b: c * 0 + 1)
+    left = [r for r in recs if r["label"] == labels[60, 15]][0]
+    assert left["levels"] is None
+    assert np.all(out[labels == labels[60, 15]] == 0.25)
+
+
+def test_centres_are_galactic():
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["GLON-CAR", "GLAT-CAR"]
+    w.wcs.crval = [0.5, -0.1]
+    w.wcs.crpix = [1, 1]
+    w.wcs.cdelt = [-1e-3, 1e-3]
+    recs = island_centres_galactic([{"bbox": [[0, 1], [0, 1]]}], w)
+    assert recs[0]["glon"] == pytest.approx(0.5, abs=1e-6)
+    assert recs[0]["glat"] == pytest.approx(-0.1, abs=1e-6)
+
+
+def test_rgb_island_stretch_matches_simple_norm():
+    """--islands must reproduce the "pct" look within an island: the same
+    percentiles and asinh as simple_norm, just solved per island."""
+    import gc_treasury_mosaic_rgb_hips as G
+    rng = np.random.default_rng(3)
+    v = rng.lognormal(3, 1, 5000).astype(np.float32)
+    ref = simple_norm(v, **G.STRETCHES["pct"])(v)
+    mine = G._pct_apply(v, *G._pct_levels(v))
+    np.testing.assert_allclose(mine, np.clip(ref, 0, 1), atol=2e-6)
+
+
+def test_nbfull_and_islands_names():
+    import gc_treasury_mosaic_rgb_hips as G
+    names = {G.rgb_trio_hips_for("main", "pct", red, isl)
+             for red in ("mosaic", "nb", "nbfull") for isl in (False, True)}
+    assert len(names) == 6
+    full = G.rgb_trio_hips_for("main", "pct", "nbfull")
+    assert full.endswith("/gctreasury_nbfullmosaic_RGB_770-480-212_hips")
+    assert G.rgb_trio_hips_for("main", "pct", "nbfull", True).endswith(
+        "/gctreasury_nbfullmosaic_RGB_770-480-212_islands_hips")
+    # the published nb layer keeps its name
+    assert G.rgb_trio_hips_for("main", "pct", "nb").endswith(
+        "/gctreasury_nbmosaic_RGB_770-480-212_hips")
+
+
+@pytest.mark.parametrize("argv", [
+    ["--grids", "770", "--rgb-only", "--islands"],                 # red mosaic
+    ["--grids", "770", "--rgb-only", "--red", "nbfull", "--islands",
+     "--stretch", "vminmax"],
+    ["--grids", "770", "--rgb-only", "--red", "nbfull", "--which", "both"],
+])
+def test_islands_and_nbfull_usage_errors(argv):
+    import gc_treasury_mosaic_rgb_hips as G
+    with pytest.raises(SystemExit):
+        G.main(argv)
+
+
+def test_miri_levels_fall_back_to_linear_when_the_median_is_high():
+    import gc_treasury_nb_miri_hips as M
+    v = np.linspace(0, 1, 1001)           # median at 0.5 of the range
+    lo, top, a, med = M.levels_from(v)
+    assert a == 1e3
+    y = M.stretch(np.array([med]), lo, top, a)
+    assert y[0] == pytest.approx((med - lo) / (top - lo), abs=1e-5)
+    v = np.random.default_rng(1).lognormal(3, 1, 20000)
+    lo, top, a, med = M.levels_from(v)
+    assert a < 1e3
+    assert M.stretch(np.array([med]), lo, top, a)[0] == pytest.approx(
+        M.TARGET, abs=1e-3)
