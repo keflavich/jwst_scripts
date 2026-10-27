@@ -40,6 +40,20 @@ def test_islands_join_across_a_seam():
     assert labels[60, 100] == 0           # blank sky between the islands
 
 
+def test_a_seam_narrower_than_the_closing_is_bridged():
+    """A 6-px blank seam (under two coarse blocks at step 4) splits one
+    tile; the closing must rejoin it, and close_iter=0 must not."""
+    data = np.full((160, 260), np.nan, np.float32)
+    data[10:150, 10:200] = 1.0
+    data[:, 100:106] = np.nan
+    labels, n = island_labels(np.isfinite(data), step=4, min_area_pix=100)
+    assert n == 1
+    assert labels[80, 50] == labels[80, 150] != 0
+    _, n0 = island_labels(np.isfinite(data), step=4, min_area_pix=100,
+                          close_iter=0)
+    assert n0 == 2
+
+
 def test_a_hole_wider_than_the_closing_stays_in_its_island():
     """A 60x60 px core at step 4 is 15 blocks across, beyond what
     binary_closing(iterations=2) bridges, so only the hole fill keeps it."""
@@ -191,6 +205,15 @@ def test_miri_levels_fall_back_to_linear_when_the_median_is_high():
     assert a < 1e3
     assert M.stretch(np.array([med]), lo, top, a)[0] == pytest.approx(
         M.TARGET, abs=1e-3)
+
+
+def test_global_miri_levels_refuse_a_flat_reference(monkeypatch):
+    import gc_treasury_nb_miri_hips as M
+    from types import SimpleNamespace
+    monkeypatch.setattr(M, "image_hdu",
+                        lambda path: SimpleNamespace(data=np.full((70, 70), 3.0)))
+    with pytest.raises(ValueError):
+        M.levels()
 
 
 def test_nb_miri_islands_needs_an_index():
