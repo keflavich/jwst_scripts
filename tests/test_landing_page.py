@@ -10,6 +10,7 @@ import os
 import pytest
 
 from jwst_rgb.landing_page import patch_hips_dir, patch_landing_page, patch_tree
+from jwst_rgb.vendor_fallback import LANDING_MARKER
 
 AS_WRITTEN = """\
 <!DOCTYPE html>
@@ -217,3 +218,81 @@ def test_patch_tree_reports_what_it_could_not_do(tmp_path):
     changed, seen, unhandled = patch_tree(str(tmp_path))
     assert (changed, seen) == (1, 2)
     assert len(unhandled) == 1 and "b_hips" in unhandled[0]
+
+
+# --- self-hosted-first fallback chain (aladin.cds.unistra.fr outage, 2026-10-28) --
+
+
+def test_the_fallback_chain_is_added_exactly_once(page):
+    assert patch_landing_page(page) is True
+    s = open(page).read()
+    assert s.count(LANDING_MARKER) == 1
+    assert s.count("hips-landing-page.js") == 3   # self-hosted, mirror, cds
+
+
+def test_second_call_returns_false_and_changes_nothing(page):
+    patch_landing_page(page)
+    first = open(page).read()
+    assert patch_landing_page(page) is False
+    assert open(page).read() == first
+
+
+def test_the_self_hosted_source_loads_before_cds(page):
+    patch_landing_page(page)
+    s = open(page).read()
+    self_hosted = s.index("starformation.astro.ufl.edu/vendor/hips-templates/hips-landing-page.js")
+    mirror = s.index("data.rc.ufl.edu/pub/adamginsburg/vendor/hips-templates/hips-landing-page.js")
+    cds = s.index("aladin.cds.unistra.fr/hips-templates/hips-landing-page.js")
+    assert self_hosted < mirror < cds
+
+
+def test_the_lone_cds_script_tag_is_gone_after_patching(page):
+    """The original single `<script src=".../hips-landing-page.js">` tag --
+    with no fallback around it -- must not survive; it is replaced by the
+    chain, not left alongside it."""
+    patch_landing_page(page)
+    s = open(page).read()
+    assert '<script src="https://aladin.cds.unistra.fr/hips-templates/hips-landing-page.js"></script>' not in s
+
+
+def test_an_already_aladinparams_page_still_gains_the_chain(tmp_path):
+    """Every page built before this fix is in exactly this state: the
+    aladinParams/CSS overrides already applied, but no fallback chain."""
+    p = tmp_path / "index.html"
+    p.write_text(AS_WRITTEN.replace(
+        "buildLandingPage({",
+        "buildLandingPage({aladinParams: {showSettingsControl: true}, "))
+    assert LANDING_MARKER not in p.read_text()
+    assert patch_landing_page(str(p)) is True
+    s = p.read_text()
+    assert LANDING_MARKER in s
+    assert s.count("aladinParams") == 1
+
+
+def test_buildlandingpage_call_itself_is_untouched_by_the_chain_edit(page):
+    """The chain only replaces the hips-landing-page.js <script> tag; the
+    buildLandingPage(...) call and its alScriptURL argument are a separate
+    edit path and must survive unchanged."""
+    patch_landing_page(page)
+    s = open(page).read()
+    assert "alScriptURL: 'https://aladin.cds.unistra.fr" in s
+    assert s.count("buildLandingPage(") == 1
+
+
+def test_two_lone_cds_tags_raise_rather_than_silently_picking_one(tmp_path):
+    p = tmp_path / "index.html"
+    p.write_text(AS_WRITTEN.replace(
+        "</head>",
+        '    <script src="https://aladin.cds.unistra.fr/hips-templates/hips-landing-page.js"></script>\n</head>'))
+    with pytest.raises(ValueError, match="more than one"):
+        patch_landing_page(str(p))
+
+
+def test_the_u_strasbg_alias_is_also_matched(tmp_path):
+    p = tmp_path / "index.html"
+    p.write_text(AS_WRITTEN.replace("aladin.cds.unistra.fr/hips-templates",
+                                    "aladin.u-strasbg.fr/hips-templates"))
+    assert patch_landing_page(str(p)) is True
+    s = p.read_text()
+    assert LANDING_MARKER in s
+    assert "aladin.u-strasbg.fr/hips-templates" not in s
