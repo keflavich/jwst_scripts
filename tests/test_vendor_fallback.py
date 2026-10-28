@@ -15,6 +15,7 @@ from jwst_rgb.vendor_fallback import (
     ALADIN_LITE_MIRROR,
     ALADIN_LITE_SELFHOSTED,
     ALADIN_LITE_VERSION,
+    LANDING_CHAIN,
 )
 
 
@@ -57,3 +58,14 @@ def test_cube_page_has_exactly_one_bare_aladin_js_script_tag_removed():
     assert 'src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.7.2-beta/aladin.js"' not in page
     # the chain's own CDS entry (3.8.2) is still present, as the last source
     assert 'src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js"' in page
+
+
+def test_chains_end_with_a_guarded_stub():
+    """When every source fails, each chain installs a stub behind a guard
+    on the symbol the sources define, placed after the last source."""
+    a_guard = ALADIN_LITE_CHAIN.index("if (!window.A) {")
+    assert a_guard > ALADIN_LITE_CHAIN.rindex("aladin.cds.unistra.fr")
+    assert "init: new Promise(function () {})" in ALADIN_LITE_CHAIN[a_guard:]
+    l_guard = LANDING_CHAIN.index("if (typeof buildLandingPage === 'undefined') {")
+    assert l_guard > LANDING_CHAIN.rindex("aladin.cds.unistra.fr")
+    assert "window.buildLandingPage = function" in LANDING_CHAIN[l_guard:]

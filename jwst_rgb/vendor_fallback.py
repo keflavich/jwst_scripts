@@ -22,6 +22,15 @@ static ``<script>`` tag should use :data:`ALADIN_LITE_CHAIN` /
 :data:`LANDING_CHAIN` instead of writing its own single-source tag, so the
 chain lives in one place rather than being pasted per file.
 
+The chains have no load timeout of their own.  Each source is a
+parser-inserted ``<script>``, so a source whose connect HANGS (rather than
+failing fast) still blocks parsing for the browser's own connect timeout
+before the next source is tried.  With the UF hosts first this matters only
+when one of them hangs; in the 2026-10-28 failure mode, CDS is reached only
+after both UF copies have failed.  The self-hosted landing template
+(``/vendor/hips-templates/hips-landing-page.js``) does apply a per-source
+timeout to the Aladin Lite load it makes itself.
+
 See ``/vendor/README.txt`` on the starformation host for the mirrors'
 provenance.
 """
