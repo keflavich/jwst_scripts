@@ -26,6 +26,16 @@ clips to black.  fill_nan fills the saturated cores of the two unsubtracted
 mosaics; the star-subtracted ones are shown as delivered (the _filled variant
 is the filled one).  NaN that touches the edge becomes transparent.
 
+--islands builds a second flavour of a layer, named <layer>_islands, in which
+every coverage island (jwst_rgb.island_stretch) gets its own stretch by the
+same rule (1st to 99.9th percentile, median at 0.15) solved on that island
+alone.  The shared stretch puts the high-latitude control field (median ~20
+MJy/sr against a shared floor of ~20) and the fields on the Sgr C side of the
+CMZ (medians ~70-77 against a shared median of ~128) at or near black; the
+island flavour shows their structure, and in exchange a grey level no longer
+means the same MJy/sr from one island to the next.  The shared-stretch layer
+keeps its name and is unchanged.
+
 No astrometric correction is applied.  check_orientation validates the
 PNG -> AVM -> HiPS round trip against the input FITS; it does not test the
 mosaic's astrometry.
@@ -34,6 +44,7 @@ Usage:
     gc_treasury_nb_miri_hips.py --list
     gc_treasury_nb_miri_hips.py --levels          # print the shared stretch
     gc_treasury_nb_miri_hips.py --index I         # layer I (SLURM array 0-3)
+    gc_treasury_nb_miri_hips.py --index I --islands   # per-island stretch
 """
 import argparse
 import json
@@ -65,6 +76,9 @@ LAYERS = [
 REFERENCE = "gc10678_f770w_combined_i2d.fits"
 TARGET = 0.15
 LO_PCT, TOP_PCT = 1, 99.9
+# Islands smaller than this many pixels (~0.6 arcmin2 at 0.111"/px) borrow
+# the nearest large island's stretch; see jwst_rgb.island_stretch.
+ISLAND_MIN_PIX = 50000
 
 
 def image_hdu(path):
@@ -75,17 +89,41 @@ def image_hdu(path):
     return next(h for h in hl if h.data is not None and h.data.ndim == 2)
 
 
-def levels():
-    """(lo, top, softening) from the combined mosaic, sampled every 7th px."""
+def levels_from(v):
+    """(lo, top, softening, median) of the sample v: linear from its 1st to
+    its 99.9th percentile, then asinh with the softening that puts the
+    median at TARGET.  asinh cannot lift the median ABOVE its linear
+    position, so a sample whose median already sits at or above TARGET
+    (a bright, flat island) gets softening 1e3, which is linear to <1e-6.
+    A sample whose 1st and 99.9th percentiles are equal has no range to
+    stretch and returns None."""
     from scipy.optimize import brentq
-    data = image_hdu(os.path.join(SRC, REFERENCE)).data
-    v = np.asarray(data[::7, ::7], dtype=np.float32).ravel()
-    v = v[np.isfinite(v) & (v != 0)]
     lo, med, top = np.percentile(v, [LO_PCT, 50, TOP_PCT])
+    if not top > lo:
+        return None
     m = (med - lo) / (top - lo)
+    if m >= TARGET:
+        return float(lo), float(top), 1e3, float(med)
     a = brentq(lambda a: np.arcsinh(m / a) / np.arcsinh(1 / a) - TARGET,
                1e-8, 1e3)
     return float(lo), float(top), float(a), float(med)
+
+
+def levels():
+    """(lo, top, softening, median) from the combined mosaic, sampled every
+    7th px."""
+    data = image_hdu(os.path.join(SRC, REFERENCE)).data
+    v = np.asarray(data[::7, ::7], dtype=np.float32).ravel()
+    lv = levels_from(v[np.isfinite(v) & (v != 0)])
+    if lv is None:
+        raise ValueError(f"{REFERENCE}: flat sample, no stretch levels")
+    return lv
+
+
+def island_levels(v):
+    """levels_from's (lo, top, softening) for one island, None if flat."""
+    lv = levels_from(v)
+    return None if lv is None else lv[:3]
 
 
 def stretch(c, lo, top, a):
@@ -93,11 +131,13 @@ def stretch(c, lo, top, a):
     return (np.arcsinh(y / a) / np.arcsinh(1 / a)).astype(np.float32)
 
 
-def build(index):
+def build(index, islands=False):
     from jwst_rgb.save_rgb import save_rgb, avm_for_saved_png, fill_nan
     from gc_treasury_rgb_images import check_orientation
 
     name, fn, do_fill = LAYERS[index]
+    if islands:
+        name = f"{name}_islands"
     src = os.path.join(SRC, fn)
     lo, top, a, med = levels()
     print(f"{name}: shared stretch lo={lo:.3f} median={med:.3f} "
@@ -112,6 +152,22 @@ def build(index):
     else:
         filled = raw
     grey = np.nan_to_num(stretch(filled, lo, top, a))
+    island_records = None
+    if islands:
+        from jwst_rgb.island_stretch import (island_labels, island_slices,
+                                             apply_per_island,
+                                             island_centres_galactic)
+        labels, n = island_labels(np.isfinite(raw) & (raw != 0),
+                                  min_area_pix=ISLAND_MIN_PIX)
+        island_records = apply_per_island(
+            grey, filled, labels, island_slices(labels, n),
+            island_levels, stretch)
+        del labels
+        island_centres_galactic(island_records, WCS(header).celestial)
+        for r in island_records:
+            print(f"  island {r['label']:3d} l={r['glon']:+.3f} "
+                  f"b={r['glat']:+.3f} n={r['n_sampled']} "
+                  f"levels={r['levels']}", flush=True)
     del filled
     rgb = np.broadcast_to(grey[:, :, None], shape + (3,))
     original = np.broadcast_to(raw[:, :, None], shape + (3,))
@@ -128,7 +184,8 @@ def build(index):
         json.dump({"layer": name, "input": src, "filled": do_fill,
                    "stretch": {"lo": lo, "median": med, "top": top,
                                "softening": a, "target": TARGET,
-                               "from": REFERENCE}}, fh, indent=2)
+                               "from": REFERENCE},
+                   "islands": island_records}, fh, indent=2)
     ok = check_orientation(hips, src)
     print(f"done: {hips} orientation_ok={ok}", flush=True)
     if ok is not True:
@@ -136,13 +193,18 @@ def build(index):
         raise RuntimeError(f"{name}: orientation/astrometry check {why}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--levels", action="store_true")
     g.add_argument("--index", type=int, help="layer by position")
-    args = ap.parse_args()
+    ap.add_argument("--islands", action="store_true",
+                    help="give each coverage island its own stretch; "
+                         "writes <layer>_islands")
+    args = ap.parse_args(argv)
+    if args.islands and args.index is None:
+        ap.error("--islands needs --index")
     if args.list:
         for i, (name, fn, do_fill) in enumerate(LAYERS):
             p = os.path.join(SRC, fn)
@@ -151,7 +213,7 @@ def main():
     elif args.levels:
         print(levels())
     else:
-        build(args.index)
+        build(args.index, islands=args.islands)
 
 
 if __name__ == "__main__":

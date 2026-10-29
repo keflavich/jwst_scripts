@@ -113,6 +113,41 @@ SPECIAL = {
         "jwst-gc-treasury-rgb-nbf770w-f480m-f212n",
         "JWST GC Treasury: Galactic Center RGB, MIRI F770W (combined mosaic "
         "by N. Budaiev) / NIRCam F480M / NIRCam F212N"),
+    "gctreasury_nbfullmosaic_RGB_770-480-212_hips": (
+        "jwst-gc-treasury-rgb-nbfullf770w-f480m-f212n",
+        "JWST GC Treasury: Galactic Center RGB, MIRI F770W (combined mosaic "
+        "by N. Budaiev, including 4QPM fields) / NIRCam F480M / NIRCam "
+        "F212N"),
+    "gctreasury_nbfullmosaic_RGB_770-480-212_islands_hips": (
+        "jwst-gc-treasury-rgb-nbfullf770w-f480m-f212n-islands",
+        "JWST GC Treasury: Galactic Center RGB, MIRI F770W (combined mosaic "
+        "by N. Budaiev, including 4QPM fields) / NIRCam F480M / NIRCam "
+        "F212N, each coverage island stretched separately"),
+    # CMZ-wide F770W mosaics by Nazar Budaiev (2026-10-08), built by
+    # scripts/gc_treasury_nb_miri_hips.py.
+    "gc10678_f770w_combined_hips": (
+        "jwst-gc-10678-miri-f770w-combined",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ (all 10678 fields "
+        "plus other F770W data)"),
+    "gc10678_f770w_combined_starsub_hips": (
+        "jwst-gc-10678-miri-f770w-combined-starsub",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ, stars subtracted"),
+    "gc10678_f770w_combined_starsub_filled_hips": (
+        "jwst-gc-10678-miri-f770w-combined-starsub-filled",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ, stars subtracted, "
+        "gaps filled and smoothed"),
+    "gc10678_f770w_combined_islands_hips": (
+        "jwst-gc-10678-miri-f770w-combined-islands",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ (all 10678 fields "
+        "plus other F770W data), each coverage island stretched separately"),
+    "gc_f770w_fullframe_hips": (
+        "jwst-gc-miri-f770w-fullframe",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ including 4QPM "
+        "fields"),
+    "gc_f770w_fullframe_islands_hips": (
+        "jwst-gc-miri-f770w-fullframe-islands",
+        "JWST GC Treasury: MIRI F770W mosaic of the CMZ including 4QPM "
+        "fields, each coverage island stretched separately"),
     # Star-subtracted flavours: built from the DAOPHOT residual mosaics.
     "jwst_gc_treasury_residual_vminmax_hips": (
         "jwst-gc-treasury-nircam-mosaic-residual-minmax",

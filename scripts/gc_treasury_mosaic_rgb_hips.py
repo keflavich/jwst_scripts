@@ -16,6 +16,14 @@ each with its own HiPS:
   --red nb (build_rgb_trio): as the 770 grid, but R is Nazar Budaiev's
                              combined F770W mosaic (NB_MIRI below)
                              and the grid is that mosaic's.
+  --red nbfull:              as --red nb, with R from the full-frame
+                             preview of the same mosaic (NB_MIRI_FULL),
+                             which adds the MIRI 4QPM coronagraph panes.
+
+  --islands (with --red nb/nbfull): every coverage island of R gets its own
+                             1st-99.5th percentile levels in each channel
+                             (jwst_rgb.island_stretch) instead of one set of
+                             levels for the whole mosaic; named *_islands.
 
 Plus a plain monochrome F770W layer (build_miri) with no colour synthesis at
 all, useful as a diagnostic independent of either RGB's stretch choices.
@@ -132,6 +140,18 @@ NB_MIRI = ("/orange/adamginsburg/jwst/sgrb2/NB/gc/claude_MIRI_mosaics/"
 # to the outer blank region, so this matches alpha_only_edges there; it also
 # covers an enclosed gap if a later version of the mosaic has one.
 NB_GAP_MIN_PIX = 20000
+# The full-frame preview of the same mosaic (also by N. Budaiev, 2026-10-08):
+# the NB_MIRI grid plus 147 columns, with the MIRI 4QPM coronagraph panes
+# filled in where no imager pixel exists, the 4QPM smear deconvolved.  Its
+# SCI header calls it look-only, not for science; it is used here for
+# display, as gc_treasury_nb_miri_hips.py already does.  Used as R by
+# --red nbfull.
+NB_MIRI_FULL = ("/orange/adamginsburg/jwst/sgrb2/NB/gc/claude_MIRI_mosaics/"
+                "gc_f770w_fullframe_preview_i2d.fits")
+NB_REDS = {"nb": NB_MIRI, "nbfull": NB_MIRI_FULL}
+# --islands: islands of R coverage smaller than this many pixels (~0.6
+# arcmin2 at 0.111"/px) borrow the nearest large island's levels.
+ISLAND_MIN_PIX = 50000
 
 # simple_norm kwargs, applied to the raw FITS values in MJy/sr.  Mirrors the
 # per-observation script's "pct" and "vminmax" flavours (see
@@ -159,15 +179,19 @@ def rgb_hips_for(which, stretch):
     return rgb_png_for(which, stretch).replace(".png", "_hips")
 
 
-def rgb_trio_png_for(which, stretch, red="mosaic"):
+def rgb_trio_png_for(which, stretch, red="mosaic", islands=False):
     suffix = "_residual" if which == "residual" else ""
     tag = "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
-    base = "gctreasury_nbmosaic" if red == "nb" else "gctreasury_mosaic"
+    if islands:
+        tag += "_islands"
+    base = {"nb": "gctreasury_nbmosaic",
+            "nbfull": "gctreasury_nbfullmosaic"}.get(red, "gctreasury_mosaic")
     return f"{OUTDIR}/{base}_RGB_770-480-212{suffix}{tag}.png"
 
 
-def rgb_trio_hips_for(which, stretch, red="mosaic"):
-    return rgb_trio_png_for(which, stretch, red).replace(".png", "_hips")
+def rgb_trio_hips_for(which, stretch, red="mosaic", islands=False):
+    return rgb_trio_png_for(which, stretch, red,
+                            islands).replace(".png", "_hips")
 
 
 def miri_png_for(which):
@@ -200,12 +224,13 @@ def _load_primary(path):
     return data, wcs
 
 
-def _load_nb_miri():
-    """Data + celestial WCS of NB_MIRI: SCI if present, else the first 2D HDU
-    (the 2026-10-08 file is a bare PRIMARY image despite its _i2d name)."""
+def _load_nb_miri(path=NB_MIRI):
+    """Data + celestial WCS of an NB mosaic: SCI if present, else the first
+    2D HDU (the 2026-10-08 NB_MIRI is a bare PRIMARY image despite its _i2d
+    name; NB_MIRI_FULL has a SCI extension)."""
     from astropy.io import fits
     from astropy.wcs import WCS
-    with fits.open(NB_MIRI) as hdul:
+    with fits.open(path) as hdul:
         hdu = (hdul["SCI"] if "SCI" in hdul else
                next(h for h in hdul if h.data is not None and h.data.ndim == 2))
         return hdu.data.astype(np.float32), WCS(hdu.header).celestial
@@ -250,6 +275,46 @@ def _stretch_channels(chans, stretch):
     # memory" in the module docstring).
     return np.stack([np.nan_to_num(simple_norm(c, **kw)(c)).astype(np.float32)
                      for c in chans], axis=2)
+
+
+def _pct_levels(v):
+    """The "pct" stretch's (vmin, vmax) for one sample, None if the sample
+    is flat (the two percentiles are equal)."""
+    lo, hi = np.percentile(v, [STRETCHES["pct"]["min_percent"],
+                               STRETCHES["pct"]["max_percent"]])
+    if not hi > lo:
+        return None
+    return float(lo), float(hi)
+
+
+def _pct_apply(c, lo, hi):
+    """simple_norm(stretch="asinh") between (lo, hi), asinh_a = 0.1 (its
+    default), clipped to 0..1."""
+    y = np.clip((c - lo) / (hi - lo), 0, 1)
+    return (np.arcsinh(y / 0.1) / np.arcsinh(1 / 0.1)).astype(np.float32)
+
+
+def _restretch_islands(scaled, chans, r_raw, twcs):
+    """Overwrite each channel of the globally stretched ``scaled`` island by
+    island (islands of R coverage) with that island's own "pct" levels.
+    A channel with too little data in an island (G/B in a MIRI-only tile)
+    keeps the global levels there."""
+    from jwst_rgb.island_stretch import (island_labels, island_slices,
+                                         apply_per_island,
+                                         island_centres_galactic)
+    labels, n = island_labels(np.isfinite(r_raw) & (np.abs(r_raw) >= 1e-5),
+                              min_area_pix=ISLAND_MIN_PIX)
+    slices = island_slices(labels, n)
+    print(f"  islands: {n} with their own levels", flush=True)
+    for i, (name, chan) in enumerate(zip("RGB", chans)):
+        recs = apply_per_island(scaled[:, :, i], chan, labels, slices,
+                                _pct_levels, _pct_apply)
+        island_centres_galactic(recs, twcs)
+        for r in recs:
+            print(f"  {name} island {r['label']:3d} l={r['glon']:+.3f} "
+                  f"b={r['glat']:+.3f} n={r['n_sampled']} "
+                  f"levels={r['levels']}", flush=True)
+    return scaled
 
 
 def _reproject_onto(filt, which, twcs, ny, nx):
@@ -329,7 +394,7 @@ def build_rgb(which="main", stretch=DEFAULT_STRETCH, hips=True):
 
 
 def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
-                   red="mosaic"):
+                   red="mosaic", islands=False):
     """R = F770W, G = F480M, B = F212N, all on F770W's native grid.
 
     Unlike build_rgb, all three channels are real, independent filters -- no
@@ -362,11 +427,14 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
     from jwst_rgb.save_rgb import avm_for_saved_png
     Image.MAX_IMAGE_PIXELS = None
 
-    if red == "nb":
+    if islands and (red not in NB_REDS or stretch != "pct"):
+        raise ValueError("--islands needs --red nb/nbfull and --stretch pct")
+    if red in NB_REDS:
         if which != "main":
-            raise ValueError("--red nb has no residual flavour")
-        print(f"[{which}] loading target grid from {NB_MIRI}", flush=True)
-        r, twcs = _load_nb_miri()
+            raise ValueError(f"--red {red} has no residual flavour")
+        print(f"[{which}] loading target grid from {NB_REDS[red]}",
+              flush=True)
+        r, twcs = _load_nb_miri(NB_REDS[red])
     else:
         r_path = mosaic_path(MIRI_FILTER, which)
         if not os.path.exists(r_path):
@@ -377,7 +445,7 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
     print(f"[{which}] target grid {nx}x{ny} ({MIRI_FILTER.upper()} native)",
           flush=True)
     r_raw = r
-    if red == "nb":
+    if red in NB_REDS:
         # Fill saturated-core NaN islands for display only; alpha comes from
         # _nb_alpha_source(r_raw), which clears coverage gaps of any shape.
         from jwst_rgb.save_rgb import fill_nan
@@ -390,8 +458,10 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
 
     print(f"[{which}] stretch '{stretch}': {STRETCHES[stretch]}", flush=True)
     scaled = _stretch_channels(chans, stretch)
+    if islands:
+        scaled = _restretch_islands(scaled, chans, r_raw, twcs)
 
-    png = rgb_trio_png_for(which, stretch, red)
+    png = rgb_trio_png_for(which, stretch, red, islands)
     avm = avm_for_saved_png(twcs, ny, nx, flip=-1, transpose=Image.ROTATE_180)
     # save_rgb's alpha is the OR of each channel's OWN blank mask: a pixel is
     # made transparent if ANY of the three is blank there, not only if ALL
@@ -407,7 +477,7 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
     # G/B and compute every channel's blank mask from R -- one scipy.ndimage
     # label() pass over a zero-copy view, rather than three redundant passes
     # over a materialized (ny, nx, 3) copy of the same array.
-    if red == "nb":
+    if red in NB_REDS:
         alpha_src, edges_only = _nb_alpha_source(r_raw), False
     else:
         alpha_src, edges_only = r_raw, True
@@ -418,7 +488,8 @@ def build_rgb_trio(which="main", stretch=DEFAULT_STRETCH, hips=True,
 
     hips_dir = None
     if hips:
-        hips_dir = _build_hips(png, rgb_trio_hips_for(which, stretch, red))
+        hips_dir = _build_hips(png, rgb_trio_hips_for(which, stretch, red,
+                                                      islands))
     return png, hips_dir
 
 
@@ -484,13 +555,19 @@ def main(argv=None):
                     help="which RGB grid(s) to build: 480 = R/G/B "
                          "F480M/mean/F212N on F480M's grid, 770 = "
                          "R/G/B F770W/F480M/F212N on F770W's grid")
-    ap.add_argument("--red", choices=["mosaic", "nb"], default="mosaic",
+    ap.add_argument("--red", choices=["mosaic", "nb", "nbfull"],
+                    default="mosaic",
                     help="R channel of the 770 grid: mosaic = mosaics/"
                          "f770w_mosaic.fits; nb = Nazar Budaiev's combined "
-                         "F770W mosaic (NB_MIRI), on its own grid; main "
-                         "only.  Affects only the 770 grid: pass --grids 770 "
-                         "--rgb-only to skip the 480 grid and the plain F770W "
-                         "layer")
+                         "F770W mosaic (NB_MIRI), on its own grid; nbfull = "
+                         "its full-frame preview with the 4QPM panes "
+                         "(NB_MIRI_FULL); nb/nbfull are main only.  Affects "
+                         "only the 770 grid: pass --grids 770 --rgb-only to "
+                         "skip the 480 grid and the plain F770W layer")
+    ap.add_argument("--islands", action="store_true",
+                    help="770 grid with --red nb/nbfull and --stretch pct: "
+                         "each coverage island of R gets its own levels; "
+                         "writes *_islands")
     ap.add_argument("--no-hips", action="store_true")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--rgb-only", action="store_true",
@@ -498,9 +575,11 @@ def main(argv=None):
     group.add_argument("--miri-only", action="store_true",
                        help="build only the plain monochrome F770W layer")
     args = ap.parse_args(argv)
-    if args.red == "nb" and args.which != "main":
+    if args.red in NB_REDS and args.which != "main":
         # Fail here, not after a multi-hour main build.
-        ap.error("--red nb has no residual flavour; use --which main")
+        ap.error(f"--red {args.red} has no residual flavour; use --which main")
+    if args.islands and (args.red not in NB_REDS or args.stretch != "pct"):
+        ap.error("--islands needs --red nb/nbfull and --stretch pct")
 
     whichs = ["main", "residual"] if args.which == "both" else [args.which]
     hips = not args.no_hips
@@ -510,7 +589,7 @@ def main(argv=None):
                 build_rgb(which, stretch=args.stretch, hips=hips)
             if args.grids in ("770", "both"):
                 build_rgb_trio(which, stretch=args.stretch, hips=hips,
-                               red=args.red)
+                               red=args.red, islands=args.islands)
         if not args.rgb_only:
             build_miri(which, hips=hips)
     return 0
