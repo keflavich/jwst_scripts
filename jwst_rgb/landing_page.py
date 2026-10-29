@@ -20,6 +20,8 @@ import glob
 import os
 import re
 
+from jwst_rgb.vendor_fallback import LANDING_CHAIN, LANDING_MARKER, LANDING_TAG
+
 #: Aladin Lite options added to every landing page we publish.
 ALADIN_PARAMS = {"showSettingsControl": "true"}
 
@@ -52,11 +54,13 @@ def params_snippet(params=None):
 def patch_landing_page(path, params=None, css=True):
     """Apply our landing page overrides to one index.html.
 
-    Two independent edits: the aladinParams that expose Aladin Lite's settings
-    control, and a stylesheet that collapses the left panel.  Either may
-    already be present -- a page built before one of them was added has the
-    other -- so each is applied on its own and the return says whether
-    anything changed.
+    Three independent edits: the aladinParams that expose Aladin Lite's
+    settings control, a stylesheet that collapses the left panel, and the
+    self-hosted-first fallback chain that replaces the page's single CDS
+    ``<script src=".../hips-landing-page.js">`` tag (see
+    ``jwst_rgb.vendor_fallback``).  Any of the three may already be present
+    -- a page built before one of them was added has the others -- so each
+    is applied on its own and the return says whether anything changed.
 
     Idempotent, so this can run on every build without accumulating duplicates.
     """
@@ -85,6 +89,12 @@ def patch_landing_page(path, params=None, css=True):
             # no head to land in; the template builds the body itself, so
             # anywhere before the call works
             s = PANEL_CSS + s
+    if LANDING_MARKER not in s:
+        s, n = LANDING_TAG.subn(lambda m: LANDING_CHAIN, s)
+        if n > 1:
+            raise ValueError(
+                f"{path}: more than one HiPS landing-page CDS script tag; "
+                f"patch by hand")
     if s == before:
         return False
     with open(path, "w") as fh:

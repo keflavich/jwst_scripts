@@ -42,6 +42,8 @@ import time
 
 import numpy as np
 
+from jwst_rgb.vendor_fallback import ALADIN_LITE_CHAIN
+
 
 def _dir_of(npix):
     return (npix // 10000) * 10000
@@ -190,9 +192,6 @@ def assemble_hips_cube(frame_dirs, out_dir, crval3=0.0, cdelt3=1.0,
     return out_dir
 
 
-ALADIN_LITE = "https://aladin.cds.unistra.fr/AladinLite/api/v3/3.7.2-beta/aladin.js"
-
-
 def _cube_index_html(props, depth, crval3, cdelt3, bunit3):
     """A landing page that opens the cube with a slider over its frames.
 
@@ -216,7 +215,7 @@ def _cube_index_html(props, depth, crval3, cdelt3, bunit3):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<script src="{ALADIN_LITE}"></script>
+{ALADIN_LITE_CHAIN}
 <style>
   :root {{ --bg: #ffffff; --fg: #1a1a1a; --muted: #555555; }}
   @media (prefers-color-scheme: dark) {{
