@@ -227,7 +227,7 @@ def test_the_fallback_chain_is_added_exactly_once(page):
     assert patch_landing_page(page) is True
     s = open(page).read()
     assert s.count(LANDING_MARKER) == 1
-    assert s.count("hips-landing-page.js") == 3   # self-hosted, mirror, cds
+    assert s.count("hips-landing-page.js") == 3   # data.rc, starformation, cds
 
 
 def test_second_call_returns_false_and_changes_nothing(page):
@@ -238,12 +238,16 @@ def test_second_call_returns_false_and_changes_nothing(page):
 
 
 def test_the_self_hosted_source_loads_before_cds(page):
+    """data.rc serves the /orange template directly; the starformation copy
+    is synced by hand and can lag (on 2026-10-28 it still loaded Aladin Lite
+    self-hosted first), so data.rc comes first and CDS's unpatched template last."""
     patch_landing_page(page)
     s = open(page).read()
-    self_hosted = s.index("starformation.astro.ufl.edu/vendor/hips-templates/hips-landing-page.js")
-    mirror = s.index("data.rc.ufl.edu/pub/adamginsburg/vendor/hips-templates/hips-landing-page.js")
+    starformation = s.index("starformation.astro.ufl.edu/vendor/hips-templates/hips-landing-page.js")
+    data_rc = s.index("data.rc.ufl.edu/pub/adamginsburg/vendor/hips-templates/hips-landing-page.js")
     cds = s.index("aladin.cds.unistra.fr/hips-templates/hips-landing-page.js")
-    assert self_hosted < mirror < cds
+    assert data_rc < starformation < cds
+    assert '<script src="https://data.rc.ufl.edu/pub/adamginsburg/vendor/hips-templates/hips-landing-page.js"></script>' in s
 
 
 def test_the_lone_cds_script_tag_is_gone_after_patching(page):
