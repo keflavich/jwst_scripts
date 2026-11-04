@@ -153,6 +153,11 @@ SPECIAL = {
         "jwst-gc-treasury-nircam-mosaic-residual-minmax",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
         "Galactic Center, stars subtracted (min-max stretch)"),
+    "jwst_gc_treasury_residual_satmask_vminmax_hips": (
+        "jwst-gc-treasury-nircam-mosaic-residual-minmax-satmask",
+        "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
+        "Galactic Center, stars subtracted, F480M saturated-star cores "
+        "masked (min-max stretch)"),
     "jwst_gc_treasury_residual_log_hips": (
         "jwst-gc-treasury-nircam-mosaic-residual-log",
         "JWST GC Treasury: NIRCam F480M / mean / F212N mosaic of the "
@@ -356,6 +361,7 @@ FLAGS = {
     "lama": None,
     "withstars": "stars retained",
     "residual": "stars subtracted",
+    "satmask": "F480M saturated-star cores masked",
     "sub": "continuum-subtracted",
     "raw": "unsubtracted",
     "alma": "with ALMA continuum",
