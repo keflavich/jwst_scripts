@@ -32,8 +32,9 @@ Usage
   gc_treasury_rgb_images.py --mono f212n --obs o105   # one star-subtracted
                                                       # single-filter layer
   gc_treasury_rgb_images.py --residual --mask-satstar-cores --obs o105
-                                                 # opt-in: F480M satstar cores
-                                                 # hidden in the RENDERED layer
+                                                 # opt-in: F212N and F480M
+                                                 # satstar cores hidden in the
+                                                 # RENDERED layer
 """
 import argparse
 import contextlib
@@ -53,6 +54,9 @@ OUTDIR = f"{BASE}/pngs"
 # Per-observation consolidated satstar catalogues, read only by the opt-in
 # --mask-satstar-cores display mask (jwst_rgb.satstar_mask).
 SATSTAR_CATALOG_DIR = f"{BASE}/catalogs"
+# The filters the display mask takes: the ones jwst_rgb.satstar_mask knows the
+# detector pixel scale of (a catalogue's sat_area is counted in those pixels).
+SATMASK_FILTERS = ("f212n", "f480m")
 # Stage 3 products delivered by MAST, as opposed to the local image3 re-run.
 # They sit outside {BASE}/{FILT}/pipeline and are named differently, so they are
 # picked up separately -- see the MAST block at the end of find_i2d.
@@ -198,10 +202,10 @@ def find_residual_i2d(filt, final_only=True):
 def residual_suffix(residual, satmask=False):
     """"_residual" for the star-subtracted layers.
 
-    "_residual_satmask" for the opt-in flavour whose F480M saturated-star cores
-    are hidden for display (--mask-satstar-cores).  It is a name of its own so
-    that no glob, coadd or needs_build of an existing flavour can pick it up
-    (see layer_tail), and the un-masked layers keep every name they have.
+    "_residual_satmask" for the opt-in flavour whose saturated-star cores (F212N
+    and F480M) are hidden for display (--mask-satstar-cores).  It is a name of
+    its own so that no glob, coadd or needs_build of an existing flavour can pick
+    it up (see layer_tail), and the un-masked layers keep every name they have.
     """
     if satmask and not residual:
         raise ValueError("satmask is an option of the residual layers only")
@@ -443,16 +447,16 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     vminmax cuts; it never reads the image table.
 
     `satmask` (residual only) hides the accepted saturated-star cores of the
-    F480M residual in the RENDERED layer: a donut or blob at every one of them
-    is over- or under-subtraction of the core, and the residual FITS has it.
-    The mask is applied to an in-memory copy of the F480M array on its way to
-    the PNG; the residual i2d is never rewritten, because it seeds the next
-    cataloguing phase's detection.  The layer carries its own name
-    (residual_satmask), so it never replaces an un-masked one.
+    F212N and F480M residuals in the RENDERED layer: a donut or blob at every
+    one of them is over- or under-subtraction of the core, and the residual
+    FITS has it.  The mask is applied to an in-memory copy of each filter's
+    array on its way to the PNG; the residual i2d is never rewritten, because
+    it seeds the next cataloguing phase's detection.  The layer carries its own
+    name (residual_satmask), so it never replaces an un-masked one.
     """
     check_residual_stretch(stretch, residual)
     if satmask and not residual:
-        raise ValueError("satmask masks the star-subtracted F480M mosaic, so it "
+        raise ValueError("satmask masks the star-subtracted mosaics, so it "
                          "needs residual=True")
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -480,19 +484,20 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     def native(f, hdu):
         """One filter's mosaic in its own pixels, as a float copy.
 
-        With `satmask` the F480M copy has the accepted-satstar cores replaced
-        by local background, BEFORE reprojection and before the background
-        offset is removed.  It is a copy made here for this PNG; the file on
-        disk is only read.
+        With `satmask` the copy of each SATMASK_FILTERS filter has the
+        accepted-satstar cores replaced by local background, BEFORE
+        reprojection and before the background offset is removed.  It is a
+        copy made here for this PNG; the file on disk is only read.
         """
         arr = hdu.data.astype(float)
-        if satmask and f == "f480m":
+        if satmask and f in SATMASK_FILTERS:
             from jwst_rgb.satstar_mask import mask_satstar_cores
             arr, _, info = mask_satstar_cores(
                 arr, WCS(hdu.header).celestial, obs, filt=f,
                 catalog_dir=SATSTAR_CATALOG_DIR)
             print(f"  {f.upper()} satstar cores masked, display only: "
-                  f"{info['n_used']} stars, "
+                  f"{info['n_used']} stars ({info['n_at_cap']} at the radius "
+                  f"cap), "
                   f"{100 * info['frac_of_finite']:.2f}% of the finite pixels, "
                   f"{info['n_nan_core_px_filled']} NaN core pixels filled",
                   flush=True)
@@ -2611,9 +2616,9 @@ def main():
                          "residual bgmatch offsets")
     ap.add_argument("--mask-satstar-cores", action="store_true",
                     help="with --residual and --obs/--all (or --coadd): hide "
-                         "the accepted saturated-star cores of the F480M "
-                         "residual in the RENDERED layer only (display mask; "
-                         "no FITS is written or changed), into its own "
+                         "the accepted saturated-star cores of the F212N and "
+                         "F480M residuals in the RENDERED layer only (display "
+                         "mask; no FITS is written or changed), into its own "
                          "residual_satmask layers.  Never taken by --auto; "
                          "off by default")
     ap.add_argument("--mono", choices=MONO_FILTERS,
@@ -2646,8 +2651,8 @@ def main():
                  "--miri, --bgmatch, --residual")
     if a.mask_satstar_cores:
         if not a.residual:
-            ap.error("--mask-satstar-cores masks the star-subtracted F480M "
-                     "mosaic; it needs --residual")
+            ap.error("--mask-satstar-cores masks the star-subtracted "
+                     "mosaics; it needs --residual")
         if (a.miri or a.mono or a.auto or a.list or a.nircam_match
                 or a.miri_match or a.publish):
             ap.error("--mask-satstar-cores only goes with --residual and "
