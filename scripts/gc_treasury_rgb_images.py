@@ -31,6 +31,10 @@ Usage
   gc_treasury_rgb_images.py --coadd              # rebuild the combined mosaic
   gc_treasury_rgb_images.py --mono f212n --obs o105   # one star-subtracted
                                                       # single-filter layer
+  gc_treasury_rgb_images.py --residual --mask-satstar-cores --obs o105
+                                                 # opt-in: F212N and F480M
+                                                 # satstar cores hidden in the
+                                                 # RENDERED layer
 """
 import argparse
 import contextlib
@@ -47,6 +51,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 BASE = "/orange/adamginsburg/jwst/gc-treasury"
 OUTDIR = f"{BASE}/pngs"
+# Per-observation consolidated satstar catalogues, read only by the opt-in
+# --mask-satstar-cores display mask (jwst_rgb.satstar_mask).
+SATSTAR_CATALOG_DIR = f"{BASE}/catalogs"
+# The filters the display mask takes: the ones jwst_rgb.satstar_mask knows the
+# detector pixel scale of (a catalogue's sat_area is counted in those pixels).
+SATMASK_FILTERS = ("f212n", "f480m")
 # Stage 3 products delivered by MAST, as opposed to the local image3 re-run.
 # They sit outside {BASE}/{FILT}/pipeline and are named differently, so they are
 # picked up separately -- see the MAST block at the end of find_i2d.
@@ -189,8 +199,19 @@ def find_residual_i2d(filt, final_only=True):
     return out
 
 
-def residual_suffix(residual):
-    return "_residual" if residual else ""
+def residual_suffix(residual, satmask=False):
+    """"_residual" for the star-subtracted layers.
+
+    "_residual_satmask" for the opt-in flavour whose saturated-star cores (F212N
+    and F480M) are hidden for display (--mask-satstar-cores).  It is a name of
+    its own so that no glob, coadd or needs_build of an existing flavour can pick
+    it up (see layer_tail), and the un-masked layers keep every name they have.
+    """
+    if satmask and not residual:
+        raise ValueError("satmask is an option of the residual layers only")
+    if not residual:
+        return ""
+    return "_residual_satmask" if satmask else "_residual"
 
 
 def source_mtime(path):
@@ -412,7 +433,7 @@ def _nomatch_label(obs, match):
 
 
 def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
-              residual=False):
+              residual=False, satmask=False):
     """One observation -> RGB png + HiPS, returned as (png, hips_dir).
 
     `stretch` picks a key from STRETCHES.  One flavour per call rather than a
@@ -424,8 +445,19 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     bgmatch removes the offsets solved on the residuals
     (nircam_residual_background_match.json) and then applies the residual
     vminmax cuts; it never reads the image table.
+
+    `satmask` (residual only) hides the accepted saturated-star cores of the
+    F212N and F480M residuals in the RENDERED layer: a donut or blob at every
+    one of them is over- or under-subtraction of the core, and the residual
+    FITS has it.  The mask is applied to an in-memory copy of each filter's
+    array on its way to the PNG; the residual i2d is never rewritten, because
+    it seeds the next cataloguing phase's detection.  The layer carries its own
+    name (residual_satmask), so it never replaces an un-masked one.
     """
     check_residual_stretch(stretch, residual)
+    if satmask and not residual:
+        raise ValueError("satmask masks the star-subtracted mosaics, so it "
+                         "needs residual=True")
     from astropy.io import fits
     from astropy.wcs import WCS
     from astropy.visualization import simple_norm
@@ -449,17 +481,39 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
     ny, nx = thdu.data.shape
     print(f"{obs}: target grid {nx}x{ny} from {TARGET_FILTER.upper()}", flush=True)
 
+    def native(f, hdu):
+        """One filter's mosaic in its own pixels, as a float copy.
+
+        With `satmask` the copy of each SATMASK_FILTERS filter has the
+        accepted-satstar cores replaced by local background, BEFORE
+        reprojection and before the background offset is removed.  It is a
+        copy made here for this PNG; the file on disk is only read.
+        """
+        arr = hdu.data.astype(float)
+        if satmask and f in SATMASK_FILTERS:
+            from jwst_rgb.satstar_mask import mask_satstar_cores
+            arr, _, info = mask_satstar_cores(
+                arr, WCS(hdu.header).celestial, obs, filt=f,
+                catalog_dir=SATSTAR_CATALOG_DIR)
+            print(f"  {f.upper()} satstar cores masked, display only: "
+                  f"{info['n_used']} stars ({info['n_at_cap']} at the radius "
+                  f"cap), "
+                  f"{100 * info['frac_of_finite']:.2f}% of the finite pixels, "
+                  f"{info['n_nan_core_px_filled']} NaN core pixels filled",
+                  flush=True)
+        return arr
+
     data = {}
     for f in FILTERS:
         if f == TARGET_FILTER:
-            data[f] = thdu.data.astype(float)
+            data[f] = native(f, thdu)
             continue
         src = fits.open(inv[f][obs])
         shdu = next(h for h in src if h.data is not None and h.data.ndim == 2)
         print(f"  reprojecting {f.upper()} onto the {TARGET_FILTER.upper()} grid",
               flush=True)
         data[f], _ = reproject_interp(
-            (shdu.data.astype(float), WCS(shdu.header).celestial),
+            (native(f, shdu), WCS(shdu.header).celestial),
             twcs, shape_out=(ny, nx))
 
     match = None
@@ -529,8 +583,8 @@ def build_obs(obs, avm_mode="raw", hips=True, stretch="pct",   # DEFAULT_STRETCH
         print(f"  stretch '{stretch}': {kw}", flush=True)
 
     # obs may carry a _nrca/_nrcb module tag
-    name = os.path.basename(png_for(obs, stretch=stretch,
-                                    residual=residual))[:-4]
+    name = os.path.basename(png_for(obs, stretch=stretch, residual=residual,
+                                    satmask=satmask))[:-4]
     png = f"{OUTDIR}/{name}.png"
     # The AVM must describe the PNG as save_rgb writes it, not the input FITS:
     # flip=-1 plus ROTATE_180 leaves the array a FITS reader reconstructs
@@ -802,14 +856,16 @@ def check_residual_stretch(stretch, residual):
                          f"residual stretches are {RESIDUAL_STRETCHES}")
 
 
-def coadd_name_for(stretch=None, residual=False):
+def coadd_name_for(stretch=None, residual=False, satmask=False):
     """jwst_gc_treasury_hips / jwst_gc_treasury_vminmax_hips /
-    jwst_gc_treasury_residual_vminmax_hips.
+    jwst_gc_treasury_residual_vminmax_hips /
+    jwst_gc_treasury_residual_satmask_vminmax_hips.
 
     The suffix goes before _hips so the names sort and read like the MIRI pair
     (jwst_gc_treasury_miri_bgmatch_hips), rather than trailing after it.
     """
-    base = COADD_NAME.replace("_hips", f"{residual_suffix(residual)}_hips")
+    base = COADD_NAME.replace(
+        "_hips", f"{residual_suffix(residual, satmask)}_hips")
     if stretch is None or stretch == DEFAULT_STRETCH:
         return base
     return base.replace("_hips", f"_{stretch}_hips")
@@ -825,13 +881,13 @@ def stretch_suffix(stretch):
     return "" if stretch == DEFAULT_STRETCH else f"_{stretch}"
 
 
-def png_for(obs, stretch=DEFAULT_STRETCH, residual=False):
+def png_for(obs, stretch=DEFAULT_STRETCH, residual=False, satmask=False):
     return (f"{OUTDIR}/GCTreasury_{obs}_RGB_480-mean-212"
-            f"{residual_suffix(residual)}{stretch_suffix(stretch)}.png")
+            f"{residual_suffix(residual, satmask)}{stretch_suffix(stretch)}.png")
 
 
-def hips_for(obs, stretch=DEFAULT_STRETCH, residual=False):
-    return png_for(obs, stretch, residual).replace(".png", "_hips")
+def hips_for(obs, stretch=DEFAULT_STRETCH, residual=False, satmask=False):
+    return png_for(obs, stretch, residual, satmask).replace(".png", "_hips")
 
 
 def miri_suffix(bgmatch, residual=False):
@@ -868,7 +924,7 @@ def mono_coadd_name_for(filt):
 
 
 def layer_tail(miri=False, bgmatch=False, stretch=DEFAULT_STRETCH,
-               residual=False, mono=None):
+               residual=False, mono=None, satmask=False):
     """The name ending shared by every per-observation layer of one coadd.
 
     cmd_coadd globs GCTreasury_*<tail> and strips the tail to get the key it
@@ -877,12 +933,15 @@ def layer_tail(miri=False, bgmatch=False, stretch=DEFAULT_STRETCH,
     have one tail end another.
 
     `mono` names a MONO_FILTERS band and overrides every other argument.
+    `satmask` is the NIRCam residual RGB's masked flavour only.
     """
+    if satmask and (miri or mono):
+        raise ValueError("satmask layers exist for the NIRCam residual RGB only")
     if mono:
         return f"_{mono.upper()}_residual_hips"
     if miri:
         return f"_MIRI_F770W{miri_suffix(bgmatch, residual)}_hips"
-    return (f"_RGB_480-mean-212{residual_suffix(residual)}"
+    return (f"_RGB_480-mean-212{residual_suffix(residual, satmask)}"
             f"{stretch_suffix(stretch)}_hips")
 
 
@@ -2359,7 +2418,7 @@ def unreadable_layers(layers):
 
 
 def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
-              residual=False, mono=None):
+              residual=False, mono=None, satmask=False):
     """Coadd every per-observation HiPS into one growing mosaic.
 
     NIRCam and MIRI are coadded separately: the two point at different sky and
@@ -2369,9 +2428,12 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
     filter's grey residual layers into one more.
     """
     from reproject.hips import coadd_hips
+    if satmask and (miri or mono or not residual):
+        raise ValueError("satmask layers exist for the NIRCam residual RGB only")
     if not miri and not mono:
         check_residual_stretch(stretch, residual)
-    tail = layer_tail(miri, bgmatch, stretch, residual, mono=mono)
+    tail = layer_tail(miri, bgmatch, stretch, residual, mono=mono,
+                      satmask=satmask)
     layers = sorted(glob.glob(f"{OUTDIR}/GCTreasury_*{tail}"))
     if miri and not bgmatch:
         # the plain glob also matches the _bgmatch layers; keep them apart
@@ -2411,7 +2473,7 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         out = f"{OUTDIR}/{miri_coadd_name_for(bgmatch, residual)}"
     else:
         # suffix goes BEFORE _hips, matching jwst_gc_treasury_miri_bgmatch_hips
-        out = f"{OUTDIR}/{coadd_name_for(stretch, residual=residual)}"
+        out = f"{OUTDIR}/{coadd_name_for(stretch, residual=residual, satmask=satmask)}"
 
     from jwst_rgb.incremental_coadd import (
         hardlink_tree, merge_layer, order_layers, plan_coadd, save_manifest,
@@ -2552,6 +2614,13 @@ def main():
                          "mosaics instead of the images (--obs/--all/--miri/"
                          "--coadd), or with --nircam-match solve the "
                          "residual bgmatch offsets")
+    ap.add_argument("--mask-satstar-cores", action="store_true",
+                    help="with --residual and --obs/--all (or --coadd): hide "
+                         "the accepted saturated-star cores of the F212N and "
+                         "F480M residuals in the RENDERED layer only (display "
+                         "mask; no FITS is written or changed), into its own "
+                         "residual_satmask layers.  Never taken by --auto; "
+                         "off by default")
     ap.add_argument("--mono", choices=MONO_FILTERS,
                     help="build (--obs/--all) or coadd (--coadd) the "
                          "monochrome star-subtracted layers of one NIRCam "
@@ -2580,6 +2649,15 @@ def main():
     if a.mono and (a.miri or a.bgmatch or a.residual):
         ap.error("--mono is always star-subtracted NIRCam; it takes none of "
                  "--miri, --bgmatch, --residual")
+    if a.mask_satstar_cores:
+        if not a.residual:
+            ap.error("--mask-satstar-cores masks the star-subtracted "
+                     "mosaics; it needs --residual")
+        if (a.miri or a.mono or a.auto or a.list or a.nircam_match
+                or a.miri_match or a.publish):
+            ap.error("--mask-satstar-cores only goes with --residual and "
+                     "--obs/--all or --coadd (not --miri, --mono, --auto, "
+                     "--publish, --list or the match solves)")
 
     if a.list:
         return cmd_list()
@@ -2595,11 +2673,12 @@ def main():
         # here rather than inside cmd_coadd, which both paths call.
         what = (f"--coadd mono {a.mono}" if a.mono else
                 f"--coadd {'miri' if a.miri else a.stretch}"
-                f"{' residual' if a.residual else ''}")
+                f"{' residual' if a.residual else ''}"
+                f"{' satmask' if a.mask_satstar_cores else ''}")
         with coadd_lock(what):
             return cmd_coadd(miri=a.miri, bgmatch=a.bgmatch, full=a.full_coadd,
                              stretch=a.stretch, residual=a.residual,
-                             mono=a.mono)
+                             mono=a.mono, satmask=a.mask_satstar_cores)
 
     if a.mono:
         res = find_residual_i2d(a.mono)
@@ -2645,7 +2724,8 @@ def main():
         return 1
     for o in targets:
         png, hd = build_obs(o, avm_mode=a.avm, hips=not a.no_hips,
-                            stretch=a.stretch, residual=a.residual)
+                            stretch=a.stretch, residual=a.residual,
+                            satmask=a.mask_satstar_cores)
         if hd:
             check_orientation(hd, inv[TARGET_FILTER][o])
     return 0
