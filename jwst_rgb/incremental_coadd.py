@@ -68,11 +68,57 @@ def layer_fingerprint(directory, tile_format="png"):
 
 
 def load_manifest(coadd_dir):
+    """The coadd's manifest, or None if it is missing or unusable.
+
+    A kill mid-write leaves a truncated or empty file, and json.load on that
+    raised out of order_layers and plan_coadd -- so the repair that
+    coadd_repair_reason asked for died on the very file it had diagnosed.  A
+    manifest that parses but is not a dict (``[]``, ``3``) or whose `order` /
+    `layers` have the wrong type is as useless, and plan_coadd would raise
+    AttributeError on it.  All of those read as "no manifest": a full rebuild.
+    """
     path = os.path.join(coadd_dir, MANIFEST)
     if not os.path.exists(path):
         return None
-    with open(path) as fh:
-        return json.load(fh)
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not isinstance(data.get("order", []), list):
+        return None
+    if not isinstance(data.get("layers", {}), dict):
+        return None
+    return data
+
+
+def recover_interrupted_swap(coadd_dir):
+    """Undo a kill between `rename(out, out.old)` and `replace(out.new, out)`.
+
+    The swap is two steps, and between them `coadd_dir` does not exist while
+    `.new` (finished) and `.old` (the previous coadd) both do.  The next tick
+    called that "no coadd directory", and the rebuild started by removing both
+    trees.  Finish the swap when `.new` is complete (properties and manifest
+    are written last), else put `.old` back.  Returns what it did, or None.
+    """
+    if os.path.exists(coadd_dir):
+        return None
+    stage, old = coadd_dir + ".new", coadd_dir + ".old"
+
+    def has(d, name):
+        f = os.path.join(d, name)
+        return os.path.isfile(f) and os.path.getsize(f) > 0
+
+    if has(stage, "properties") and has(stage, MANIFEST):
+        os.replace(stage, coadd_dir)
+        shutil.rmtree(old, ignore_errors=True)
+        return "finished the swap from .new"
+    if has(old, "properties"):
+        os.rename(old, coadd_dir)
+        return "restored .old"
+    return None
 
 
 def coadd_repair_reason(coadd_dir, layers):
@@ -96,11 +142,9 @@ def coadd_repair_reason(coadd_dir, layers):
     props = os.path.join(coadd_dir, "properties")
     if not os.path.isfile(props) or os.path.getsize(props) == 0:
         return "no readable properties"
-    try:
-        manifest = load_manifest(coadd_dir)
-    except json.JSONDecodeError:
-        return "unreadable manifest"
-    if manifest is None:
+    if load_manifest(coadd_dir) is None:
+        if os.path.exists(os.path.join(coadd_dir, MANIFEST)):
+            return "unreadable manifest"
         return "no manifest"
     return None
 

@@ -8,6 +8,7 @@ the directory every hour.
 """
 import json
 import os
+import shutil
 
 import pytest
 
@@ -257,3 +258,78 @@ def test_an_up_to_date_verdict_stops_the_newer_layer_trigger(two_layers):
     assert newer_layer_reason(out, layers)
     assert G.cmd_coadd(mono="f212n") == 0        # plan says "none"
     assert newer_layer_reason(out, layers) is None
+
+
+# ---- an unusable manifest must not break the repair that diagnosed it -------
+
+@pytest.mark.parametrize("text", ["", '{"order": ["a", ', "[]", "3", '"x"',
+                                  '{"order": 3}', '{"layers": []}'])
+def test_an_unusable_manifest_is_rebuilt_not_raised(two_layers, text):
+    """json.load on a truncated manifest raised out of order_layers, so the
+    repair died on the file coadd_repair_reason had just flagged; a valid but
+    non-dict manifest raised AttributeError in plan_coadd."""
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    with open(os.path.join(out, "coadd_manifest.json"), "w") as fh:
+        fh.write(text)
+    assert coadd_repair_reason(out, LAYERS) == "unreadable manifest"
+    assert G.cmd_coadd(mono="f212n") == 0
+    manifest = json.load(open(os.path.join(out, "coadd_manifest.json")))
+    assert manifest["order"] == sorted(manifest["order"]) and \
+        len(manifest["order"]) == 2
+    assert coadd_repair_reason(out, LAYERS) is None
+
+
+def test_cmd_auto_repairs_a_truncated_manifest(two_layers, monkeypatch):
+    """End to end: the tick returns 0, later flavours are not abandoned, and
+    the coadd is whole afterwards."""
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    with open(os.path.join(out, "coadd_manifest.json"), "w") as fh:
+        fh.write('{"order": ["GCTre')
+    monkeypatch.setattr(G, "inventory", lambda residual=False: ({}, []))
+    monkeypatch.setattr(G, "find_i2d", lambda *a, **k: {})
+    for name in ("needs_build", "miri_needs_build", "mono_needs_build",
+                 "miri_match_is_stale"):
+        monkeypatch.setattr(G, name, lambda *a, **k: None)
+    assert G.cmd_auto() == 0
+    assert coadd_repair_reason(out, LAYERS) is None
+
+
+# ---- a kill between the two renames of the swap ------------------------------
+
+def test_a_kill_between_the_renames_restores_the_old_coadd(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    os.rename(out, out + ".old")                  # killed right after this
+    assert G.cmd_coadd(mono="f212n") == 0
+    assert not os.path.exists(out + ".old")
+    assert coadd_repair_reason(out, LAYERS) is None
+
+
+def test_a_kill_between_the_renames_finishes_a_complete_new(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    shutil.copytree(out, out + ".new")                # finished stage
+    os.rename(out, out + ".old")
+    marker = os.path.join(out + ".new", "marker")
+    open(marker, "w").write("new")
+    G.cmd_coadd(mono="f212n")
+    assert os.path.exists(os.path.join(out, "marker"))
+    assert not os.path.exists(out + ".old")
+
+
+def test_live_coadd_plus_nonempty_old_debris(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    os.makedirs(out + ".old/Norder3")
+    open(out + ".old/properties", "w").write("x\n")   # debris, kill after swap
+    assert G.cmd_coadd(mono="f212n", full=True) == 0
+    assert not os.path.exists(out + ".old")
+
+
+def test_old_and_new_are_gone_after_a_full_rebuild_over_a_live_coadd(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    assert G.cmd_coadd(mono="f212n", full=True) == 0
+    assert not os.path.exists(out + ".old") and not os.path.exists(out + ".new")
