@@ -218,3 +218,42 @@ def test_a_rebuild_replaces_a_half_built_coadd(two_layers):
     # named for the mosaic, not copied from its first layer
     text = open(os.path.join(out, "properties")).read()
     assert "nircam-f212n-residual" in text and "GCTreasury_o001" not in text
+
+
+# ---- a layer rebuilt after the coadd -----------------------------------------
+
+def test_a_layer_newer_than_the_manifest_is_recoadded(auto, tmp_path, capsys):
+    kw, name = next(f for f in _flavours() if f[0].get("mono") == "f212n")
+    layer = _layer_for(kw, tmp_path)
+    out = _coadd(tmp_path / name)
+    with open(os.path.join(layer, "properties"), "w") as fh:
+        fh.write("hips_order = 3\n")
+    old = os.path.getmtime(os.path.join(out, "coadd_manifest.json")) - 100
+    os.utime(os.path.join(out, "coadd_manifest.json"), (old, old))
+    G.cmd_auto()
+    assert auto == [kw]
+    assert "is newer than the coadd" in capsys.readouterr().out
+
+
+def test_a_layer_older_than_the_manifest_is_left_alone(auto, tmp_path):
+    kw, name = next(f for f in _flavours() if f[0].get("mono") == "f212n")
+    layer = _layer_for(kw, tmp_path)
+    with open(os.path.join(layer, "properties"), "w") as fh:
+        fh.write("hips_order = 3\n")
+    old = os.path.getmtime(os.path.join(layer, "properties")) - 100
+    os.utime(os.path.join(layer, "properties"), (old, old))
+    _coadd(tmp_path / name)
+    G.cmd_auto()
+    assert auto == []
+
+
+def test_an_up_to_date_verdict_stops_the_newer_layer_trigger(two_layers):
+    from jwst_rgb.incremental_coadd import newer_layer_reason
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    layers = G.coadd_layer_glob(mono="f212n")
+    old = os.path.getmtime(os.path.join(out, "coadd_manifest.json")) - 100
+    os.utime(os.path.join(out, "coadd_manifest.json"), (old, old))
+    assert newer_layer_reason(out, layers)
+    assert G.cmd_coadd(mono="f212n") == 0        # plan says "none"
+    assert newer_layer_reason(out, layers) is None

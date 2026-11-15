@@ -1855,10 +1855,13 @@ def _coadd_repair(out, **flavour):
 
     `flavour` is the keyword set coadd_layer_glob takes.  Needs per-observation
     layers on disk: a flavour with none would make cmd_coadd return 1 every
-    tick.  Reads a few files; never fingerprints tiles (plan_coadd does that).
+    tick.  Also names a layer newer than the manifest.  Reads a few files; never fingerprints tiles (plan_coadd does that).
     """
-    from jwst_rgb.incremental_coadd import coadd_repair_reason
-    return coadd_repair_reason(out, coadd_layer_glob(**flavour))
+    from jwst_rgb.incremental_coadd import (
+        coadd_repair_reason, newer_layer_reason)
+    layers = coadd_layer_glob(**flavour)
+    return (coadd_repair_reason(out, layers)
+            or newer_layer_reason(out, layers))
 
 
 def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
@@ -2530,6 +2533,8 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
     print(f"coadd plan: {action} ({reason})")
 
     if action == "none":
+        from jwst_rgb.incremental_coadd import touch_manifest
+        touch_manifest(out)
         return 0
 
     if action == "append":

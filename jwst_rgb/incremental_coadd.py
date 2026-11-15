@@ -105,6 +105,31 @@ def coadd_repair_reason(coadd_dir, layers):
     return None
 
 
+def newer_layer_reason(coadd_dir, layers):
+    """Name a layer whose `properties` is newer than the coadd's manifest.
+
+    A tick killed after build_obs but before the recoadd leaves a rebuilt layer
+    the coadd has never seen.  One stat per layer, no tile walk.  Only
+    meaningful for a coadd that passed coadd_repair_reason.  cmd_coadd's "none"
+    verdict calls touch_manifest so a layer that changed without changing its
+    tiles does not trigger this every tick.
+    """
+    path = os.path.join(coadd_dir, MANIFEST)
+    if not os.path.exists(path):
+        return None
+    built = os.path.getmtime(path)
+    for d in layers:
+        props = os.path.join(d, "properties")
+        if os.path.exists(props) and os.path.getmtime(props) > built:
+            return f"{os.path.basename(d)} is newer than the coadd"
+    return None
+
+
+def touch_manifest(coadd_dir):
+    """Record that the coadd was checked against its layers just now."""
+    os.utime(os.path.join(coadd_dir, MANIFEST))
+
+
 def coadd_needs_repair(coadd_dir, layers):
     return coadd_repair_reason(coadd_dir, layers) is not None
 
