@@ -2519,9 +2519,16 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
 
     from jwst_rgb.incremental_coadd import (
         backfill_manifest_files, hardlink_tree, merge_layer, order_layers,
-        plan_coadd, retile_coadd, save_manifest, set_hips_order,
-        stamp_identity, stamp_release_date)
+        plan_coadd, recover_interrupted_swap, retile_coadd, save_manifest,
+        set_hips_order, stamp_identity, stamp_release_date)
     from jwst_rgb.landing_page import patch_hips_dir
+
+    # A kill between the two renames of a swap leaves no `out` at all; put it
+    # back before plan_coadd calls that "no existing coadd" and the rebuild
+    # deletes both trees.
+    recovered = recover_interrupted_swap(out)
+    if recovered:
+        print(f"  recovered {os.path.basename(out)}: {recovered}")
 
     # Paint in the order the existing coadd already used, with layers it has
     # never seen at the end.  The glob above is obsid-sorted, and a new tile
