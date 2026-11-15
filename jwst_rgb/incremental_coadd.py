@@ -215,8 +215,13 @@ def save_manifest(coadd_dir, layers, tile_format="png"):
             "tiles": len(files), "newest": round(newest, 3), "files": files}
     data = {"order": [os.path.basename(d) for d in layers],
             "layers": per_layer}
-    with open(os.path.join(coadd_dir, MANIFEST), "w") as fh:
+    # Atomic: a kill mid-write must not leave a truncated manifest, and
+    # recover_interrupted_swap treats "manifest present" as "build finished".
+    path = os.path.join(coadd_dir, MANIFEST)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
         json.dump(data, fh, indent=1)
+    os.replace(tmp, path)
     return data
 
 
@@ -627,4 +632,18 @@ def stamp_identity(coadd_dir, name=None):
 def hardlink_tree(src, dst):
     """Clone a coadd cheaply.  Safe only because merge_layer never writes in
     place -- it replaces via a temp file, which breaks the link."""
-    shutil.copytree(src, dst, copy_function=os.link)
+    root = os.path.abspath(src)
+
+    def link_tiles_copy_metadata(s, d):
+        # `properties`, the manifest and index.html are rewritten in place by
+        # stamp_*, set_union_view and patch_hips_dir.  Linked, those writes
+        # went through to the LIVE coadd, so a tick killed mid-append left
+        # the live manifest listing a layer the live tiles lack.  Only the
+        # tiles (below the top level) are linked; merge_layer never writes
+        # one in place.
+        if os.path.dirname(os.path.abspath(s)) == root:
+            shutil.copy2(s, d)
+        else:
+            os.link(s, d)
+
+    shutil.copytree(src, dst, copy_function=link_tiles_copy_metadata)

@@ -15,8 +15,10 @@ import pytest
 pytest.importorskip("reproject.hips")
 
 import gc_treasury_rgb_images as G                            # noqa: E402
+import jwst_rgb.incremental_coadd as IC                      # noqa: E402
 from jwst_rgb.incremental_coadd import (                     # noqa: E402
-    coadd_needs_repair, coadd_repair_reason,
+    coadd_needs_repair, coadd_repair_reason, load_manifest,
+    recover_interrupted_swap,
 )
 from test_incremental_coadd import make_layer                # noqa: E402
 
@@ -333,3 +335,114 @@ def test_old_and_new_are_gone_after_a_full_rebuild_over_a_live_coadd(two_layers)
     assert G.cmd_coadd(mono="f212n") == 0
     assert G.cmd_coadd(mono="f212n", full=True) == 0
     assert not os.path.exists(out + ".old") and not os.path.exists(out + ".new")
+
+
+# ---- what recover_interrupted_swap may promote ------------------------------
+
+def _copy(src, dst, mark, drop=None, empty=None):
+    shutil.copytree(src, dst)
+    open(os.path.join(dst, "MARK"), "w").write(mark)
+    if drop:
+        os.remove(os.path.join(dst, drop))
+    if empty:
+        open(os.path.join(dst, empty), "w").close()
+
+
+@pytest.mark.parametrize("kind", [dict(drop="properties"),
+                                  dict(empty="properties"),
+                                  dict(drop="coadd_manifest.json"),
+                                  dict(empty="coadd_manifest.json")])
+def test_an_unfinished_new_is_not_promoted_over_a_complete_old(two_layers,
+                                                               kind):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    gold = out + ".gold"
+    shutil.copytree(out, gold)
+    shutil.rmtree(out)
+    _copy(gold, out + ".new", "NEW", **kind)
+    _copy(gold, out + ".old", "OLD")
+    assert recover_interrupted_swap(out) == "restored .old"
+    assert open(os.path.join(out, "MARK")).read() == "OLD"
+
+
+def test_an_old_without_properties_is_not_restored(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    gold = out + ".gold"
+    shutil.copytree(out, gold)
+    shutil.rmtree(out)
+    _copy(gold, out + ".old", "OLD", drop="properties")
+    assert recover_interrupted_swap(out) is None
+    assert not os.path.exists(out)
+
+
+def test_a_restore_is_not_a_rebuild(two_layers, monkeypatch):
+    """The old coadd comes back as it was: cmd_coadd must not rebuild it."""
+    import reproject.hips
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    os.rename(out, out + ".old")
+    open(os.path.join(out + ".old", "MARK"), "w").write("OLD")
+    monkeypatch.setattr(reproject.hips, "coadd_hips", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("rebuilt instead of restoring")))
+    assert G.cmd_coadd(mono="f212n") == 0
+    assert open(os.path.join(out, "MARK")).read() == "OLD"
+
+
+def test_a_manifest_with_invalid_utf8_is_rebuilt_not_raised(two_layers):
+    out, _ = two_layers
+    assert G.cmd_coadd(mono="f212n") == 0
+    with open(os.path.join(out, "coadd_manifest.json"), "wb") as fh:
+        fh.write(b"\xff\xfe\x00{")
+    assert load_manifest(out) is None
+    assert G.cmd_coadd(mono="f212n") == 0
+    assert coadd_repair_reason(out, G.coadd_layer_glob(mono="f212n")) is None
+
+
+class _Killed(BaseException):
+    pass
+
+
+def _boom(*a, **k):
+    raise _Killed()
+
+
+def test_a_first_build_killed_before_the_stamps_is_not_promoted(two_layers,
+                                                                monkeypatch):
+    """No previous coadd: a kill after the manifest but before stamp_identity
+    left `.new` looking finished, and the next tick promoted it unstamped."""
+    out, _ = two_layers
+    with monkeypatch.context() as m:
+        m.setattr(IC, "stamp_release_date", _boom)
+        with pytest.raises(_Killed):
+            G.cmd_coadd(mono="f212n")
+    assert not os.path.exists(os.path.join(out + ".new", "coadd_manifest.json"))
+    assert G.cmd_coadd(mono="f212n") == 0
+    props = open(os.path.join(out, "properties")).read()
+    assert f"creator_did          = {IC.coadd_did(os.path.basename(out))}" in props
+
+
+def test_a_killed_append_leaves_the_live_coadd_alone(tmp_path, monkeypatch):
+    """hardlink_tree shared the manifest and properties inodes, so the append
+    rewrote the LIVE files and a kill left a manifest naming a layer the live
+    tiles lack; the next tick then said 'none'."""
+    monkeypatch.setattr(G, "OUTDIR", str(tmp_path))
+    inv = {"o001": "x"}
+    monkeypatch.setattr(G, "find_residual_i2d", lambda filt, **k: dict(inv))
+    make_layer(str(tmp_path), os.path.basename(G.mono_hips_for("o001", "f212n")),
+               [(3, 1)], colour=100)
+    out = str(tmp_path / G.mono_coadd_name_for("f212n"))
+    assert G.cmd_coadd(mono="f212n") == 0
+    files = ("coadd_manifest.json", "properties")
+    before = {f: open(os.path.join(out, f)).read() for f in files}
+    inv["o002"] = "x"
+    make_layer(str(tmp_path), os.path.basename(G.mono_hips_for("o002", "f212n")),
+               [(3, 5)], colour=100)
+    with monkeypatch.context() as m:
+        m.setattr(IC, "stamp_identity", _boom)
+        with pytest.raises(_Killed):
+            G.cmd_coadd(mono="f212n")
+    for f in files:
+        assert open(os.path.join(out, f)).read() == before[f]
+    assert G.cmd_coadd(mono="f212n") == 0           # and the next tick appends
+    assert len(json.load(open(os.path.join(out, "coadd_manifest.json")))["order"]) == 2
