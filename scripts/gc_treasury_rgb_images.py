@@ -2518,7 +2518,8 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         out = f"{OUTDIR}/{coadd_name_for(stretch, residual=residual, satmask=satmask)}"
 
     from jwst_rgb.incremental_coadd import (
-        hardlink_tree, merge_layer, order_layers, plan_coadd, save_manifest,
+        backfill_manifest_files, hardlink_tree, merge_layer, order_layers,
+        plan_coadd, retile_coadd, save_manifest, set_hips_order,
         stamp_identity, stamp_release_date)
     from jwst_rgb.landing_page import patch_hips_dir
 
@@ -2528,30 +2529,66 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
     # an insertion and rebuild from scratch.  See order_layers.
     layers = order_layers(out, layers)
 
-    action, new_layers, reason = ("rebuild", layers, "--full requested") if full \
-        else plan_coadd(out, layers)
+    if full:
+        action, new_layers, reason, affected = (
+            "rebuild", layers, "--full requested", None)
+    else:
+        action, new_layers, reason, affected = plan_coadd(out, layers)
     print(f"coadd plan: {action} ({reason})")
 
     if action == "none":
         from jwst_rgb.incremental_coadd import touch_manifest
+        # a manifest from before tile lists were recorded: take them from disk
+        # now, while every layer still matches its fingerprint
+        if backfill_manifest_files(out, layers):
+            print("  recorded tile lists in the manifest")
         touch_manifest(out)
         return 0
 
-    if action == "append":
-        # Clone by hardlink and merge only the new layers.  merge_layer writes
-        # composites through a temp file + os.replace, so the tiles shared with
-        # the previous coadd are never mutated in place.
+    # Read what the inputs must provide before touching what we have.
+    # coadd_hips opens every layer's properties as its first act, and a layer
+    # killed mid-write has tiles but no properties, so appending or retiling it
+    # would merge a partial layer just as a rebuild would fail on it.
+    unreadable = unreadable_layers(layers)
+    if unreadable:
+        print(f"NOT updating {os.path.basename(out)}: "
+              f"{len(unreadable)} input layer(s) are not readable")
+        for u in unreadable:
+            print(f"  {u}")
+        # A layer mid-build looks exactly like one that failed halfway:
+        # reproject_to_hips writes the tiles first and properties last.
+        print("  a layer being written looks like this too; "
+              "the next run picks it up")
+        return 1
+
+    if action in ("append", "retile"):
+        # Clone by hardlink and merge only what changed.  merge_layer and
+        # retile_coadd write through a temp file + os.replace, so the tiles
+        # shared with the previous coadd are never mutated in place.
         stage = out + ".new"
         shutil.rmtree(stage, ignore_errors=True)
         hardlink_tree(out, stage)
-        total_c = total_x = 0
-        for L in new_layers:
-            c, x = merge_layer(L, stage)
-            total_c += c
-            total_x += x
-            print(f"  + {os.path.basename(L)}: {c} copied, {x} composited")
+        if action == "append":
+            total_c = total_x = 0
+            for L in new_layers:
+                c, x = merge_layer(L, stage)
+                total_c += c
+                total_x += x
+                print(f"  + {os.path.basename(L)}: {c} copied, {x} composited")
+            summary = (f"+{total_c} tiles copied, {total_x} composited")
+        else:
+            workers = int(os.environ.get("TREASURY_COADD_WORKERS", "1"))
+            total_c, total_x, total_r = retile_coadd(
+                stage, layers, affected, workers=workers)
+            print(f"  retiled {len(affected)} tiles: {total_c} copied, "
+                  f"{total_x} composited, {total_r} removed")
+            summary = (f"{len(affected)} tiles retiled: {total_c} copied, "
+                       f"{total_x} composited, {total_r} removed")
         save_manifest(stage, layers)
         set_union_view(stage, layers)
+        # the hardlinked properties carry the first layer's order; a layer
+        # re-rendered deeper must not be truncated
+        print(f"  hips_order -> {set_hips_order(stage, layers)}")
         # without this the appended coadd keeps the first layer's date and
         # publish_hips_layers.py never ships it
         print(f"  hips_release_date -> {stamp_release_date(stage)}")
@@ -2565,25 +2602,9 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         os.rename(out, old_dir)
         os.replace(stage, out)
         shutil.rmtree(old_dir, ignore_errors=True)
-        print(f"done: {out} (+{total_c} tiles copied, {total_x} composited; "
-              f"a full rebuild would have touched "
+        print(f"done: {out} ({summary}; a full rebuild would have touched "
               f"{sum(_tile_count(L) for L in layers)})")
         return 0
-
-    # Read what the inputs must provide before destroying what we have.
-    # coadd_hips opens every layer's properties as its first act, so an
-    # unreadable input after the rmtree costs the existing coadd.
-    unreadable = unreadable_layers(layers)
-    if unreadable:
-        print(f"NOT rebuilding {os.path.basename(out)}: "
-              f"{len(unreadable)} input layer(s) are not readable")
-        for u in unreadable:
-            print(f"  {u}")
-        # A layer mid-build looks exactly like one that failed halfway:
-        # reproject_to_hips writes the tiles first and properties last.
-        print("  a layer being written looks like this too; "
-              "the next run picks it up")
-        return 1
 
     # Build beside the live coadd and swap at the end, as the append branch
     # does.  Removing `out` first meant a kill (8 h --auto wall, 6 h lock

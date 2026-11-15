@@ -30,13 +30,22 @@ That is what makes appending exact rather than approximate: putting a layer in
 last, under everything already there, is precisely what a full rebuild with
 that layer at the end of the list produces.  Same output, less work.
 
-What this CANNOT do
--------------------
-Update or remove a layer.  Once tiles are composited the individual
-contributions are gone, so a layer whose tiles changed cannot be subtracted
-out.  `plan_coadd` detects that and asks for a full rebuild instead.  An AVM
-correction applied across every observation, for instance, is a full rebuild
-no matter what.
+Updating or removing a layer
+----------------------------
+Once tiles are composited the individual contributions are gone, so a layer
+whose tiles changed cannot be subtracted out of the flattened tiles.  It does
+not need to be: tiles are independent, and a layer touches only ~500 of the
+~22,600 tiles of a coadd.  The manifest records each layer's tile list, so
+`plan_coadd` can name exactly the tiles a changed or dropped layer ever
+contributed to ("retile"), and `retile_coadd` recomputes those tiles from all
+the layers in paint order and leaves the rest alone.  Same output as a full
+rebuild, a small fraction of the work.
+
+A full rebuild is still what happens when the manifest records no tile list
+for a changed layer (coadds made before this existed), when the layers were
+reordered, or when retiling would cost more than half what a rebuild does.
+An AVM correction applied across every observation, for instance, is a full
+rebuild no matter what.
 """
 import json
 import os
@@ -51,20 +60,33 @@ from jwst_rgb.hips_naming import CREATOR, describe
 MANIFEST = "coadd_manifest.json"
 
 
-def layer_fingerprint(directory, tile_format="png"):
-    """Cheap identity for a layer's contribution: how many tiles and when they
-    last changed.  Content hashing every tile would be exact but costs the walk
-    this module exists to avoid; a changed tile always moves its mtime."""
-    count = 0
+def layer_tiles(directory, tile_format="png"):
+    """Walk one layer once: (sorted tile relpaths, newest mtime).
+
+    The relpath is the tile's identity in the coadd tree: every layer carries
+    its own full Norder*/Dir*/Npix* pyramid, and the coadd tile at a relpath is
+    the composite of whichever layers have a file there.
+    """
+    files = []
     newest = 0.0
     for dirpath, _, filenames in os.walk(directory):
         for fn in filenames:
             if fn.endswith("." + tile_format):
-                count += 1
-                m = os.path.getmtime(os.path.join(dirpath, fn))
+                full = os.path.join(dirpath, fn)
+                files.append(os.path.relpath(full, directory))
+                m = os.path.getmtime(full)
                 if m > newest:
                     newest = m
-    return {"tiles": count, "newest": round(newest, 3)}
+    files.sort()
+    return files, newest
+
+
+def layer_fingerprint(directory, tile_format="png"):
+    """Cheap identity for a layer's contribution: how many tiles and when they
+    last changed.  Content hashing every tile would be exact but costs the walk
+    this module exists to avoid; a changed tile always moves its mtime."""
+    files, newest = layer_tiles(directory, tile_format)
+    return {"tiles": len(files), "newest": round(newest, 3)}
 
 
 def load_manifest(coadd_dir):
@@ -135,12 +157,49 @@ def coadd_needs_repair(coadd_dir, layers):
 
 
 def save_manifest(coadd_dir, layers, tile_format="png"):
+    """Record paint order and, per layer, its fingerprint and tile list.
+
+    `files` is what lets a later tick retile instead of rebuild: once a layer
+    has been re-rendered its old tile set is gone from disk, and the tiles it
+    used to cover are exactly the ones that must be recomputed.  About 540
+    strings per layer; `tiles` and `newest` stay, so older readers still work.
+    """
+    per_layer = {}
+    for d in layers:
+        files, newest = layer_tiles(d, tile_format)
+        per_layer[os.path.basename(d)] = {
+            "tiles": len(files), "newest": round(newest, 3), "files": files}
     data = {"order": [os.path.basename(d) for d in layers],
-            "layers": {os.path.basename(d): layer_fingerprint(d, tile_format)
-                       for d in layers}}
+            "layers": per_layer}
     with open(os.path.join(coadd_dir, MANIFEST), "w") as fh:
         json.dump(data, fh, indent=1)
     return data
+
+
+def backfill_manifest_files(coadd_dir, layers, tile_format="png"):
+    """Add tile lists to a manifest written before `files` existed.
+
+    Only valid when every layer still matches its recorded fingerprint (plan
+    verdict "none"): an unchanged layer's tile list on disk is its list at the
+    time of the coadd.  Without this a legacy coadd would stay legacy until
+    something wrote a new manifest, and the first layer re-rendered in the
+    meantime would force a full rebuild.  Returns True if it wrote.
+    """
+    manifest = load_manifest(coadd_dir)
+    if manifest is None:
+        return False
+    recorded = manifest.get("layers", {})
+    missing = [d for d in layers
+               if "files" not in recorded.get(os.path.basename(d), {"files": 0})]
+    if not missing:
+        return False
+    for d in missing:
+        recorded[os.path.basename(d)]["files"] = layer_tiles(d, tile_format)[0]
+    path = os.path.join(coadd_dir, MANIFEST)
+    with open(path + ".tmp", "w") as fh:
+        json.dump(manifest, fh, indent=1)
+    os.replace(path + ".tmp", path)
+    return True
 
 
 def order_layers(coadd_dir, layers):
@@ -170,49 +229,103 @@ def order_layers(coadd_dir, layers):
                                          os.path.basename(d)))
 
 
-def plan_coadd(coadd_dir, layers, tile_format="png"):
-    """Decide between appending and rebuilding.
+#: `retile` must cost at most this fraction of a full rebuild's tile
+#: operations, or the plan falls back to a rebuild.  Not measured on real data;
+#: a batch of re-rendered layers touches many tiles, and past this point the
+#: bookkeeping is not worth the risk of a subtle difference from coadd_hips.
+RETILE_MAX_FRACTION = 0.5
 
-    Returns (action, new_layers, reason) where action is "none", "append" or
-    "rebuild".  Anything other than a pure addition to the end of the existing
-    set is a rebuild, because a flattened coadd cannot give a layer back.
 
-    Deciding is O(all tiles): fingerprinting every known layer stats each of
-    its tiles.  That is far cheaper than the open/composite/save a full rebuild
-    does on the same tiles -- which is where the saving comes from -- but the
-    decision itself does not scale better than the rebuild it avoids.
+def plan_coadd(coadd_dir, layers, tile_format="png",
+               max_retile_fraction=RETILE_MAX_FRACTION):
+    """Decide between doing nothing, appending, retiling and rebuilding.
+
+    Returns (action, layers, reason, affected).  `action` is one of:
+
+    none     coadd matches its layers.
+    append   pure addition at the end; `layers` is the new ones.
+    retile   known layers changed and/or were dropped (and/or new ones were
+             added); `layers` is the full ordered list and `affected` is the
+             sorted list of tile relpaths to recompute.
+    rebuild  anything else; `layers` is the full list.
+
+    `affected` is None except for retile.  A retile needs the manifest to
+    record the old tile list of every changed or dropped layer (`files`);
+    without it the tiles that layer used to cover are unknowable.
+
+    Deciding is O(all tiles): every layer is walked once.  That is far cheaper
+    than the open/composite/save a full rebuild does on the same tiles, but it
+    does not scale better than the rebuild it avoids.
     """
     if not os.path.isdir(coadd_dir):
-        return "rebuild", layers, "no existing coadd"
+        return "rebuild", layers, "no existing coadd", None
     manifest = load_manifest(coadd_dir)
     if manifest is None:
-        return "rebuild", layers, "no manifest (coadd predates incremental support)"
+        return ("rebuild", layers,
+                "no manifest (coadd predates incremental support)", None)
 
     names = [os.path.basename(d) for d in layers]
     known = manifest.get("order", [])
     recorded = manifest.get("layers", {})
 
     dropped = [n for n in known if n not in names]
-    if dropped:
-        return "rebuild", layers, f"layer(s) no longer present: {', '.join(dropped)}"
-
-    if names[:len(known)] != known:
-        return "rebuild", layers, "existing layers reordered or inserted before the end"
-
-    changed = []
-    for n in known:
-        d = next(x for x in layers if os.path.basename(x) == n)
-        if layer_fingerprint(d, tile_format) != recorded.get(n):
-            changed.append(n)
-    if changed:
+    kept = [n for n in known if n in names]
+    if names[:len(kept)] != kept:
         return ("rebuild", layers,
-                f"{len(changed)} existing layer(s) changed: "
-                f"{', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''}")
+                "existing layers reordered or inserted before the end", None)
+
+    walked = {os.path.basename(d): layer_tiles(d, tile_format) for d in layers}
+    changed = []
+    for n in kept:
+        files, newest = walked[n]
+        rec = recorded.get(n, {})
+        if len(files) != rec.get("tiles") or round(newest, 3) != rec.get("newest"):
+            changed.append(n)
 
     new = [d for d in layers if os.path.basename(d) not in known]
-    if not new:
-        return "none", [], "coadd is up to date"
-    return "append", new, f"{len(new)} new layer(s)"
+    if not changed and not dropped:
+        if not new:
+            return "none", [], "coadd is up to date", None
+        return "append", new, f"{len(new)} new layer(s)", None
+
+    parts = []
+    if changed:
+        parts.append(f"{len(changed)} existing layer(s) changed: "
+                     f"{', '.join(changed[:6])}{' ...' if len(changed) > 6 else ''}")
+    if dropped:
+        parts.append(f"layer(s) no longer present: {', '.join(dropped)}")
+    what = "; ".join(parts)
+
+    no_list = [n for n in changed + dropped if "files" not in recorded.get(n, {})]
+    if no_list:
+        return ("rebuild", layers,
+                f"{what}; manifest has no tile list for {', '.join(no_list[:6])}",
+                None)
+
+    affected = set()
+    for n in changed:
+        affected.update(recorded[n]["files"])       # what it used to cover
+        affected.update(walked[n][0])               # what it covers now
+    for n in dropped:
+        affected.update(recorded[n]["files"])
+    for d in new:
+        affected.update(walked[os.path.basename(d)][0])
+
+    cover = {}
+    for files, _ in walked.values():
+        for rel in files:
+            cover[rel] = cover.get(rel, 0) + 1
+    rebuild_ops = sum(cover.values())
+    # a tile no layer covers any more still costs one operation (the delete)
+    retile_ops = sum(max(cover.get(rel, 0), 1) for rel in affected)
+    if retile_ops > max_retile_fraction * rebuild_ops:
+        return ("rebuild", layers,
+                f"{what}; retiling {len(affected)} tiles is {retile_ops} of "
+                f"{rebuild_ops} rebuild operations, over the "
+                f"{max_retile_fraction:.0%} limit", None)
+    return ("retile", layers,
+            f"{what}; {len(affected)} tiles, {retile_ops} of {rebuild_ops} "
+            f"rebuild operations", sorted(affected))
 
 
 def merge_layer(layer_dir, out_dir, tile_format="png"):
@@ -249,6 +362,135 @@ def merge_layer(layer_dir, out_dir, tile_format="png"):
                 shutil.copyfile(src, tgt)
                 copied += 1
     return copied, composited
+
+
+def _retile_one(rel, layers, out_dir, tile_format):
+    """Recompute the coadd tile at `rel`: 'copied', 'composited' or 'removed'
+    (or None if nothing covered it and nothing was there).
+
+    Matches coadd_hips: the first layer covering the tile is copied as is, and
+    each later one goes UNDER the accumulated tile, so the first layer in paint
+    order ends up on top.  A tile covered by one layer is copied, not decoded
+    and re-encoded, to stay byte-identical to a rebuild.
+    """
+    tgt = os.path.join(out_dir, rel)
+    covering = [os.path.join(L, rel) for L in layers
+                if os.path.isfile(os.path.join(L, rel))]
+    if not covering:
+        if os.path.lexists(tgt):
+            os.remove(tgt)
+            return "removed"
+        return None
+    os.makedirs(os.path.dirname(tgt), exist_ok=True)
+    # always via a temp name: the tile may be a hardlink shared with the live
+    # coadd, and writing through it would corrupt what is being served
+    tmp = tgt + ".tmp"
+    if len(covering) == 1:
+        shutil.copyfile(covering[0], tmp)
+        os.replace(tmp, tgt)
+        return "copied"
+    if tile_format != "png":
+        raise NotImplementedError(f"cannot composite {tile_format} tiles")
+    acc = Image.open(covering[0]).convert("RGBA")
+    for src in covering[1:]:
+        acc = Image.alpha_composite(Image.open(src).convert("RGBA"), acc)
+    # format explicit: the temp name ends .tmp
+    acc.save(tmp, format=tile_format.upper())
+    os.replace(tmp, tgt)
+    return "composited"
+
+
+def _retile_chunk(args):
+    rels, layers, out_dir, tile_format = args
+    counts = {"copied": 0, "composited": 0, "removed": 0}
+    for rel in rels:
+        res = _retile_one(rel, layers, out_dir, tile_format)
+        if res:
+            counts[res] += 1
+    return counts
+
+
+def _prune_empty_dirs(out_dir, rels):
+    """Remove directories a deleted tile left empty, up to (not including)
+    out_dir.  coadd_hips never makes an empty Dir*, so neither should we."""
+    root = os.path.normpath(out_dir)
+    for rel in rels:
+        d = os.path.dirname(os.path.normpath(os.path.join(out_dir, rel)))
+        while d != root and os.path.isdir(d) and not os.listdir(d):
+            os.rmdir(d)
+            d = os.path.dirname(d)
+
+
+def retile_coadd(stage_dir, layers_in_order, affected, tile_format="png",
+                 workers=1):
+    """Recompute only the `affected` tiles of a coadd from all its layers.
+
+    `stage_dir` may be a hardlink clone of the live coadd: every write goes
+    through a temp file and os.replace.  Lower-order tiles need no special
+    case, because each layer carries its own full pyramid, so recomputing the
+    same relpath at every order is the whole job.  Tiles covered by no layer any
+    more are deleted and their empty directories pruned.
+
+    `workers` > 1 spreads the tiles over a process pool (tiles are
+    independent).  Returns (copied, composited, removed).
+    """
+    layers = list(layers_in_order)
+    affected = list(affected)
+    if workers > 1 and len(affected) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        n = min(workers, len(affected))
+        chunks = [(affected[i::n], layers, stage_dir, tile_format)
+                  for i in range(n)]
+        with ProcessPoolExecutor(max_workers=n) as pool:
+            results = list(pool.map(_retile_chunk, chunks))
+    else:
+        results = [_retile_chunk((affected, layers, stage_dir, tile_format))]
+    _prune_empty_dirs(stage_dir, affected)
+    return tuple(sum(r[k] for r in results)
+                 for k in ("copied", "composited", "removed"))
+
+
+def _read_hips_order(properties_path):
+    if not os.path.isfile(properties_path):
+        return None
+    with open(properties_path) as fh:
+        for ln in fh:
+            if "=" in ln and ln.split("=", 1)[0].strip() == "hips_order":
+                try:
+                    return int(ln.split("=", 1)[1].strip())
+                except ValueError:
+                    return None
+    return None
+
+
+def set_hips_order(coadd_dir, layers):
+    """Set the coadd's hips_order to the deepest of its layers'.
+
+    coadd_hips does this on a full rebuild only; the append and retile paths
+    hardlink the old `properties`, so a layer re-rendered deeper than the first
+    layer would be truncated in the viewer.  Latent while every layer is at the
+    same order.  Returns the order written, or None if no layer states one.
+    """
+    orders = [o for o in (_read_hips_order(os.path.join(d, "properties"))
+                          for d in layers) if o is not None]
+    fn = os.path.join(coadd_dir, "properties")
+    if not orders or not os.path.exists(fn):
+        return None
+    top = max(orders)
+    lines, seen = [], False
+    for ln in open(fn).read().rstrip("\n").split("\n"):
+        if "=" in ln and ln.split("=", 1)[0].strip() == "hips_order":
+            lines.append(f"{'hips_order':20s} = {top}")
+            seen = True
+        else:
+            lines.append(ln)
+    if not seen:
+        lines.append(f"{'hips_order':20s} = {top}")
+    # properties may be a hardlink to the live coadd's: replace, don't write
+    with open(fn + ".tmp", "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(fn + ".tmp", fn)
+    return top
 
 
 def stamp_release_date(coadd_dir, when=None):
