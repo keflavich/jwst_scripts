@@ -75,6 +75,40 @@ def load_manifest(coadd_dir):
         return json.load(fh)
 
 
+def coadd_repair_reason(coadd_dir, layers):
+    """Why `coadd_dir` is not a finished coadd of `layers`, or None if it is.
+
+    A rebuild killed part-way used to leave a directory of Norder* tiles with
+    no `properties`; plan_coadd would call that a rebuild, but --auto only
+    asked plan_coadd when a tile had been built that same tick, so the broken
+    coadd sat there and publish_hips_layers.py skipped it every hour.
+
+    Cheap on purpose: three stats and one small JSON read, no tile walk.
+    `layers` empty means there is nothing to coadd, so nothing to repair.
+    Also true for a missing directory (a kill between the old rmtree and the
+    first makedirs), and for a coadd that has properties but no readable
+    manifest (a kill between coadd_hips and save_manifest).
+    """
+    if not layers:
+        return None
+    if not os.path.isdir(coadd_dir):
+        return "no coadd directory"
+    props = os.path.join(coadd_dir, "properties")
+    if not os.path.isfile(props) or os.path.getsize(props) == 0:
+        return "no readable properties"
+    try:
+        manifest = load_manifest(coadd_dir)
+    except json.JSONDecodeError:
+        return "unreadable manifest"
+    if manifest is None:
+        return "no manifest"
+    return None
+
+
+def coadd_needs_repair(coadd_dir, layers):
+    return coadd_repair_reason(coadd_dir, layers) is not None
+
+
 def save_manifest(coadd_dir, layers, tile_format="png"):
     data = {"order": [os.path.basename(d) for d in layers],
             "layers": {os.path.basename(d): layer_fingerprint(d, tile_format)
