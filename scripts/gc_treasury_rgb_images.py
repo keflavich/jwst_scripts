@@ -2558,7 +2558,6 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
             total_c += c
             total_x += x
             print(f"  + {os.path.basename(L)}: {c} copied, {x} composited")
-        save_manifest(stage, layers)
         set_union_view(stage, layers)
         # without this the appended coadd keeps the first layer's date and
         # publish_hips_layers.py never ships it
@@ -2568,6 +2567,9 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         print("  identity -> {} / {}".format(
             *stamp_identity(stage, os.path.basename(out))))
         patch_hips_dir(stage)
+        # Last: recover_interrupted_swap and coadd_repair_reason read a
+        # manifest as "this build finished".
+        save_manifest(stage, layers)
         old_dir = out + ".old"
         shutil.rmtree(old_dir, ignore_errors=True)
         os.rename(out, old_dir)
@@ -2608,12 +2610,12 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         print(f"  {os.path.basename(L)}")
     coadd_hips(layers, stage)
     patch_hips_dir(stage)
-    save_manifest(stage, layers)
     set_union_view(stage, layers)
     print(f"  hips_release_date -> {stamp_release_date(stage)}")
     # coadd_hips copied the first layer's identity; name it for the mosaic
     print("  identity -> {} / {}".format(
         *stamp_identity(stage, os.path.basename(out))))
+    save_manifest(stage, layers)    # last: see the append branch
     if os.path.exists(out):
         os.rename(out, old_dir)
     os.replace(stage, out)
