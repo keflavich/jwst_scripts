@@ -151,11 +151,14 @@ def test_plan_detects_a_changed_layer(tmp_path, layers):
     assert plan_coadd(out, [a, b])[0] == "none"
     assert plan_coadd(out, [a, b, c])[0] == "append"
 
-    # rewrite a tile of an existing layer: must force a rebuild
+    # rewrite a tile of an existing layer: a flattened coadd cannot give the
+    # layer back, so this is a retile (tile list recorded) -- never an append
     make_layer(src, "layerA", [(3, 10)], (1, 2, 3))
-    action, _, reason = plan_coadd(out, [a, b, c])
-    assert action == "rebuild", reason
+    action, _, reason, affected = plan_coadd(out, [a, b, c], max_retile_fraction=1.0)
+    assert action == "retile", reason
     assert "changed" in reason
+    assert affected == [os.path.join("Norder3", "Dir0", f"Npix{n}.png")
+                        for n in (10, 11, 99)]
 
 
 def test_plan_detects_a_dropped_layer(tmp_path, layers):
@@ -163,9 +166,12 @@ def test_plan_detects_a_dropped_layer(tmp_path, layers):
     out = str(tmp_path / "out2")
     coadd_hips([a, b], out)
     save_manifest(out, [a, b])
-    action, _, reason = plan_coadd(out, [a])
-    assert action == "rebuild"
+    action, _, reason, affected = plan_coadd(out, [a], max_retile_fraction=1.0)
+    assert action == "retile"
     assert "no longer present" in reason
+    # what B used to cover: (3,10) and (3,12)
+    assert affected == [os.path.join("Norder3", "Dir0", f"Npix{n}.png")
+                        for n in (10, 12)]
 
 
 def test_plan_detects_reordering(tmp_path, layers):
@@ -173,7 +179,7 @@ def test_plan_detects_reordering(tmp_path, layers):
     out = str(tmp_path / "out3")
     coadd_hips([a, b], out)
     save_manifest(out, [a, b])
-    action, _, reason = plan_coadd(out, [b, a])
+    action, _, reason, _ = plan_coadd(out, [b, a])
     assert action == "rebuild"
     assert "reordered" in reason
 
@@ -184,7 +190,7 @@ def test_plan_rebuilds_without_a_manifest(tmp_path, layers):
     _, (a, b, _) = layers
     out = str(tmp_path / "out4")
     coadd_hips([a, b], out)
-    action, _, reason = plan_coadd(out, [a, b])
+    action, _, reason, _ = plan_coadd(out, [a, b])
     assert action == "rebuild"
     assert "manifest" in reason
 
@@ -314,7 +320,7 @@ def test_a_new_layer_that_sorts_first_is_still_an_append(tmp_path, layers):
     assert plan_coadd(out, sorted([a, b, c]))[0] == "rebuild"
 
     ordered = order_layers(out, sorted([a, b, c]))
-    action, new, _ = plan_coadd(out, ordered)
+    action, new, _, _ = plan_coadd(out, ordered)
     assert action == "append"
     assert [os.path.basename(d) for d in new] == ["layerA"]
 
