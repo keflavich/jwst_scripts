@@ -40,9 +40,11 @@ def test_every_hips_writer_patches_its_landing_page(func):
 def test_the_coadd_patches_both_of_its_output_paths():
     src = open(os.path.join(SCRIPTS, "gc_treasury_rgb_images.py")).read()
     body = src[src.index("def cmd_coadd"):src.index("def _tile_count")]
-    # the staged append and the full rebuild write to different directories
-    assert "patch_hips_dir(stage)" in body
-    assert "patch_hips_dir(out)" in body
+    # the append and the full rebuild each build into their own stage
+    # directory (out + ".new") and patch it before it is swapped in
+    assert body.count("patch_hips_dir(stage)") == 2
+    # nothing patches the live coadd in place
+    assert "patch_hips_dir(out)" not in body
 
 
 def write_cat(d, name):

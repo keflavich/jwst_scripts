@@ -68,19 +68,127 @@ def layer_fingerprint(directory, tile_format="png"):
 
 
 def load_manifest(coadd_dir):
+    """The coadd's manifest, or None if it is missing or unusable.
+
+    A kill mid-write leaves a truncated or empty file, and json.load on that
+    raised out of order_layers and plan_coadd -- so the repair that
+    coadd_repair_reason asked for died on the very file it had diagnosed.  A
+    manifest that parses but is not a dict (``[]``, ``3``) or whose `order` /
+    `layers` have the wrong type is as useless, and plan_coadd would raise
+    AttributeError on it.  All of those read as "no manifest": a full rebuild.
+    """
     path = os.path.join(coadd_dir, MANIFEST)
     if not os.path.exists(path):
         return None
-    with open(path) as fh:
-        return json.load(fh)
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not isinstance(data.get("order", []), list):
+        return None
+    if not isinstance(data.get("layers", {}), dict):
+        return None
+    return data
+
+
+def recover_interrupted_swap(coadd_dir):
+    """Undo a kill between `rename(out, out.old)` and `replace(out.new, out)`.
+
+    The swap is two steps, and between them `coadd_dir` does not exist while
+    `.new` (finished) and `.old` (the previous coadd) both do.  The next tick
+    called that "no coadd directory", and the rebuild started by removing both
+    trees.  Finish the swap when `.new` is complete (properties and manifest
+    are written last), else put `.old` back.  Returns what it did, or None.
+    """
+    if os.path.exists(coadd_dir):
+        return None
+    stage, old = coadd_dir + ".new", coadd_dir + ".old"
+
+    def has(d, name):
+        f = os.path.join(d, name)
+        return os.path.isfile(f) and os.path.getsize(f) > 0
+
+    if has(stage, "properties") and has(stage, MANIFEST):
+        os.replace(stage, coadd_dir)
+        shutil.rmtree(old, ignore_errors=True)
+        return "finished the swap from .new"
+    if has(old, "properties"):
+        os.rename(old, coadd_dir)
+        return "restored .old"
+    return None
+
+
+def coadd_repair_reason(coadd_dir, layers):
+    """Why `coadd_dir` is not a finished coadd of `layers`, or None if it is.
+
+    A rebuild killed part-way used to leave a directory of Norder* tiles with
+    no `properties`; plan_coadd would call that a rebuild, but --auto only
+    asked plan_coadd when a tile had been built that same tick, so the broken
+    coadd sat there and publish_hips_layers.py skipped it every hour.
+
+    Cheap on purpose: three stats and one small JSON read, no tile walk.
+    `layers` empty means there is nothing to coadd, so nothing to repair.
+    Also true for a missing directory (a kill between the old rmtree and the
+    first makedirs), and for a coadd that has properties but no readable
+    manifest (a kill between coadd_hips and save_manifest).
+    """
+    if not layers:
+        return None
+    if not os.path.isdir(coadd_dir):
+        return "no coadd directory"
+    props = os.path.join(coadd_dir, "properties")
+    if not os.path.isfile(props) or os.path.getsize(props) == 0:
+        return "no readable properties"
+    if load_manifest(coadd_dir) is None:
+        if os.path.exists(os.path.join(coadd_dir, MANIFEST)):
+            return "unreadable manifest"
+        return "no manifest"
+    return None
+
+
+def newer_layer_reason(coadd_dir, layers):
+    """Name a layer whose `properties` is newer than the coadd's manifest.
+
+    A tick killed after build_obs but before the recoadd leaves a rebuilt layer
+    the coadd has never seen.  One stat per layer, no tile walk.  Only
+    meaningful for a coadd that passed coadd_repair_reason.  cmd_coadd's "none"
+    verdict calls touch_manifest so a layer that changed without changing its
+    tiles does not trigger this every tick.
+    """
+    path = os.path.join(coadd_dir, MANIFEST)
+    if not os.path.exists(path):
+        return None
+    built = os.path.getmtime(path)
+    for d in layers:
+        props = os.path.join(d, "properties")
+        if os.path.exists(props) and os.path.getmtime(props) > built:
+            return f"{os.path.basename(d)} is newer than the coadd"
+    return None
+
+
+def touch_manifest(coadd_dir):
+    """Record that the coadd was checked against its layers just now."""
+    os.utime(os.path.join(coadd_dir, MANIFEST))
+
+
+def coadd_needs_repair(coadd_dir, layers):
+    return coadd_repair_reason(coadd_dir, layers) is not None
 
 
 def save_manifest(coadd_dir, layers, tile_format="png"):
     data = {"order": [os.path.basename(d) for d in layers],
             "layers": {os.path.basename(d): layer_fingerprint(d, tile_format)
                        for d in layers}}
-    with open(os.path.join(coadd_dir, MANIFEST), "w") as fh:
+    # Atomic: a kill mid-write must not leave a truncated manifest, and
+    # recover_interrupted_swap treats "manifest present" as "build finished".
+    path = os.path.join(coadd_dir, MANIFEST)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
         json.dump(data, fh, indent=1)
+    os.replace(tmp, path)
     return data
 
 
@@ -282,4 +390,18 @@ def stamp_identity(coadd_dir, name=None):
 def hardlink_tree(src, dst):
     """Clone a coadd cheaply.  Safe only because merge_layer never writes in
     place -- it replaces via a temp file, which breaks the link."""
-    shutil.copytree(src, dst, copy_function=os.link)
+    root = os.path.abspath(src)
+
+    def link_tiles_copy_metadata(s, d):
+        # `properties`, the manifest and index.html are rewritten in place by
+        # stamp_*, set_union_view and patch_hips_dir.  Linked, those writes
+        # went through to the LIVE coadd, so a tick killed mid-append left
+        # the live manifest listing a layer the live tiles lack.  Only the
+        # tiles (below the top level) are linked; merge_layer never writes
+        # one in place.
+        if os.path.dirname(os.path.abspath(s)) == root:
+            shutil.copy2(s, d)
+        else:
+            os.link(s, d)
+
+    shutil.copytree(src, dst, copy_function=link_tiles_copy_metadata)

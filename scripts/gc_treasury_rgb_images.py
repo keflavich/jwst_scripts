@@ -1850,6 +1850,20 @@ def _pending_summary():
     return out, waiting
 
 
+def _coadd_repair(out, **flavour):
+    """Why this flavour's coadd needs rebuilding with no new layer, or None.
+
+    `flavour` is the keyword set coadd_layer_glob takes.  Needs per-observation
+    layers on disk: a flavour with none would make cmd_coadd return 1 every
+    tick.  Also names a layer newer than the manifest.  Reads a few files; never fingerprints tiles (plan_coadd does that).
+    """
+    from jwst_rgb.incremental_coadd import (
+        coadd_repair_reason, newer_layer_reason)
+    layers = coadd_layer_glob(**flavour)
+    return (coadd_repair_reason(out, layers)
+            or newer_layer_reason(out, layers))
+
+
 def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
     """Build whatever is buildable and not yet built, then recoadd if anything
     changed.  Safe to run on a schedule: a lock file keeps a slow build from
@@ -2136,9 +2150,14 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
         for fl in nircam_flavours():
             residual, stretch = fl
             name = coadd_name_for(stretch, residual=residual)
-            if built[fl]:
-                print(f"built {len(built[fl])} for {name}: "
-                      f"{', '.join(built[fl])} -- recoadding")
+            repair = _coadd_repair(f"{OUTDIR}/{name}", stretch=stretch,
+                                   residual=residual)
+            if built[fl] or repair:
+                if built[fl]:
+                    print(f"built {len(built[fl])} for {name}: "
+                          f"{', '.join(built[fl])} -- recoadding")
+                else:
+                    print(f"repairing {name}: {repair}")
                 if cmd_coadd(stretch=stretch, residual=residual):
                     # the input guard refuses by returning non-zero; without
                     # this the tick prints its reason and still reports success
@@ -2150,9 +2169,14 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
         for fl in MIRI_FLAVOURS:
             residual, bgmatch = fl
             name = miri_coadd_name_for(bgmatch, residual)
-            if miri_built[fl]:
-                print(f"built {len(miri_built[fl])} for {name}: "
-                      f"{', '.join(miri_built[fl])} -- recoadding")
+            repair = _coadd_repair(f"{OUTDIR}/{name}", miri=True,
+                                   bgmatch=bgmatch, residual=residual)
+            if miri_built[fl] or repair:
+                if miri_built[fl]:
+                    print(f"built {len(miri_built[fl])} for {name}: "
+                          f"{', '.join(miri_built[fl])} -- recoadding")
+                else:
+                    print(f"repairing {name}: {repair}")
                 if cmd_coadd(miri=True, bgmatch=bgmatch, residual=residual):
                     failed.append(f"coadd:{name}")
             else:
@@ -2161,9 +2185,13 @@ def cmd_auto(publish=False, budget_hours=DEFAULT_BUILD_BUDGET_H):
             cmd_publish()
         for filt in MONO_FILTERS:
             name = mono_coadd_name_for(filt)
-            if mono_built[filt]:
-                print(f"built {len(mono_built[filt])} for {name}: "
-                      f"{', '.join(mono_built[filt])} -- recoadding")
+            repair = _coadd_repair(f"{OUTDIR}/{name}", mono=filt)
+            if mono_built[filt] or repair:
+                if mono_built[filt]:
+                    print(f"built {len(mono_built[filt])} for {name}: "
+                          f"{', '.join(mono_built[filt])} -- recoadding")
+                else:
+                    print(f"repairing {name}: {repair}")
                 if cmd_coadd(mono=filt):
                     failed.append(f"coadd:{name}")
             else:
@@ -2417,6 +2445,28 @@ def unreadable_layers(layers):
     return out
 
 
+def coadd_layer_glob(miri=False, bgmatch=False, stretch=DEFAULT_STRETCH,
+                     residual=False, mono=None, satmask=False):
+    """Per-observation HiPS directories on disk for one coadd flavour.
+
+    Name match only: no retiring, no inventory check.  cmd_coadd retires the
+    superseded ones from this list; cmd_auto only asks whether it is empty.
+    """
+    tail = layer_tail(miri, bgmatch, stretch, residual, mono=mono,
+                      satmask=satmask)
+    layers = sorted(glob.glob(f"{OUTDIR}/GCTreasury_*{tail}"))
+    if miri and not bgmatch:
+        # the plain glob also matches the _bgmatch layers; keep them apart
+        layers = [L for L in layers if "_bgmatch_hips" not in L]
+    if not miri and not mono and stretch == DEFAULT_STRETCH:
+        # ...and the default NIRCam glob would otherwise swallow every other
+        # flavour, since their names only differ by a suffix
+        for other in STRETCHES:
+            if other != DEFAULT_STRETCH:
+                layers = [L for L in layers if f"_{other}_hips" not in L]
+    return layers
+
+
 def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
               residual=False, mono=None, satmask=False):
     """Coadd every per-observation HiPS into one growing mosaic.
@@ -2434,16 +2484,8 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         check_residual_stretch(stretch, residual)
     tail = layer_tail(miri, bgmatch, stretch, residual, mono=mono,
                       satmask=satmask)
-    layers = sorted(glob.glob(f"{OUTDIR}/GCTreasury_*{tail}"))
-    if miri and not bgmatch:
-        # the plain glob also matches the _bgmatch layers; keep them apart
-        layers = [L for L in layers if "_bgmatch_hips" not in L]
-    if not miri and not mono and stretch == DEFAULT_STRETCH:
-        # ...and the default NIRCam glob would otherwise swallow every other
-        # flavour, since their names only differ by a suffix
-        for other in STRETCHES:
-            if other != DEFAULT_STRETCH:
-                layers = [L for L in layers if f"_{other}_hips" not in L]
+    layers = coadd_layer_glob(miri=miri, bgmatch=bgmatch, stretch=stretch,
+                              residual=residual, mono=mono, satmask=satmask)
     # Retire layers whose source is no longer current -- chiefly the per-module
     # halves once a -merged mosaic supersedes them.  Renamed, never deleted.
     if mono:
@@ -2476,9 +2518,17 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         out = f"{OUTDIR}/{coadd_name_for(stretch, residual=residual, satmask=satmask)}"
 
     from jwst_rgb.incremental_coadd import (
-        hardlink_tree, merge_layer, order_layers, plan_coadd, save_manifest,
-        stamp_identity, stamp_release_date)
+        hardlink_tree, merge_layer, order_layers, plan_coadd,
+        recover_interrupted_swap, save_manifest, stamp_identity,
+        stamp_release_date)
     from jwst_rgb.landing_page import patch_hips_dir
+
+    # A kill between the two renames of a swap leaves no `out` at all; put it
+    # back before plan_coadd calls that "no existing coadd" and the rebuild
+    # deletes both trees.
+    recovered = recover_interrupted_swap(out)
+    if recovered:
+        print(f"  recovered {os.path.basename(out)}: {recovered}")
 
     # Paint in the order the existing coadd already used, with layers it has
     # never seen at the end.  The glob above is obsid-sorted, and a new tile
@@ -2491,6 +2541,8 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
     print(f"coadd plan: {action} ({reason})")
 
     if action == "none":
+        from jwst_rgb.incremental_coadd import touch_manifest
+        touch_manifest(out)
         return 0
 
     if action == "append":
@@ -2506,7 +2558,6 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
             total_c += c
             total_x += x
             print(f"  + {os.path.basename(L)}: {c} copied, {x} composited")
-        save_manifest(stage, layers)
         set_union_view(stage, layers)
         # without this the appended coadd keeps the first layer's date and
         # publish_hips_layers.py never ships it
@@ -2516,6 +2567,9 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
         print("  identity -> {} / {}".format(
             *stamp_identity(stage, os.path.basename(out))))
         patch_hips_dir(stage)
+        # Last: recover_interrupted_swap and coadd_repair_reason read a
+        # manifest as "this build finished".
+        save_manifest(stage, layers)
         old_dir = out + ".old"
         shutil.rmtree(old_dir, ignore_errors=True)
         os.rename(out, old_dir)
@@ -2541,17 +2595,31 @@ def cmd_coadd(miri=False, bgmatch=False, full=False, stretch=DEFAULT_STRETCH,
               "the next run picks it up")
         return 1
 
-    if os.path.exists(out):
-        shutil.rmtree(out)
+    # Build beside the live coadd and swap at the end, as the append branch
+    # does.  Removing `out` first meant a kill (8 h --auto wall, 6 h lock
+    # takeover, OOM) anywhere in the build left a directory of Norder* tiles
+    # with no properties, which publish_hips_layers.py skips and, until
+    # coadd_needs_repair, nothing rebuilt.  Now a killed build leaves only
+    # `.new`, and the previous complete coadd stays live.
+    stage = out + ".new"
+    old_dir = out + ".old"
+    shutil.rmtree(stage, ignore_errors=True)    # coadd_hips needs it absent
+    shutil.rmtree(old_dir, ignore_errors=True)
     print(f"coadding {len(layers)} observation HiPS -> {out}")
     for L in layers:
         print(f"  {os.path.basename(L)}")
-    coadd_hips(layers, out)
-    patch_hips_dir(out)
-    save_manifest(out, layers)
-    set_union_view(out, layers)
-    print(f"  hips_release_date -> {stamp_release_date(out)}")
-    print("  identity -> {} / {}".format(*stamp_identity(out)))
+    coadd_hips(layers, stage)
+    patch_hips_dir(stage)
+    set_union_view(stage, layers)
+    print(f"  hips_release_date -> {stamp_release_date(stage)}")
+    # coadd_hips copied the first layer's identity; name it for the mosaic
+    print("  identity -> {} / {}".format(
+        *stamp_identity(stage, os.path.basename(out))))
+    save_manifest(stage, layers)    # last: see the append branch
+    if os.path.exists(out):
+        os.rename(out, old_dir)
+    os.replace(stage, out)
+    shutil.rmtree(old_dir, ignore_errors=True)
     print(f"done: {out}")
     return 0
 
