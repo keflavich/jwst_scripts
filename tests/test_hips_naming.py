@@ -148,3 +148,13 @@ def test_cluster_layers_name_both_programs(name, title):
     did, got = describe(name)
     assert got == title
     assert did == f"{AUTHORITY}/{slugify(name)}"
+
+
+@pytest.mark.parametrize("band", ["f212n", "f480m"])
+def test_peppar_residual_layers_have_their_own_identity(band):
+    """The PEPPAR layers must not share an identity with the DAOPHOT residual ones."""
+    name = f"jwst_gc_treasury_{band}_peppar_residual_hips"
+    did, title = describe(name)
+    assert did == f"{AUTHORITY}/jwst-gc-treasury-nircam-{band}-peppar-residual"
+    assert band.upper() in title and "PEPPAR" in title
+    assert (did, title) != describe(f"jwst_gc_treasury_{band}_residual_hips")

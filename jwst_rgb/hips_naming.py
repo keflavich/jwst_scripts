@@ -174,6 +174,16 @@ SPECIAL = {
         "jwst-gc-treasury-nircam-f480m-residual",
         "JWST GC Treasury: NIRCam F480M mosaic of the Galactic Center, "
         "stars subtracted"),
+    # PEPPAR (Hosek's PSF-fitting code) residuals of the same two bands, for
+    # comparing a second PSF-subtraction against the DAOPHOT one above.
+    "jwst_gc_treasury_f212n_peppar_residual_hips": (
+        "jwst-gc-treasury-nircam-f212n-peppar-residual",
+        "JWST GC Treasury: NIRCam F212N mosaic of the Galactic Center, "
+        "PEPPAR stars subtracted (diagnostic)"),
+    "jwst_gc_treasury_f480m_peppar_residual_hips": (
+        "jwst-gc-treasury-nircam-f480m-peppar-residual",
+        "JWST GC Treasury: NIRCam F480M mosaic of the Galactic Center, "
+        "PEPPAR stars subtracted (diagnostic)"),
     "gctreasury_mosaic_RGB_770-480-212_residual_hips": (
         "jwst-gc-treasury-rgb-f770w-f480m-f212n-residual",
         "JWST GC Treasury: Galactic Center RGB, MIRI F770W / NIRCam F480M / "
