@@ -158,3 +158,14 @@ def test_peppar_residual_layers_have_their_own_identity(band):
     assert did == f"{AUTHORITY}/jwst-gc-treasury-nircam-{band}-peppar-residual"
     assert band.upper() in title and "PEPPAR" in title
     assert (did, title) != describe(f"jwst_gc_treasury_{band}_residual_hips")
+
+
+@pytest.mark.parametrize("band", ["f212n", "f480m"])
+def test_peppar3_residual_layers_have_their_own_identity(band):
+    """The PEPPAR v3 layers must not share an identity with the September PEPPAR or DAOPHOT residual ones."""
+    name = f"jwst_gc_treasury_{band}_peppar3_residual_hips"
+    did, title = describe(name)
+    assert did == f"{AUTHORITY}/jwst-gc-treasury-nircam-{band}-peppar3-residual"
+    assert band.upper() in title and "PEPPAR v3.0" in title
+    assert (did, title) != describe(f"jwst_gc_treasury_{band}_peppar_residual_hips")
+    assert (did, title) != describe(f"jwst_gc_treasury_{band}_residual_hips")
